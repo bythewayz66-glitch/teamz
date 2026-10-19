@@ -96,3 +96,18 @@ export const RefreshIcon = ({ size = 15, className }: P) => (
     <path d="M20 4v6h-6" />
   </svg>
 );
+
+/** Speech bubble — opens a 1:1 DM with an agent. */
+export const ChatIcon = ({ size = 15, className }: P) => (
+  <svg {...base(size)} className={className} aria-hidden="true">
+    <path d="M20 14.5a2.5 2.5 0 01-2.5 2.5H9l-4 3.2V6.5A2.5 2.5 0 017.5 4h10A2.5 2.5 0 0120 6.5z" />
+  </svg>
+);
+
+/** Small at-sign used in mention affordances. */
+export const AtIcon = ({ size = 14, className }: P) => (
+  <svg {...base(size)} className={className} aria-hidden="true">
+    <circle cx="12" cy="12" r="4" />
+    <path d="M16 8v5a2.5 2.5 0 004.6 1.4A8 8 0 1016 19" />
+  </svg>
+);

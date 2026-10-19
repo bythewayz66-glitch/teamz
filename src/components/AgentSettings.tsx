@@ -98,10 +98,28 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
         <div>
           <strong>{draft.name || 'Untitled Agent'}</strong>
           <span>
+            {draft.origin ? `${draft.origin.role} · ` : ''}
             Created {formatRelative(draft.createdAt)} ago · {draft.model || 'no model set'}
           </span>
         </div>
       </div>
+
+      {draft.skills.length > 0 && (
+        <div className="field">
+          <span className="field-label">
+            Skills
+            <em>{draft.origin ? `from ${draft.origin.templateId}` : 'set by hand'}</em>
+          </span>
+          <div className="skill-chips">
+            {draft.skills.map((skill) => (
+              <span key={skill.key} className="skill-chip" title={`depth ${skill.level}/5`}>
+                {skill.label}
+                <em>{skill.level}</em>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <Field label="Name">
         <input

@@ -32,10 +32,17 @@ export default function App() {
   }, [ws.state.messages]);
 
   const handleCreateAgent = (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => {
-    const agent = ws.createAgent(input);
+    // Hand-made agents are created and invited into the current room too.
+    ws.createAgent(input);
     setSettingsAgentId(null);
-    // Take them straight into the fresh 1:1 chat with the new agent.
-    ws.openDirectChat(agent.id);
+  };
+
+  const handleCreateFromTemplate = (templateId: string, name?: string) => {
+    ws.createAgentFromTemplate(templateId, {
+      name,
+      conversationId: ws.state.activeConversationId,
+      openDirect: false,
+    });
   };
 
   return (
@@ -84,6 +91,7 @@ export default function App() {
           onDeleteConversation={() => {
             if (ws.activeConversation) ws.deleteConversation(ws.activeConversation.id);
           }}
+          onOpenDirectChat={(id) => ws.openDirectChat(id)}
           apiMode={API_MODE}
         />
       </div>
@@ -103,6 +111,8 @@ export default function App() {
         open={showNewAgent}
         onClose={() => setShowNewAgent(false)}
         onCreate={handleCreateAgent}
+        onCreateFromTemplate={handleCreateFromTemplate}
+        room={ws.activeConversation}
       />
 
       <ChannelDialog

@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation, Message, WorkspaceState } from '../types';
 import { seedState, ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
+import { TEMPLATE_BY_ID, skillsFor, type AgentTemplate } from '../data/templates/catalog';
+import { parseMentions } from '../lib/mentions';
 import { sendToAgent } from '../api/agents';
 
 const STORAGE_KEY = 'teamz:workspace:v1';
 
 const uid = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * State written by an older build had no `skills` on agents. Normalise on read
+ * so an upgrade never crashes, and so template-made agents keep their skills.
+ */
+function migrate(parsed: WorkspaceState): WorkspaceState {
+  return {
+    ...parsed,
+    agents: parsed.agents.map((a) => ({ ...a, skills: a.skills ?? [] })),
+  };
+}
 
 function loadState(): WorkspaceState {
   try {
@@ -16,16 +29,46 @@ function loadState(): WorkspaceState {
     if (!parsed?.agents?.length || !parsed?.conversations?.length) {
       return structuredClone(seedState);
     }
-    return {
+    return migrate({
       agents: parsed.agents,
       conversations: parsed.conversations,
       messages: parsed.messages ?? {},
       activeConversationId:
         parsed.activeConversationId ?? parsed.conversations[0]?.id ?? null,
-    };
+    });
   } catch {
     return structuredClone(seedState);
   }
+}
+
+/** Build a ready-to-insert agent from a catalog template. */
+export function agentFromTemplate(
+  template: AgentTemplate,
+  tint: { accent?: string; emoji?: string } = {},
+): Omit<Agent, 'id' | 'createdAt' | 'status'> {
+  return {
+    name: template.name,
+    emoji: tint.emoji ?? template.emoji,
+    accent: tint.accent ?? ACCENT_PALETTE[0],
+    endpointUrl: `http://localhost:${8100 + Math.floor(Math.random() * 800)}/chat`,
+    model: template.model,
+    systemPrompt: template.systemPrompt,
+    skills: skillsFor(template.familySlug, template.seniority),
+    origin: {
+      templateId: template.id,
+      familySlug: template.familySlug,
+      role: template.role,
+    },
+  };
+}
+
+export interface CreateAgentFromTemplateOptions {
+  /** Override the display name (defaults to the template name). */
+  name?: string;
+  /** Invite into this conversation. Defaults to the active conversation. */
+  conversationId?: string | null;
+  /** Also open (or create) the 1:1 DM with the new agent afterwards. */
+  openDirect?: boolean;
 }
 
 export interface UseWorkspace {
@@ -37,8 +80,16 @@ export interface UseWorkspace {
   typing: Record<string, string[]>;
   canReply: boolean;
   setActiveConversation: (id: string) => void;
+  /** Send to the room. `@mentions` narrow delivery to the named agents. */
   sendMessage: (text: string) => Promise<void>;
   createAgent: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => Agent;
+  /** Instantiate a template agent and invite it straight into the room. */
+  createAgentFromTemplate: (
+    templateId: string,
+    options?: CreateAgentFromTemplateOptions,
+  ) => Agent | null;
+  /** Add an existing agent to a channel. */
+  inviteAgentToConversation: (conversationId: string, agentId: string) => void;
   updateAgent: (id: string, patch: Partial<Agent>) => void;
   deleteAgent: (id: string) => void;
   createChannel: (name: string, agentIds: string[], topic?: string) => Conversation;
@@ -102,15 +153,34 @@ export function useWorkspace(): UseWorkspace {
   }, []);
 
   /**
-   * Fan out one user message to every agent in the conversation.
-   * In a channel each member answers — sequentially, so replies interleave
-   * readably instead of landing in a random order.
+   * Send one user message.
+   *
+   * Routing rules:
+   *   • A channel with `@mentions` delivers only to the mentioned agents, and
+   *     the stored message is marked `directed` with a `mentions` list.
+   *   • A channel with no mention fans out to every member (the original
+   *     behaviour) — that is the room's default.
+   *   • A direct chat always goes to its single member, mention or not.
+   *
+   * Replies are interleaved sequentially so a multi-agent room reads in order
+   * rather than landing at random.
    */
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       const conv = activeConversation;
       if (!trimmed || !conv) return;
+
+      const members = conv.agentIds
+        .map((id) => agentsById.get(id))
+        .filter((a): a is Agent => Boolean(a));
+
+      if (members.length === 0) return;
+
+      // Who was addressed? In a DM there is only one candidate anyway.
+      const mentioned = conv.kind === 'channel' ? parseMentions(trimmed, members) : [];
+      const directed = mentioned.length > 0;
+      const targets = directed ? mentioned : members;
 
       const userMessage: Message = {
         id: uid('m'),
@@ -119,19 +189,14 @@ export function useWorkspace(): UseWorkspace {
         text: trimmed,
         createdAt: Date.now(),
         status: 'sent',
+        ...(directed ? { mentions: mentioned.map((a) => a.id), directed: true } : {}),
       };
       appendMessage(userMessage);
-
-      const members = conv.agentIds
-        .map((id) => agentsById.get(id))
-        .filter((a): a is Agent => Boolean(a));
-
-      if (members.length === 0) return;
 
       const history = [...activeMessages, userMessage];
       const others = members.map((a) => ({ id: a.id, name: a.name }));
 
-      for (const agent of members) {
+      for (const agent of targets) {
         const controller = new AbortController();
         aborters.current.set(`${conv.id}:${agent.id}`, controller);
 
@@ -156,6 +221,7 @@ export function useWorkspace(): UseWorkspace {
             conversationId: conv.id,
             conversationName: conv.name,
             otherAgents: others.filter((o) => o.id !== agent.id),
+            directed,
             signal: controller.signal,
           });
           patchMessage(conv.id, placeholderId, {
@@ -173,7 +239,7 @@ export function useWorkspace(): UseWorkspace {
           } else {
             const message = err instanceof Error ? err.message : 'Unknown error';
             patchMessage(conv.id, placeholderId, {
-              text: `Couldn’t reach ${agent.name}.\n\n\`${message}\`\n\nCheck the endpoint URL in this agent’s settings.`,
+              text: `Couldn\u2019t reach ${agent.name}.\n\n\`${message}\`\n\nCheck the endpoint URL in this agent\u2019s settings.`,
               status: 'error',
               createdAt: Date.now(),
             });
@@ -190,35 +256,105 @@ export function useWorkspace(): UseWorkspace {
     [activeConversation, activeMessages, agentsById, appendMessage, patchMessage],
   );
 
-  const createAgent = useCallback((input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => {
-    const index = Math.floor(Math.random() * ACCENT_PALETTE.length);
-    const agent: Agent = {
-      ...input,
-      emoji: input.emoji || EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)],
-      accent: input.accent || ACCENT_PALETTE[index],
-      id: uid('agent'),
-      status: 'online',
-      createdAt: Date.now(),
-    };
-
-    setState((s) => {
-      const direct: Conversation = {
-        id: uid('conv'),
-        kind: 'direct',
-        name: agent.name,
-        agentIds: [agent.id],
+  /** Insert an agent, plus its 1:1 thread, and optionally invite it into a room. */
+  const insertAgent = useCallback(
+    (
+      input: Omit<Agent, 'id' | 'createdAt' | 'status'>,
+      opts: { conversationId?: string | null; openDirect?: boolean },
+    ): Agent => {
+      const index = Math.floor(Math.random() * ACCENT_PALETTE.length);
+      const agent: Agent = {
+        ...input,
+        emoji: input.emoji || EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)],
+        accent: input.accent || ACCENT_PALETTE[index],
+        skills: input.skills ?? [],
+        id: uid('agent'),
+        status: 'online',
         createdAt: Date.now(),
       };
-      return {
-        ...s,
-        agents: [...s.agents, agent],
-        conversations: [direct, ...s.conversations],
-        messages: { ...s.messages, [direct.id]: [] },
-        activeConversationId: direct.id,
-      };
-    });
 
-    return agent;
+      setState((s) => {
+        const direct: Conversation = {
+          id: uid('conv'),
+          kind: 'direct',
+          name: agent.name,
+          agentIds: [agent.id],
+          createdAt: Date.now(),
+        };
+
+        const targetId = opts.conversationId ?? null;
+
+        // Invite into the room the user is looking at — this is the point of
+        // picking a template: it joins the team you are already talking to.
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== targetId || c.kind !== 'channel') return c;
+          if (c.agentIds.includes(agent.id)) return c;
+          return { ...c, agentIds: [...c.agentIds, agent.id] };
+        });
+
+        const joinedRoom = conversations.some(
+          (c) => c.id === targetId && c.kind === 'channel' && c.agentIds.includes(agent.id),
+        );
+
+        return {
+          ...s,
+          agents: [...s.agents, agent],
+          conversations: [direct, ...conversations],
+          messages: { ...s.messages, [direct.id]: [] },
+          // Stay in the room so the user sees the new member appear; only jump
+          // to the DM when nothing was joined.
+          activeConversationId:
+            joinedRoom && !opts.openDirect ? targetId : direct.id,
+        };
+      });
+
+      return agent;
+    },
+    [],
+  );
+
+  const createAgent = useCallback(
+    (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => {
+      // Hand-made agents join the current room too, matching the template flow.
+      return insertAgent(input, {
+        conversationId: state.activeConversationId,
+        openDirect: false,
+      });
+    },
+    [insertAgent, state.activeConversationId],
+  );
+
+  const createAgentFromTemplate = useCallback(
+    (templateId: string, options: CreateAgentFromTemplateOptions = {}) => {
+      const template = TEMPLATE_BY_ID.get(templateId);
+      if (!template) return null;
+
+      const input = agentFromTemplate(template, {
+        accent: ACCENT_PALETTE[Math.floor(Math.random() * ACCENT_PALETTE.length)],
+      });
+
+      const agent = insertAgent(
+        { ...input, name: options.name?.trim() || input.name },
+        {
+          conversationId: options.conversationId ?? state.activeConversationId,
+          openDirect: options.openDirect ?? false,
+        },
+      );
+
+      return agent;
+    },
+    [insertAgent, state.activeConversationId],
+  );
+
+  const inviteAgentToConversation = useCallback((conversationId: string, agentId: string) => {
+    setState((s) => ({
+      ...s,
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId && !c.agentIds.includes(agentId)
+          ? { ...c, agentIds: [...c.agentIds, agentId] }
+          : c,
+      ),
+    }));
   }, []);
 
   const updateAgent = useCallback((id: string, patch: Partial<Agent>) => {
@@ -349,6 +485,8 @@ export function useWorkspace(): UseWorkspace {
     setActiveConversation,
     sendMessage,
     createAgent,
+    createAgentFromTemplate,
+    inviteAgentToConversation,
     updateAgent,
     deleteAgent,
     createChannel,

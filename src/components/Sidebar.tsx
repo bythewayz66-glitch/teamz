@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Agent, Conversation } from '../types';
 import { AgentAvatar, AvatarStack, StatusDot } from './Avatar';
-import { HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
+import { ChatIcon, HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
 import { formatRelative } from '../lib/format';
 
 interface SidebarProps {
@@ -37,7 +37,13 @@ export function Sidebar({
 
   const q = query.trim().toLowerCase();
   const visibleAgents = q
-    ? agents.filter((a) => a.name.toLowerCase().includes(q) || a.model.toLowerCase().includes(q))
+    ? agents.filter(
+        (a) =>
+          a.name.toLowerCase().includes(q) ||
+          a.model.toLowerCase().includes(q) ||
+          (a.origin?.role.toLowerCase().includes(q) ?? false) ||
+          a.skills.some((s) => s.label.toLowerCase().includes(q)),
+      )
     : agents;
 
   const channels = conversations.filter((c) => c.kind === 'channel');
@@ -104,9 +110,33 @@ export function Sidebar({
                           <StatusDot status={agent.status} size={6} />
                           {agent.status === 'online' ? 'Online' : agent.status === 'busy' ? 'Busy' : 'Offline'}
                           <span className="dot-sep">·</span>
-                          <span className="agent-model">{agent.model}</span>
+                          <span className="agent-model">
+                            {agent.origin?.role ?? agent.model}
+                          </span>
                         </span>
+                        {agent.skills.length > 0 && (
+                          <span className="agent-skills">
+                            {agent.skills.slice(0, 3).map((s) => (
+                              <span key={s.key} className="agent-skill">
+                                {s.label}
+                              </span>
+                            ))}
+                            {agent.skills.length > 3 && (
+                              <span className="agent-skill is-more">
+                                +{agent.skills.length - 3}
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </span>
+                    </button>
+                    <button
+                      className="agent-row-action"
+                      onClick={() => onOpenAgentChat(agent.id)}
+                      title={`Message ${agent.name}`}
+                      aria-label={`Message ${agent.name}`}
+                    >
+                      <ChatIcon size={14} />
                     </button>
                     <button
                       className="agent-row-action"

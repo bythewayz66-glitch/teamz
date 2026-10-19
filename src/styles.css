@@ -1223,3 +1223,100 @@ code, kbd, pre, .mono { font-family: var(--mono); }
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   Templates, @mentions, DM affordances
+   Appended for the template / mention / DM feature set. Uses the tokens above.
+   ========================================================================== */
+
+/* ------------------------------- Tabs ---------------------------------- */
+.tabs { display: flex; gap: 6px; padding: 4px; background: var(--bg-panel-2); border: 1px solid var(--line); border-radius: var(--r-md); margin-bottom: 16px; }
+.tab { display: flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 9px; color: var(--text-dim); font-weight: 550; transition: background 0.15s, color 0.15s; }
+.tab:hover { color: var(--text); background: var(--bg-hover); }
+.tab.is-on { background: var(--bg-active); color: var(--text); box-shadow: inset 0 0 0 1px #263349; }
+.tab-count { font-size: 11px; padding: 1px 6px; border-radius: 20px; background: #23304a; color: #a9c0ff; font-variant-numeric: tabular-nums; }
+
+/* --------------------------- Template search ---------------------------- */
+.tpl-search { position: relative; display: flex; align-items: center; gap: 9px; padding: 0 12px; background: var(--bg-panel-2); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text-mute); }
+.tpl-search:focus-within { border-color: #33507f; box-shadow: 0 0 0 3px rgba(124, 156, 255, 0.1); }
+.tpl-search input { flex: 1; padding: 10px 0; background: none; border: 0; outline: none; color: var(--text); }
+.tpl-search input::placeholder { color: #4c5668; }
+.tpl-clear { font-size: 18px; line-height: 1; color: var(--text-mute); padding: 0 2px; }
+.tpl-clear:hover { color: var(--text); }
+
+.tpl-filters { display: flex; align-items: center; gap: 10px; margin: 12px 0 14px; }
+.filter-chips { display: flex; gap: 6px; overflow-x: auto; flex: 1; padding-bottom: 2px; scrollbar-width: none; }
+.filter-chips::-webkit-scrollbar { display: none; }
+.chip { white-space: nowrap; padding: 5px 11px; font-size: 12px; border-radius: 20px; border: 1px solid var(--line); color: var(--text-dim); background: var(--bg-panel); transition: all 0.15s; }
+.chip:hover { color: var(--text); border-color: var(--line-strong); }
+.chip.is-on { background: rgba(124, 156, 255, 0.15); border-color: #3a5591; color: #b9caff; }
+.tpl-select { flex-shrink: 0; padding: 6px 9px; font-size: 12px; background: var(--bg-panel-2); color: var(--text-dim); border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; }
+
+/* ------------------------- Template split view -------------------------- */
+.tpl-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 14px; min-height: 340px; }
+.tpl-list { max-height: 380px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); padding: 5px; }
+.tpl-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 9px; border-radius: 9px; text-align: left; transition: background 0.12s; }
+.tpl-item:hover { background: var(--bg-hover); }
+.tpl-item.is-on { background: var(--bg-active); box-shadow: inset 0 0 0 1px #2c3f60; }
+.tpl-emoji { font-size: 18px; width: 26px; text-align: center; flex-shrink: 0; }
+.tpl-item-text { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
+.tpl-name { font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tpl-group { font-size: 10.5px; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.05em; }
+.tpl-alias { font-size: 10.5px; color: var(--text-mute); font-family: var(--mono); flex-shrink: 0; }
+
+.tpl-detail { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: linear-gradient(180deg, var(--bg-panel-2), var(--bg-panel)); overflow-y: auto; max-height: 380px; }
+.tpl-detail-head { display: flex; align-items: center; gap: 12px; }
+.tpl-detail-head div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tpl-detail-head strong { font-size: 15px; }
+.tpl-detail-head span { font-size: 11.5px; color: var(--text-mute); }
+.tpl-blurb { margin: 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.tpl-section { display: flex; flex-direction: column; gap: 6px; }
+.tpl-section-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-mute); font-weight: 600; }
+.tpl-duties { display: flex; flex-direction: column; gap: 3px; }
+.tpl-duties li { font-size: 12px; color: var(--text-dim); padding-left: 13px; position: relative; }
+.tpl-duties li::before { content: '·'; position: absolute; left: 3px; color: var(--text-mute); font-weight: 700; }
+.tpl-detail-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-mute); font-size: 12.5px; text-align: center; }
+.tpl-invite-note { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: #7fbfa1; background: rgba(61, 220, 151, 0.07); border: 1px solid rgba(61, 220, 151, 0.2); border-radius: var(--r-sm); padding: 7px 10px; }
+.tpl-invite-note strong { color: #a5e3c5; }
+
+/* ------------------------------ Skill chips ----------------------------- */
+.skill-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.skill-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; font-size: 11px; border-radius: 6px; background: #1a2434; border: 1px solid #26334a; color: #b7c4da; }
+.skill-chip em { font-style: normal; font-size: 9.5px; font-family: var(--mono); color: #7f8ba3; background: #0f1620; padding: 0 4px; border-radius: 4px; }
+
+.agent-skills { display: flex; gap: 3px; margin-top: 2px; flex-wrap: wrap; }
+.agent-skill { font-size: 9.5px; line-height: 1.4; padding: 0 5px; border-radius: 4px; background: #18202d; border: 1px solid #232f42; color: #8794aa; white-space: nowrap; }
+.agent-skill.is-more { color: #6b7589; border-style: dashed; }
+
+/* --------------------------- Mention popover ---------------------------- */
+.composer-wrap { position: relative; }
+.mention-pop { position: absolute; z-index: 40; width: 290px; max-height: 244px; display: flex; flex-direction: column; background: #111722; border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: var(--shadow-3); overflow: hidden; }
+.mention-pop-head { display: flex; align-items: center; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 10.5px; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.05em; }
+.mention-pop-head span { flex: 1; }
+.mention-pop-head kbd { font-size: 9.5px; padding: 1px 4px; border-radius: 3px; background: #1b2331; border: 1px solid #27313f; color: #8b96a9; }
+.mention-pop ul { overflow-y: auto; padding: 4px; }
+.mention-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 7px; border-radius: 7px; text-align: left; }
+.mention-row.is-on { background: var(--bg-active); box-shadow: inset 0 0 0 1px #2c3f60; }
+.mention-name { flex: 1; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mention-model { font-size: 10px; color: var(--text-mute); font-family: var(--mono); flex-shrink: 0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --------------------------- Addressed-to row --------------------------- */
+.addressed-row { display: flex; align-items: center; gap: 6px; padding: 0 4px 7px; flex-wrap: wrap; }
+.addressed-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-mute); font-weight: 600; }
+.addressed-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 11.5px; border-radius: 20px; border: 1px solid; background: rgba(255, 255, 255, 0.03); transition: background 0.15s; }
+.addressed-chip:hover { background: rgba(255, 255, 255, 0.08); }
+.addressed-hint { font-size: 10.5px; color: var(--text-mute); font-style: italic; }
+
+/* ------------------------ Mentions inside a bubble ---------------------- */
+.msg-badge.is-directed { color: #9fb4e0; border: 1px solid #2f4160; background: rgba(124, 156, 255, 0.08); }
+.msg-mentions { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 4px 2px; }
+.msg-mention-chip { font-size: 10.5px; padding: 1px 6px; border-radius: 5px; border: 1px solid; background: rgba(255, 255, 255, 0.02); font-family: var(--mono); }
+.msg-mention-chip:hover { background: rgba(255, 255, 255, 0.07); }
+
+/* ------------------------------- Responsive ----------------------------- */
+@media (max-width: 720px) {
+  .tpl-split { grid-template-columns: 1fr; min-height: 0; }
+  .tpl-detail { max-height: none; }
+  .tpl-list { max-height: 240px; }
+  .mention-pop { width: min(290px, calc(100vw - 40px)); }
+}

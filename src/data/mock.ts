@@ -17,6 +17,11 @@ export const seedAgents: Agent[] = [
     model: 'gpt-4o-mini',
     systemPrompt:
       'You are Scout, a research agent. You find primary sources, summarise them tightly, and always cite where a fact came from.',
+    skills: [
+      { key: 'research', label: 'Research', level: 5 },
+      { key: 'sourcing', label: 'Source finding', level: 5 },
+      { key: 'synthesis', label: 'Synthesis', level: 4 },
+    ],
     createdAt: Date.now() - 1000 * 60 * 60 * 24 * 12,
   },
   {
@@ -29,6 +34,11 @@ export const seedAgents: Agent[] = [
     model: 'qwen2.5-coder:32b',
     systemPrompt:
       'You are Atlas, a senior software engineer. You write small, readable diffs and explain trade-offs before recommending one.',
+    skills: [
+      { key: 'typescript', label: 'TypeScript', level: 5 },
+      { key: 'api-design', label: 'API design', level: 4 },
+      { key: 'system-design', label: 'System design', level: 4 },
+    ],
     createdAt: Date.now() - 1000 * 60 * 60 * 24 * 11,
   },
   {
@@ -41,6 +51,11 @@ export const seedAgents: Agent[] = [
     model: 'claude-sonnet-4',
     systemPrompt:
       'You are Pixel, a product designer. You care about spacing, contrast and states: hover, focus, empty, error.',
+    skills: [
+      { key: 'ux', label: 'UX flows', level: 5 },
+      { key: 'ui', label: 'UI design', level: 4 },
+      { key: 'design-systems', label: 'Design systems', level: 4 },
+    ],
     createdAt: Date.now() - 1000 * 60 * 60 * 24 * 9,
   },
   {
@@ -53,6 +68,11 @@ export const seedAgents: Agent[] = [
     model: 'llama3.1:70b',
     systemPrompt:
       'You are Sage, an editor. You cut filler, prefer concrete verbs, and keep the reader’s attention on one idea per paragraph.',
+    skills: [
+      { key: 'editing', label: 'Editing', level: 5 },
+      { key: 'style', label: 'Style & voice', level: 4 },
+      { key: 'structure', label: 'Structure', level: 4 },
+    ],
     createdAt: Date.now() - 1000 * 60 * 60 * 24 * 6,
   },
 ];

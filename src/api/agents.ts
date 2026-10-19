@@ -37,6 +37,12 @@ export interface SendOptions {
   conversationName: string;
   /** Display names of the other agents in a channel — useful for routing. */
   otherAgents?: { id: string; name: string }[];
+  /**
+   * True when the user addressed this agent with an `@mention` rather than
+   * broadcasting to the whole room. Servers can use it to skip the
+   * "should I answer?" deliberation entirely.
+   */
+  directed?: boolean;
   /** Abort a slow request (e.g. user switched conversations). */
   signal?: AbortSignal;
 }
@@ -60,6 +66,8 @@ export interface AgentRequest {
     name: string;
     members: { id: string; name: string }[];
   };
+  /** Present only on directed (@mention) messages. */
+  directed?: boolean;
 }
 
 /* ---------------------------------------------------------------------------
@@ -91,6 +99,7 @@ export function buildRequest(
       name: options.conversationName,
       members: (options.otherAgents ?? []).map((a) => ({ id: a.id, name: a.name })),
     },
+    ...(options.directed ? { directed: true } : {}),
   };
 }
 
@@ -196,10 +205,28 @@ async function callMock(agent: Agent, options: SendOptions): Promise<string> {
   if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const pool = MOCK_REPLIES[agent.name] ?? MOCK_REPLIES._default;
-  const reply = pick(pool);
+  let reply = pick(pool);
+
+  // Agents created from a template answer in-character: they name the skills
+  // they are applying, which are derived from the template, never random.
+  const topSkills = (agent.skills ?? [])
+    .slice()
+    .sort((a, b) => b.level - a.level)
+    .slice(0, 2)
+    .map((s) => s.label);
+
+  if (agent.origin && topSkills.length > 0) {
+    reply = `Coming at this as ${agent.origin.role.toLowerCase()} \u2014 ${topSkills.join(
+      ' and ',
+    )}.\n\n${reply}`;
+  }
+
+  if (options.directed) {
+    reply = `Thanks for the direct ask.\n\n${reply}`;
+  }
 
   if (agent.status === 'offline') {
-    return `⚠️ _${agent.name} looks offline in this mock run — a real endpoint would fail here._\n\n${reply}`;
+    return `\u26a0\ufe0f _${agent.name} looks offline in this mock run \u2014 a real endpoint would fail here._\n\n${reply}`;
   }
   return reply;
 }

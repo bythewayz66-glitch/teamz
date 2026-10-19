@@ -2,8 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation, Message } from '../types';
 import { AgentAvatar, StatusDot } from './Avatar';
 import { RichText } from './RichText';
-import { HashIcon, SendIcon, SettingsIcon, TrashIcon, UsersIcon, CloseIcon } from './Icons';
+import { MentionAutocomplete } from './MentionAutocomplete';
+import {
+  ChatIcon,
+  CloseIcon,
+  HashIcon,
+  SendIcon,
+  SettingsIcon,
+  TrashIcon,
+  UsersIcon,
+} from './Icons';
 import { formatDayLabel, formatTime, isNewDay } from '../lib/format';
+import { activeQuery, applyMention, parseMentions, rankMentions } from '../lib/mentions';
 
 interface ChatPaneProps {
   conversation: Conversation | null;
@@ -15,6 +25,8 @@ interface ChatPaneProps {
   onOpenAgentSettings: (agentId: string) => void;
   onManageMembers: () => void;
   onDeleteConversation: () => void;
+  /** Jump to the 1:1 DM with an agent (sidebar members list, mention chips). */
+  onOpenDirectChat: (agentId: string) => void;
   apiMode: string;
 }
 
@@ -28,12 +40,20 @@ export function ChatPane({
   onOpenAgentSettings,
   onManageMembers,
   onDeleteConversation,
+  onOpenDirectChat,
   apiMode,
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
   const [showMembers, setShowMembers] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** The `@…` token being typed, or null when the popover is closed. */
+  const [mentionToken, setMentionToken] = useState<{
+    query: string;
+    start: number;
+    end: number;
+  } | null>(null);
 
   const members = useMemo(
     () =>
@@ -54,7 +74,85 @@ export function ChatPane({
   useEffect(() => {
     setDraft('');
     setShowMembers(false);
+    setMentionToken(null);
   }, [conversation?.id]);
+
+  /* ---------------------------- @mention state ---------------------------- */
+
+  const mentions = useMemo(
+    () => (mentionToken ? rankMentions(mentionToken.query, members) : []),
+    [mentionToken, members],
+  );
+
+  // A stale highlight would point past the end of a shrinking list.
+  useEffect(() => {
+    if (mentionIndex >= mentions.length) setMentionIndex(0);
+  }, [mentions.length, mentionIndex]);
+
+  /** Recompute the token from the caret. Called on every keystroke and caret move. */
+  const syncMention = (value: string, caret: number) => {
+    const token = activeQuery(value, caret);
+    setMentionToken(token);
+    if (!token) setMentionIndex(0);
+  };
+
+  const commitMention = (agent: Agent) => {
+    const el = textareaRef.current;
+    const token = mentionToken ?? (el ? activeQuery(draft, el.selectionStart ?? draft.length) : null);
+    if (!token) return;
+
+    const { text, caret } = applyMention(draft, token, agent.name);
+    setDraft(text);
+    setMentionToken(null);
+    setMentionIndex(0);
+
+    // Restore the caret after the committed mention, next frame so the value
+    // has already been applied to the textarea.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    });
+  };
+
+  /**
+   * Returns true when the key was consumed by the popover, so the caller knows
+   * not to also send the message.
+   */
+  const handleMentionKeys = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (!mentionToken || mentions.length === 0) {
+      // Esc closes an open popover even when the list is empty.
+      if (e.key === 'Escape' && mentionToken) {
+        setMentionToken(null);
+        return true;
+      }
+      return false;
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setMentionIndex((i) => (i + 1) % mentions.length);
+      return true;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setMentionIndex((i) => (i - 1 + mentions.length) % mentions.length);
+      return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      commitMention(mentions[mentionIndex] ?? mentions[0]);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setMentionToken(null);
+      return true;
+    }
+    return false;
+  };
 
   const autoGrow = () => {
     const el = textareaRef.current;
@@ -68,10 +166,17 @@ export function ChatPane({
     if (!text || !canReply) return;
     onSend(text);
     setDraft('');
+    setMentionToken(null);
     requestAnimationFrame(() => {
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
     });
   };
+
+  /** Who the current draft will reach — mirrors the store's routing rule. */
+  const addressed = useMemo(() => {
+    if (!conversation || conversation.kind !== 'channel') return [];
+    return parseMentions(draft, members);
+  }, [draft, conversation, members]);
 
   if (!conversation) {
     return (
@@ -173,8 +278,16 @@ export function ChatPane({
                 <AgentAvatar agent={a} size={28} showStatus={a.status} />
                 <span className="mp-text">
                   <span className="mp-name">{a.name}</span>
-                  <span className="mp-model">{a.model}</span>
+                  <span className="mp-model">{a.origin?.role ?? a.model}</span>
                 </span>
+                <button
+                  className="icon-btn ghost"
+                  onClick={() => onOpenDirectChat(a.id)}
+                  title={`Message ${a.name} directly`}
+                  aria-label={`Message ${a.name} directly`}
+                >
+                  <ChatIcon size={13} />
+                </button>
                 <button
                   className="icon-btn ghost"
                   onClick={() => onOpenAgentSettings(a.id)}
@@ -242,9 +355,17 @@ export function ChatPane({
                 <MessageRow
                   message={m}
                   agent={agent}
+                  mentioned={
+                    m.mentions
+                      ? m.mentions
+                          .map((id) => agentsById.get(id))
+                          .filter((a): a is Agent => Boolean(a))
+                      : []
+                  }
                   isChannel={isChannel}
                   grouped={Boolean(groupedWithPrev)}
                   onOpenAgentSettings={onOpenAgentSettings}
+                  onOpenDirectChat={onOpenDirectChat}
                 />
               </div>
             );
@@ -271,21 +392,64 @@ export function ChatPane({
       </div>
 
       <div className="composer-wrap">
+        {mentionToken && mentions.length > 0 && (
+          <MentionAutocomplete
+            agents={mentions}
+            activeIndex={mentionIndex}
+            onHover={setMentionIndex}
+            onPick={commitMention}
+            top={0}
+            left={12}
+          />
+        )}
+
+        {addressed.length > 0 && (
+          <div className="addressed-row">
+            <span className="addressed-label">Directed to</span>
+            {addressed.map((a) => (
+              <button
+                key={a.id}
+                className="addressed-chip"
+                style={{ borderColor: `${a.accent}59`, color: a.accent }}
+                onClick={() => onOpenDirectChat(a.id)}
+                title={`Open the DM with ${a.name}`}
+              >
+                {a.emoji} {a.name}
+              </button>
+            ))}
+            <span className="addressed-hint">only these answer</span>
+          </div>
+        )}
+
         <div className={`composer${canReply ? '' : ' is-disabled'}`}>
           <textarea
             ref={textareaRef}
             value={draft}
             onChange={(e) => {
               setDraft(e.target.value);
+              syncMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
               autoGrow();
             }}
             onKeyDown={(e) => {
+              // The popover gets first refusal on arrows / Enter / Esc.
+              if (handleMentionKeys(e)) return;
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 submit();
               }
             }}
-            placeholder={canReply ? `Message ${conversation.name}…` : 'Add an agent to start talking'}
+            onClick={(e) =>
+              syncMention(draft, (e.target as HTMLTextAreaElement).selectionStart ?? 0)
+            }
+            onBlur={() => {
+              // Let a mousedown-selection land before closing.
+              setTimeout(() => setMentionToken(null), 120);
+            }}
+            placeholder={
+              canReply
+                ? `Message ${conversation.name}… type @ to address one agent`
+                : 'Add an agent to start talking'
+            }
             rows={1}
             disabled={!canReply}
             aria-label="Message composer"
@@ -296,7 +460,8 @@ export function ChatPane({
         </div>
         <div className="composer-foot">
           <span>
-            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·{' '}
+            <kbd>@</kbd> to address an agent
           </span>
           <span className={`mode-pill${apiMode === 'live' ? ' is-live' : ''}`}>
             {apiMode === 'live' ? 'live endpoints' : 'mock mode'}
@@ -310,15 +475,19 @@ export function ChatPane({
 function MessageRow({
   message,
   agent,
+  mentioned,
   isChannel,
   grouped,
   onOpenAgentSettings,
+  onOpenDirectChat,
 }: {
   message: Message;
   agent?: Agent;
+  mentioned: Agent[];
   isChannel: boolean;
   grouped: boolean;
   onOpenAgentSettings: (agentId: string) => void;
+  onOpenDirectChat: (agentId: string) => void;
 }) {
   const isUser = message.authorType === 'user';
   const isPending = message.status === 'pending';
@@ -351,7 +520,26 @@ function MessageRow({
                 agent
               </span>
             )}
+            {isUser && mentioned.length > 0 && (
+              <span className="msg-badge is-directed">directed</span>
+            )}
             <span className="msg-time">{formatTime(message.createdAt)}</span>
+          </div>
+        )}
+
+        {isUser && mentioned.length > 0 && (
+          <div className="msg-mentions">
+            {mentioned.map((a) => (
+              <button
+                key={a.id}
+                className="msg-mention-chip"
+                style={{ borderColor: `${a.accent}4d`, color: a.accent }}
+                onClick={() => onOpenDirectChat(a.id)}
+                title={`Open the DM with ${a.name}`}
+              >
+                @{a.name}
+              </button>
+            ))}
           </div>
         )}
 

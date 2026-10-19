@@ -1,6 +1,18 @@
 /** Core domain types for the teamz workspace. */
 
+import type { Skill } from './data/templates/catalog';
+
 export type AgentStatus = 'online' | 'busy' | 'offline';
+
+/** Which agent template an agent was instantiated from, if any. */
+export interface AgentOrigin {
+  /** Template id, e.g. `frontend-engineer:senior`. */
+  templateId: string;
+  /** Role family slug, e.g. `frontend-engineer`. */
+  familySlug: string;
+  /** Human role label at creation time, e.g. "Frontend Engineer". */
+  role: string;
+}
 
 /** A single AI agent the user runs on their own infrastructure. */
 export interface Agent {
@@ -18,6 +30,10 @@ export interface Agent {
   model: string;
   /** System prompt / operating instructions for this agent. */
   systemPrompt: string;
+  /** Skills derived from the template this agent came from. */
+  skills: Skill[];
+  /** Provenance — absent for hand-made agents. */
+  origin?: AgentOrigin;
   createdAt: number;
 }
 
@@ -48,6 +64,14 @@ export interface Message {
   text: string;
   createdAt: number;
   status: MessageStatus;
+  /**
+   * Agent ids this message was addressed to via `@mention`.
+   * Present (and non-empty) only on user messages that contain mentions —
+   * that is what makes the message "directed" rather than a broadcast.
+   */
+  mentions?: string[];
+  /** True when a user message in a channel is a DM-style aside to one agent. */
+  directed?: boolean;
 }
 
 export interface WorkspaceState {
