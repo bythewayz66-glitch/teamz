@@ -18,6 +18,10 @@ export interface Agent {
   model: string;
   /** System prompt / operating instructions for this agent. */
   systemPrompt: string;
+  /** Capabilities copied over from the template this agent was created from. */
+  skills?: AgentSkill[];
+  /** Id of the catalog template this agent was instantiated from, if any. */
+  templateId?: string;
   createdAt: number;
 }
 
@@ -56,4 +60,46 @@ export interface WorkspaceState {
   /** Messages keyed by conversation id, oldest first. */
   messages: Record<string, Message[]>;
   activeConversationId: string | null;
+}
+
+/* ---------------------------------------------------------------------------
+ * Template catalog — a library of pre-seeded agent definitions.
+ *
+ * Templates are inert data: nothing here runs until the user picks one and
+ * `instantiateTemplate()` turns it into a real Agent in the workspace.
+ * ------------------------------------------------------------------------- */
+
+/** The broad domains templates are grouped into. */
+export type TemplateCategory =
+  | 'engineering'
+  | 'design'
+  | 'product'
+  | 'data'
+  | 'research'
+  | 'marketing'
+  | 'sales'
+  | 'support'
+  | 'finance'
+  | 'legal'
+  | 'people'
+  | 'operations'
+  | 'education'
+  | 'health'
+  | 'creative';
+
+/**
+ * One named capability a template ships with.
+ *
+ * Skills are descriptive for now — they tell the user (and the request body in
+ * `src/api/agents.ts`) what this agent is equipped to do. Wiring them to actual
+ * tools is a server-side concern.
+ */
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  /** Domain the skill belongs to; usually the template's own category. */
+  category: TemplateCategory;
+  /** Extra search terms, not shown in the UI. */
+  tags?: string[];
 }

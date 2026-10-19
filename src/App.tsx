@@ -38,6 +38,16 @@ export default function App() {
     ws.openDirectChat(agent.id);
   };
 
+  /**
+   * Template pick: the store instantiates it, adds the agent and focuses its
+   * new 1:1 conversation in one step.
+   */
+  const handleCreateFromTemplate = (templateId: string) => {
+    ws.createAgentFromTemplate(templateId);
+    setSettingsAgentId(null);
+    setSidebarOpen(false);
+  };
+
   return (
     <div className={`app-shell${sidebarOpen ? ' sidebar-open' : ''}`}>
       <div
@@ -103,6 +113,7 @@ export default function App() {
         open={showNewAgent}
         onClose={() => setShowNewAgent(false)}
         onCreate={handleCreateAgent}
+        onCreateFromTemplate={handleCreateFromTemplate}
       />
 
       <ChannelDialog

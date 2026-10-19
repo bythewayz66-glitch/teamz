@@ -2,16 +2,24 @@ import { useEffect, useState } from 'react';
 import type { Agent } from '../types';
 import { Modal, Field } from './Modal';
 import { AgentAvatar } from './Avatar';
-import { PlusIcon } from './Icons';
+import { PlusIcon, SparkIcon } from './Icons';
+import { TemplatePicker } from './TemplatePicker';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
+import type { AgentTemplate } from '../data/templates';
 
 interface NewAgentDialogProps {
   open: boolean;
   onClose: () => void;
   onCreate: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => void;
+  /** Creates an agent from a catalogue template. Falls back to `onCreate` when absent. */
+  onCreateFromTemplate?: (templateId: string) => void;
 }
 
-export function NewAgentDialog({ open, onClose, onCreate }: NewAgentDialogProps) {
+type Mode = 'template' | 'manual';
+
+export function NewAgentDialog({ open, onClose, onCreate, onCreateFromTemplate }: NewAgentDialogProps) {
+  const [mode, setMode] = useState<Mode>('template');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [emoji, setEmoji] = useState(EMOJI_PALETTE[4]);
   const [accent, setAccent] = useState(ACCENT_PALETTE[0]);
@@ -21,6 +29,8 @@ export function NewAgentDialog({ open, onClose, onCreate }: NewAgentDialogProps)
 
   useEffect(() => {
     if (!open) return;
+    setMode('template');
+    setSelectedId(null);
     setName('');
     setEmoji(EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)]);
     setAccent(ACCENT_PALETTE[Math.floor(Math.random() * ACCENT_PALETTE.length)]);
@@ -41,25 +51,74 @@ export function NewAgentDialog({ open, onClose, onCreate }: NewAgentDialogProps)
     onClose();
   };
 
+  /** Template path: hand the id to the store and close; nothing is pre-built. */
+  const createFromTemplate = (template: AgentTemplate) => {
+    if (onCreateFromTemplate) {
+      onCreateFromTemplate(template.id);
+    } else {
+      onCreate({
+        name: template.name,
+        emoji: template.emoji,
+        accent: template.accent,
+        endpointUrl: 'http://localhost:8001/chat',
+        model: template.model,
+        systemPrompt: template.systemPrompt,
+        skills: template.skills.map((s) => ({ ...s })),
+        templateId: template.id,
+      });
+    }
+    onClose();
+  };
+
+  const footer =
+    mode === 'template' ? (
+      <>
+        <div className="foot-left">
+          <button className="btn ghost sm" onClick={() => setMode('manual')}>
+            Build from scratch
+          </button>
+        </div>
+        <div className="foot-right">
+          <button className="btn ghost sm" onClick={onClose}>Cancel</button>
+        </div>
+      </>
+    ) : (
+      <>
+        <div className="foot-left">
+          <button className="btn ghost sm" onClick={() => setMode('template')}>
+            <SparkIcon size={14} /> Browse templates
+          </button>
+        </div>
+        <div className="foot-right">
+          <button className="btn ghost sm" onClick={onClose}>Cancel</button>
+          <button className="btn primary sm" onClick={create}>
+            <PlusIcon size={14} /> Create agent
+          </button>
+        </div>
+      </>
+    );
+
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="New agent"
-      subtitle="An agent is just a name, an endpoint and a prompt. Nothing else is required."
-      width={540}
-      footer={
-        <>
-          <div className="foot-left" />
-          <div className="foot-right">
-            <button className="btn ghost sm" onClick={onClose}>Cancel</button>
-            <button className="btn primary sm" onClick={create}>
-              <PlusIcon size={14} /> Create agent
-            </button>
-          </div>
-        </>
+      title={mode === 'template' ? 'New agent' : 'New agent — from scratch'}
+      subtitle={
+        mode === 'template'
+          ? 'Pick a pre-built agent. Templates are instantiated on demand — nothing is created until you choose.'
+          : 'An agent is just a name, an endpoint and a prompt. Nothing else is required.'
       }
+      width={mode === 'template' ? 760 : 540}
+      footer={footer}
     >
+      {mode === 'template' ? (
+        <TemplatePicker
+          selectedId={selectedId}
+          onSelect={(t) => setSelectedId(t?.id ?? null)}
+          onCreate={createFromTemplate}
+        />
+      ) : (
+        <>
       <div className="settings-preview">
         <AgentAvatar agent={{ name, emoji, accent }} size={52} />
         <div>
@@ -134,6 +193,8 @@ export function NewAgentDialog({ open, onClose, onCreate }: NewAgentDialogProps)
           placeholder="You are a helpful agent that…"
         />
       </Field>
+        </>
+      )}
     </Modal>
   );
 }

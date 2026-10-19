@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation, Message, WorkspaceState } from '../types';
 import { seedState, ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
 import { sendToAgent } from '../api/agents';
+import { instantiateTemplate } from '../data/templates';
 
 const STORAGE_KEY = 'teamz:workspace:v1';
 
@@ -39,6 +40,10 @@ export interface UseWorkspace {
   setActiveConversation: (id: string) => void;
   sendMessage: (text: string) => Promise<void>;
   createAgent: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => Agent;
+  /** Instantiate a catalogue template into a real agent and open its chat. */
+  createAgentFromTemplate: (templateId: string, overrides?: Partial<Agent>) => Agent;
+  /** Add an already-built agent (e.g. from `instantiateTemplate`). */
+  addAgent: (agent: Agent) => Agent;
   updateAgent: (id: string, patch: Partial<Agent>) => void;
   deleteAgent: (id: string) => void;
   createChannel: (name: string, agentIds: string[], topic?: string) => Conversation;
@@ -190,17 +195,11 @@ export function useWorkspace(): UseWorkspace {
     [activeConversation, activeMessages, agentsById, appendMessage, patchMessage],
   );
 
-  const createAgent = useCallback((input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => {
-    const index = Math.floor(Math.random() * ACCENT_PALETTE.length);
-    const agent: Agent = {
-      ...input,
-      emoji: input.emoji || EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)],
-      accent: input.accent || ACCENT_PALETTE[index],
-      id: uid('agent'),
-      status: 'online',
-      createdAt: Date.now(),
-    };
-
+  /**
+   * Adds an agent plus its 1:1 conversation and focuses it.
+   * Shared by `createAgent` and the template path so both behave identically.
+   */
+  const addAgent = useCallback((agent: Agent) => {
     setState((s) => {
       const direct: Conversation = {
         id: uid('conv'),
@@ -217,9 +216,37 @@ export function useWorkspace(): UseWorkspace {
         activeConversationId: direct.id,
       };
     });
-
     return agent;
   }, []);
+
+  const createAgent = useCallback((input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => {
+    const index = Math.floor(Math.random() * ACCENT_PALETTE.length);
+    const agent: Agent = {
+      ...input,
+      emoji: input.emoji || EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)],
+      accent: input.accent || ACCENT_PALETTE[index],
+      id: uid('agent'),
+      status: 'online',
+      createdAt: Date.now(),
+    };
+
+    addAgent(agent);
+    return agent;
+  }, [addAgent]);
+
+  const createAgentFromTemplate = useCallback(
+    (templateId: string, overrides: Partial<Agent> = {}) => {
+      const draft = instantiateTemplate(templateId, {
+        model: overrides.model,
+        endpointUrl: overrides.endpointUrl,
+        name: overrides.name,
+      });
+      const agent: Agent = { ...draft, ...overrides, id: draft.id };
+      addAgent(agent);
+      return agent;
+    },
+    [addAgent],
+  );
 
   const updateAgent = useCallback((id: string, patch: Partial<Agent>) => {
     setState((s) => {
@@ -349,6 +376,8 @@ export function useWorkspace(): UseWorkspace {
     setActiveConversation,
     sendMessage,
     createAgent,
+    createAgentFromTemplate,
+    addAgent,
     updateAgent,
     deleteAgent,
     createChannel,
