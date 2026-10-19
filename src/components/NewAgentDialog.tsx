@@ -1,30 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Agent, Conversation } from '../types';
 import { Modal, Field } from './Modal';
 import { AgentAvatar } from './Avatar';
-import { CheckIcon, HashIcon, PlusIcon, SearchIcon, SparkIcon } from './Icons';
+import { CheckIcon, HashIcon, PlusIcon, SparkIcon } from './Icons';
+import { TemplatePicker } from './TemplatePicker';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
-import {
-  AGENT_TEMPLATES,
-  ROLE_FAMILIES,
-  SENIORITIES,
-  TEMPLATE_GROUPS,
-  searchTemplates,
-  type AgentTemplate,
-  type Seniority,
-} from '../data/templates/catalog';
+import { getCatalogueSummary, type AgentTemplate } from '../data/templates';
 
 interface NewAgentDialogProps {
   open: boolean;
   onClose: () => void;
   /** Hand-made agent (blank form). */
   onCreate: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => void;
-  /** Template agent: created AND invited into `room`. */
+  /** Template agent: created AND invited into the current room. */
   onCreateFromTemplate: (templateId: string, name?: string) => void;
   /** Room the new agent will be invited into. */
   room: Conversation | null;
-  /** How many templates the catalog currently holds (shown in the header). */
-  templateCount?: number;
 }
 
 type Tab = 'templates' | 'custom';
@@ -35,15 +26,11 @@ export function NewAgentDialog({
   onCreate,
   onCreateFromTemplate,
   room,
-  templateCount = AGENT_TEMPLATES.length,
 }: NewAgentDialogProps) {
   const [tab, setTab] = useState<Tab>('templates');
 
   /* ----------------------------- template tab ----------------------------- */
-  const [query, setQuery] = useState('');
-  const [group, setGroup] = useState<string>('All');
-  const [seniority, setSeniority] = useState<Seniority | 'any'>('any');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<AgentTemplate | null>(null);
   const [overrideName, setOverrideName] = useState('');
 
   /* ------------------------------ custom tab ------------------------------ */
@@ -54,13 +41,12 @@ export function NewAgentDialog({
   const [model, setModel] = useState('gpt-4o-mini');
   const [systemPrompt, setSystemPrompt] = useState('');
 
+  const [summary] = useState(getCatalogueSummary);
+
   useEffect(() => {
     if (!open) return;
     setTab('templates');
-    setQuery('');
-    setGroup('All');
-    setSeniority('any');
-    setSelectedId(null);
+    setSelected(null);
     setOverrideName('');
 
     setName('');
@@ -71,30 +57,15 @@ export function NewAgentDialog({
     setSystemPrompt('');
   }, [open]);
 
-  const results = useMemo(() => {
-    // `searchTemplates` already ranks; the group/seniority filters narrow it.
-    const base = query.trim() ? searchTemplates(query, 500) : AGENT_TEMPLATES;
-    return base.filter(
-      (t) =>
-        (group === 'All' || t.group === group) &&
-        (seniority === 'any' || t.seniority === seniority),
-    );
-  }, [query, group, seniority]);
-
-  const selected = useMemo(
-    () => (selectedId ? AGENT_TEMPLATES.find((t) => t.id === selectedId) ?? null : null),
-    [selectedId],
-  );
-
-  const pickTemplate = (template: AgentTemplate) => {
-    setSelectedId(template.id);
-    setOverrideName(template.name);
+  const handleSelect = (template: AgentTemplate | null) => {
+    setSelected(template);
+    if (template) setOverrideName(template.name);
   };
 
-  const instantiate = () => {
-    if (!selected) return;
-    const finalName = overrideName.trim() || selected.name;
-    onCreateFromTemplate(selected.id, finalName === selected.name ? undefined : finalName);
+  const instantiate = (template: AgentTemplate | null = selected) => {
+    if (!template) return;
+    const finalName = overrideName.trim() || template.name;
+    onCreateFromTemplate(template.id, finalName === template.name ? undefined : finalName);
     onClose();
   };
 
@@ -124,10 +95,10 @@ export function NewAgentDialog({
       title="Add an agent"
       subtitle={
         tab === 'templates'
-          ? `${templateCount} templates. Pick a role and it joins ${roomLabel} as a member, with the skills of that role.`
+          ? `${summary.templates} templates across ${summary.categories} categories. Pick a role and it joins ${roomLabel} as a member, with the skills of that role.`
           : 'An agent is just a name, an endpoint and a prompt. Nothing else is required.'
       }
-      width={780}
+      width={820}
       footer={
         <>
           <div className="foot-left">
@@ -142,7 +113,7 @@ export function NewAgentDialog({
               Cancel
             </button>
             {tab === 'templates' ? (
-              <button className="btn primary sm" onClick={instantiate} disabled={!selected}>
+              <button className="btn primary sm" onClick={() => instantiate()} disabled={!selected}>
                 <PlusIcon size={14} /> Create &amp; invite
               </button>
             ) : (
@@ -162,7 +133,7 @@ export function NewAgentDialog({
           aria-selected={tab === 'templates'}
         >
           <SparkIcon size={14} /> From a template
-          <span className="tab-count">{templateCount}</span>
+          <span className="tab-count">{summary.templates}</span>
         </button>
         <button
           className={`tab${tab === 'custom' ? ' is-on' : ''}`}
@@ -176,143 +147,29 @@ export function NewAgentDialog({
 
       {tab === 'templates' ? (
         <>
-          <div className="tpl-search">
-            <SearchIcon size={14} />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search 500 templates — try \u201creact\u201d, \u201cseo\u201d, \u201ckubernetes\u201d…"
-              aria-label="Search templates"
-              autoFocus
-            />
-            {query && (
-              <button className="tpl-clear" onClick={() => setQuery('')} aria-label="Clear search">
-                ×
-              </button>
-            )}
-          </div>
+          <TemplatePicker
+            selectedId={selected?.id ?? null}
+            onSelect={handleSelect}
+            onCreate={instantiate}
+          />
 
-          <div className="tpl-filters">
-            <div className="filter-chips">
-              <button
-                className={`chip${group === 'All' ? ' is-on' : ''}`}
-                onClick={() => setGroup('All')}
-              >
-                All
-              </button>
-              {TEMPLATE_GROUPS.map((g) => (
-                <button
-                  key={g}
-                  className={`chip${group === g ? ' is-on' : ''}`}
-                  onClick={() => setGroup(g)}
-                >
-                  {g}
-                </button>
-              ))}
+          {selected && (
+            <div className="tpl-invite-row">
+              <Field label="Name">
+                <input
+                  value={overrideName}
+                  onChange={(e) => setOverrideName(e.target.value)}
+                  placeholder={selected.name}
+                  onKeyDown={(e) => e.key === 'Enter' && instantiate()}
+                />
+              </Field>
+
+              <div className="tpl-invite-note">
+                <CheckIcon size={13} />
+                Creates the agent and invites it into <strong>{roomLabel}</strong>.
+              </div>
             </div>
-            <select
-              className="tpl-select"
-              value={seniority}
-              onChange={(e) => setSeniority(e.target.value as Seniority | 'any')}
-              aria-label="Filter by seniority"
-            >
-              <option value="any">Any level</option>
-              {SENIORITIES.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="tpl-split">
-            <ul className="tpl-list" aria-label="Templates">
-              {results.map((t) => {
-                const family = ROLE_FAMILIES.find((f) => f.slug === t.familySlug);
-                return (
-                  <li key={t.id}>
-                    <button
-                      className={`tpl-item${selectedId === t.id ? ' is-on' : ''}`}
-                      onClick={() => pickTemplate(t)}
-                    >
-                      <span className="tpl-emoji">{t.emoji}</span>
-                      <span className="tpl-item-text">
-                        <span className="tpl-name">{t.name}</span>
-                        <span className="tpl-group">{t.group}</span>
-                      </span>
-                      {family?.aliases?.length ? (
-                        <span className="tpl-alias">{family.aliases[0]}</span>
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-              {results.length === 0 && (
-                <li className="rail-empty">No templates match “{query}”.</li>
-              )}
-            </ul>
-
-            <div className="tpl-detail">
-              {selected ? (
-                <>
-                  <div className="tpl-detail-head">
-                    <AgentAvatar
-                      agent={{ name: selected.name, emoji: selected.emoji, accent: accent }}
-                      size={48}
-                    />
-                    <div>
-                      <strong>{selected.name}</strong>
-                      <span>
-                        {selected.group} · {selected.model}
-                      </span>
-                    </div>
-                  </div>
-
-                  <p className="tpl-blurb">{selected.blurb}</p>
-
-                  <div className="tpl-section">
-                    <span className="tpl-section-label">Skills it inherits</span>
-                    <div className="skill-chips">
-                      {selected.skills.map((skill) => (
-                        <span key={skill.key} className="skill-chip" title={`depth ${skill.level}/5`}>
-                          {skill.label}
-                          <em>{skill.level}</em>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="tpl-section">
-                    <span className="tpl-section-label">Picks up</span>
-                    <ul className="tpl-duties">
-                      {selected.duties.map((d) => (
-                        <li key={d}>{d}</li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <Field label="Name">
-                    <input
-                      value={overrideName}
-                      onChange={(e) => setOverrideName(e.target.value)}
-                      placeholder={selected.name}
-                      onKeyDown={(e) => e.key === 'Enter' && instantiate()}
-                    />
-                  </Field>
-
-                  <div className="tpl-invite-note">
-                    <CheckIcon size={13} />
-                    Creates the agent and invites it into <strong>{roomLabel}</strong>.
-                  </div>
-                </>
-              ) : (
-                <div className="tpl-detail-empty">
-                  <span className="empty-glyph">✨</span>
-                  <p>Pick a template on the left to see its skills.</p>
-                </div>
-              )}
-            </div>
-          </div>
+          )}
         </>
       ) : (
         <>

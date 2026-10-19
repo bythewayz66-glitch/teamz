@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation, Message, WorkspaceState } from '../types';
 import { seedState, ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
-import { TEMPLATE_BY_ID, skillsFor, type AgentTemplate } from '../data/templates/catalog';
+import {
+  getTemplateById,
+  instantiateTemplate,
+  type AgentTemplate,
+} from '../data/templates';
 import { parseMentions } from '../lib/mentions';
 import { sendToAgent } from '../api/agents';
 
@@ -41,24 +45,27 @@ function loadState(): WorkspaceState {
   }
 }
 
-/** Build a ready-to-insert agent from a catalog template. */
+/**
+ * Build a ready-to-insert agent from a catalogue template.
+ *
+ * The heavy lifting (id, skills, provenance) lives in `instantiateTemplate`,
+ * so the picker and the store can never drift apart. This wrapper only adds
+ * the two things the store owns: a local-looking endpoint and a tint.
+ */
 export function agentFromTemplate(
   template: AgentTemplate,
-  tint: { accent?: string; emoji?: string } = {},
+  tint: { accent?: string; emoji?: string; name?: string } = {},
 ): Omit<Agent, 'id' | 'createdAt' | 'status'> {
+  const built = instantiateTemplate(template.id, { name: tint.name });
   return {
-    name: template.name,
-    emoji: tint.emoji ?? template.emoji,
-    accent: tint.accent ?? ACCENT_PALETTE[0],
+    name: built.name,
+    emoji: tint.emoji ?? built.emoji,
+    accent: tint.accent ?? built.accent,
     endpointUrl: `http://localhost:${8100 + Math.floor(Math.random() * 800)}/chat`,
-    model: template.model,
-    systemPrompt: template.systemPrompt,
-    skills: skillsFor(template.familySlug, template.seniority),
-    origin: {
-      templateId: template.id,
-      familySlug: template.familySlug,
-      role: template.role,
-    },
+    model: built.model,
+    systemPrompt: built.systemPrompt,
+    skills: built.skills,
+    origin: built.origin,
   };
 }
 
@@ -326,7 +333,7 @@ export function useWorkspace(): UseWorkspace {
 
   const createAgentFromTemplate = useCallback(
     (templateId: string, options: CreateAgentFromTemplateOptions = {}) => {
-      const template = TEMPLATE_BY_ID.get(templateId);
+      const template = getTemplateById(templateId);
       if (!template) return null;
 
       const input = agentFromTemplate(template, {

@@ -1,17 +1,29 @@
 /** Core domain types for the teamz workspace. */
 
-import type { Skill } from './data/templates/catalog';
-
 export type AgentStatus = 'online' | 'busy' | 'offline';
 
 /** Which agent template an agent was instantiated from, if any. */
 export interface AgentOrigin {
-  /** Template id, e.g. `frontend-engineer:senior`. */
+  /** Template id, e.g. `engineering.senior-frontend-engineer`. */
   templateId: string;
-  /** Role family slug, e.g. `frontend-engineer`. */
+  /** Category / role family the template belongs to, e.g. `engineering`. */
   familySlug: string;
-  /** Human role label at creation time, e.g. "Frontend Engineer". */
+  /** Human role label at creation time, e.g. "Senior Frontend Engineer". */
   role: string;
+}
+
+/**
+ * A capability as it appears on an *agent*, i.e. after a template has been
+ * instantiated. `level` (1 = knows it, 5 = specialist depth) drives chip order
+ * and the in-character intro the mock API writes.
+ */
+export interface AgentSkill {
+  /** Stable machine key, e.g. `react`. */
+  key: string;
+  /** Human label shown on the agent card. */
+  label: string;
+  /** 1 = knows it, 5 = specialist depth. */
+  level: number;
 }
 
 /** A single AI agent the user runs on their own infrastructure. */
@@ -31,7 +43,7 @@ export interface Agent {
   /** System prompt / operating instructions for this agent. */
   systemPrompt: string;
   /** Skills derived from the template this agent came from. */
-  skills: Skill[];
+  skills: AgentSkill[];
   /** Provenance — absent for hand-made agents. */
   origin?: AgentOrigin;
   createdAt: number;
@@ -80,4 +92,43 @@ export interface WorkspaceState {
   /** Messages keyed by conversation id, oldest first. */
   messages: Record<string, Message[]>;
   activeConversationId: string | null;
+}
+
+/* ---------------------------------------------------------------------------
+ * Template catalogue
+ *
+ * A template is inert data: nothing here runs until the user picks one and
+ * `instantiateTemplate()` turns it into a real Agent in the workspace.
+ * ------------------------------------------------------------------------- */
+
+/** The broad domains templates are grouped into — one tab each in the picker. */
+export type TemplateCategory =
+  | 'engineering'
+  | 'design'
+  | 'product'
+  | 'data'
+  | 'research'
+  | 'marketing'
+  | 'sales'
+  | 'support'
+  | 'finance'
+  | 'legal'
+  | 'people'
+  | 'operations'
+  | 'education'
+  | 'health'
+  | 'creative';
+
+/**
+ * A capability as the *catalogue* declares it — described once in `skills.ts`
+ * and referenced by templates by id, so 500 entries never repeat skill prose.
+ */
+export interface CatalogSkill {
+  id: string;
+  name: string;
+  description: string;
+  /** Domain the skill belongs to; usually the template's own category. */
+  category: TemplateCategory;
+  /** Extra search terms, not shown in the UI. */
+  tags?: string[];
 }
