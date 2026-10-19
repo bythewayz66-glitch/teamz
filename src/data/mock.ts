@@ -198,6 +198,9 @@ export const seedState: WorkspaceState = {
   agents: seedAgents,
   conversations: seedConversations,
   messages: seedMessages,
+  // A fresh workspace is unfiltered — the filter map only gains entries once
+  // the user actually narrows a channel.
+  filters: {},
   activeConversationId: CHANNEL_ID,
 };
 

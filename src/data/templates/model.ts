@@ -21,6 +21,14 @@
 
 import type { AgentSkill, CatalogSkill, TemplateCategory } from '../../types';
 import { getSkill } from './skills';
+import {
+  LEADERSHIP_SKILL,
+  PRINCIPAL_SKILL,
+  baseRoleOf,
+  levelAt,
+  seniorityOf,
+  type Seniority,
+} from './seniority';
 
 /** One catalog entry, fully resolved and ready to render or instantiate. */
 export interface AgentTemplate {
@@ -41,6 +49,17 @@ export interface AgentTemplate {
   skills: CatalogSkill[];
   /** Extra search terms — category, synonyms, tools. Not shown in the UI. */
   tags: string[];
+  /**
+   * Level implied by this template's own name. Unmarked names are `mid`.
+   * Derived, never declared — see `./seniority`.
+   */
+  seniority: Seniority;
+  /**
+   * The role with its level marker stripped, e.g. "Frontend Engineer" for
+   * "Senior Frontend Engineer". This is what stays constant across levels, so
+   * it is what the seniority filter groups on.
+   */
+  baseRole: string;
 }
 
 /** What a category file actually declares. */
@@ -117,6 +136,8 @@ export function defineTemplates(
       accent: seed.accent,
       skills: seed.skills.map((skillId) => getSkill(category, skillId)),
       tags: seed.tags ?? [],
+      seniority: seniorityOf(seed.name),
+      baseRole: baseRoleOf(seed.name),
     };
   });
 }
@@ -137,6 +158,48 @@ export function skillsFor(skills: CatalogSkill[]): AgentSkill[] {
     label: skill.name,
     level: Math.max(2, 5 - Math.floor(index * 0.7)),
   }));
+}
+
+/**
+ * The same conversion, but levelled for a specific seniority.
+ *
+ * This is what makes the level axis real rather than cosmetic: a junior's
+ * defining skill sits at 3, a principal's at 5, so the same role genuinely
+ * reads differently at each rank.
+ *
+ * At `lead` and `principal` the agent also gains the category's leadership
+ * capability (and, at principal, a second one). Those ids come from the
+ * existing skill registry, so a projected template can never reference a
+ * skill that does not exist.
+ */
+export function skillsForLevel(
+  skills: CatalogSkill[],
+  seniority: Seniority,
+  category: TemplateCategory,
+): AgentSkill[] {
+  const levelled: AgentSkill[] = skills.map((skill, index) => ({
+    key: `${skill.category}.${skill.id}`,
+    label: skill.name,
+    level: levelAt(seniority, index),
+  }));
+
+  if (seniority !== 'lead' && seniority !== 'principal') return levelled;
+
+  const extraIds = [LEADERSHIP_SKILL[category]];
+  if (seniority === 'principal') extraIds.push(PRINCIPAL_SKILL[category]);
+
+  const seen = new Set(levelled.map((s) => s.key));
+  for (const id of extraIds) {
+    const skill = getSkill(category, id);
+    const key = `${skill.category}.${skill.id}`;
+    // A role may already declare its category's leadership skill; do not
+    // list it twice.
+    if (seen.has(key)) continue;
+    seen.add(key);
+    levelled.push({ key, label: skill.name, level: seniority === 'principal' ? 5 : 4 });
+  }
+
+  return levelled;
 }
 
 /** The accent used when a template does not declare one. */

@@ -1481,3 +1481,182 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   .tpl-card-right { display: none; }
   .tpl-list { max-height: 52vh; }
 }
+
+/* ==========================================================================
+   Seniority filter (template picker)
+   Sits between the category tabs and the result list. Wraps like the tabs do,
+   so the 15 categories and the 6 level chips never fight for one row.
+   ========================================================================== */
+.tpl-levels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: #0a0e15;
+}
+.tpl-levels-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+  margin-right: 3px;
+}
+.tpl-level {
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  background: #0d121a;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.tpl-level:hover { color: #d3dbe8; border-color: var(--line-strong); }
+.tpl-level.is-on {
+  color: #fff;
+  background: #1d2a44;
+  border-color: #3a5c9e;
+}
+.tpl-levels-note {
+  font-size: 10.5px;
+  color: var(--text-mute);
+  margin-left: 4px;
+}
+.tpl-levels-note strong { color: #9fb0c9; font-weight: 550; }
+
+/* Level badge on a result card, tinted by level. */
+.tpl-chip.is-level { color: #9fb0c9; background: #1b2434; }
+.tpl-chip.is-level.lv-junior { color: #8fd6b4; background: #14261f; }
+.tpl-chip.is-level.lv-senior { color: #9db8ff; background: #182238; }
+.tpl-chip.is-level.lv-lead { color: #f0c07a; background: #2a2113; }
+.tpl-chip.is-level.lv-principal { color: #e0a6f0; background: #261a2e; }
+
+/* Level row shown under the picker once a template is selected. */
+.tpl-level-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: #0a0e15;
+}
+.tpl-level-row-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 96px;
+}
+.tpl-level-row-label em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-mute);
+}
+.tpl-level-row-opts { display: flex; gap: 4px; flex-wrap: wrap; }
+.tpl-level-pill {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: var(--text-mute);
+  border: 1px solid var(--line);
+  background: #0d121a;
+}
+.tpl-level-pill.is-on {
+  color: #fff;
+  background: #1d2a44;
+  border-color: #3a5c9e;
+}
+.tpl-level-row-hint {
+  font-size: 10.5px;
+  color: #566175;
+  flex: 1 1 180px;
+}
+
+/* ==========================================================================
+   Per-channel "addressed to" filter
+   ========================================================================== */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #0a0e15;
+  flex: 0 0 auto;
+}
+.filter-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+  margin-right: 3px;
+}
+.filter-chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  background: #0d121a;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.filter-chip:hover { color: #d3dbe8; border-color: var(--line-strong); }
+.filter-chip.is-on {
+  color: #fff;
+  background: #1d2a44;
+  border-color: #3a5c9e;
+}
+.filter-chip.is-agent { background: #0d121a; }
+.filter-chip.is-agent.is-on { background: #1a2130; }
+.filter-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Invite an existing agent
+   ========================================================================== */
+.invite-pop {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  width: 300px;
+  z-index: 40;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+  padding: 8px;
+  animation: popIn 0.14s ease-out;
+}
+.invite-note {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-mute);
+  padding: 2px 6px 8px;
+  margin: 0;
+}
+.invite-note strong { color: var(--text-dim); }
+.invite-note em { font-style: normal; color: #9fb0c9; }
+.invite-pop ul { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.invite-pop ul li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: var(--r-sm);
+}
+.invite-pop ul li:hover { background: var(--bg-hover); }
+.invite-pop .mp-text { flex: 1; min-width: 0; }
+.invite-pop .btn.sm { padding: 3px 8px; font-size: 11px; }

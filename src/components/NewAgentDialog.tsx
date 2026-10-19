@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
-import type { Agent, Conversation } from '../types';
+import type { Agent, Conversation, Seniority } from '../types';
 import { Modal, Field } from './Modal';
 import { AgentAvatar } from './Avatar';
 import { CheckIcon, HashIcon, PlusIcon, SparkIcon } from './Icons';
 import { TemplatePicker } from './TemplatePicker';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
-import { getCatalogueSummary, type AgentTemplate } from '../data/templates';
+import {
+  SENIORITY_BLURB,
+  SENIORITY_LABELS,
+  SENIORITY_ORDER,
+  getCatalogueSummary,
+  type AgentTemplate,
+} from '../data/templates';
 
 interface NewAgentDialogProps {
   open: boolean;
@@ -13,7 +19,7 @@ interface NewAgentDialogProps {
   /** Hand-made agent (blank form). */
   onCreate: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => void;
   /** Template agent: created AND invited into the current room. */
-  onCreateFromTemplate: (templateId: string, name?: string) => void;
+  onCreateFromTemplate: (templateId: string, name?: string, seniority?: Seniority) => void;
   /** Room the new agent will be invited into. */
   room: Conversation | null;
 }
@@ -65,7 +71,11 @@ export function NewAgentDialog({
   const instantiate = (template: AgentTemplate | null = selected) => {
     if (!template) return;
     const finalName = overrideName.trim() || template.name;
-    onCreateFromTemplate(template.id, finalName === template.name ? undefined : finalName);
+    onCreateFromTemplate(
+      template.id,
+      finalName === template.name ? undefined : finalName,
+      template.seniority,
+    );
     onClose();
   };
 
@@ -168,6 +178,29 @@ export function NewAgentDialog({
                 <CheckIcon size={13} />
                 Creates the agent and invites it into <strong>{roomLabel}</strong>.
               </div>
+            </div>
+          )}
+
+          {selected && (
+            <div className="tpl-level-row">
+              <span className="tpl-level-row-label">
+                Level
+                <em>{SENIORITY_BLURB[selected.seniority]}</em>
+              </span>
+              <div className="tpl-level-row-opts">
+                {SENIORITY_ORDER.map((s) => (
+                  <span
+                    key={s}
+                    className={`tpl-level-pill${selected.seniority === s ? ' is-on' : ''}`}
+                  >
+                    {SENIORITY_LABELS[s]}
+                  </span>
+                ))}
+              </div>
+              <span className="tpl-level-row-hint">
+                Set by the template you picked — use the Level filter above to compare roles across
+                levels.
+              </span>
             </div>
           )}
         </>

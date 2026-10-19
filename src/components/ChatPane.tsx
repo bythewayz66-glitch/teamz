@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Agent, Conversation, Message } from '../types';
+import type { Agent, Conversation, Message, MessageFilter } from '../types';
 import { AgentAvatar, StatusDot } from './Avatar';
 import { RichText } from './RichText';
 import { MentionAutocomplete } from './MentionAutocomplete';
@@ -7,6 +7,7 @@ import {
   ChatIcon,
   CloseIcon,
   HashIcon,
+  PlusIcon,
   SendIcon,
   SettingsIcon,
   TrashIcon,
@@ -19,14 +20,21 @@ interface ChatPaneProps {
   conversation: Conversation | null;
   messages: Message[];
   agentsById: Map<string, Agent>;
+  /** Every agent in the workspace — the pool the invite picker offers. */
+  allAgents: Agent[];
   typingAgentIds: string[];
   canReply: boolean;
+  /** This conversation's message filter (persisted per channel). */
+  filter: MessageFilter;
+  onSetFilter: (filter: MessageFilter) => void;
   onSend: (text: string) => void;
   onOpenAgentSettings: (agentId: string) => void;
   onManageMembers: () => void;
   onDeleteConversation: () => void;
   /** Jump to the 1:1 DM with an agent (sidebar members list, mention chips). */
   onOpenDirectChat: (agentId: string) => void;
+  /** Add an agent that already exists to this channel. */
+  onInviteAgent: (agentId: string) => void;
   apiMode: string;
 }
 
@@ -34,17 +42,22 @@ export function ChatPane({
   conversation,
   messages,
   agentsById,
+  allAgents,
   typingAgentIds,
   canReply,
+  filter,
+  onSetFilter,
   onSend,
   onOpenAgentSettings,
   onManageMembers,
   onDeleteConversation,
   onOpenDirectChat,
+  onInviteAgent,
   apiMode,
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
   const [showMembers, setShowMembers] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -74,6 +87,7 @@ export function ChatPane({
   useEffect(() => {
     setDraft('');
     setShowMembers(false);
+    setShowInvite(false);
     setMentionToken(null);
   }, [conversation?.id]);
 
@@ -178,6 +192,36 @@ export function ChatPane({
     return parseMentions(draft, members);
   }, [draft, conversation, members]);
 
+  /**
+   * The messages actually rendered, after the channel's filter.
+   *
+   * `directed` keeps only messages that were addressed to somebody. `agent`
+   * keeps the thread with one agent: the messages addressed to it *and* its
+   * own replies, because a list of questions with no answers is not a thread.
+   * A direct chat is never filtered — there is only one recipient anyway.
+   */
+  const visibleMessages = useMemo(() => {
+    if (!conversation || conversation.kind !== 'channel') return messages;
+    if (filter.mode === 'all') return messages;
+
+    if (filter.mode === 'directed') {
+      return messages.filter((m) => m.directed || (m.mentions?.length ?? 0) > 0);
+    }
+
+    const target = filter.agentId;
+    if (!target) return messages;
+    return messages.filter(
+      (m) => m.mentions?.includes(target) || (m.authorType === 'agent' && m.authorId === target),
+    );
+  }, [messages, filter, conversation]);
+
+  /** Agents in the workspace that are not in this channel yet. */
+  const invitable = useMemo(() => {
+    if (!conversation) return [];
+    const inRoom = new Set(conversation.agentIds);
+    return allAgents.filter((a) => !inRoom.has(a.id));
+  }, [allAgents, conversation]);
+
   if (!conversation) {
     return (
       <main className="chat-pane empty-pane">
@@ -244,6 +288,17 @@ export function ChatPane({
             </button>
           )}
 
+          {isChannel && (
+            <button
+              className={`icon-btn ghost${showInvite ? ' is-open' : ''}`}
+              onClick={() => setShowInvite((v) => !v)}
+              title="Invite an existing agent"
+              aria-label="Invite an existing agent"
+            >
+              <PlusIcon size={16} />
+            </button>
+          )}
+
           {soloAgent && (
             <button
               className="icon-btn ghost"
@@ -307,6 +362,91 @@ export function ChatPane({
         </div>
       )}
 
+      {/*
+        Invite an agent that already exists.
+
+        Deliberately separate from "Add an agent" (which creates one from a
+        template): this adds a member to the room without creating anything,
+        so the two actions never look like the same button.
+      */}
+      {showInvite && isChannel && (
+        <div className="invite-pop">
+          <div className="members-pop-head">
+            <strong>Invite an existing agent</strong>
+            <button className="icon-btn ghost" onClick={() => setShowInvite(false)} aria-label="Close">
+              <CloseIcon size={14} />
+            </button>
+          </div>
+          <p className="invite-note">
+            Adds an agent you already have to <strong>#{conversation.name}</strong>. Nothing new is
+            created — to make a new one, use <em>Add an agent</em>.
+          </p>
+          <ul>
+            {invitable.map((a) => (
+              <li key={a.id}>
+                <AgentAvatar agent={a} size={28} showStatus={a.status} />
+                <span className="mp-text">
+                  <span className="mp-name">{a.name}</span>
+                  <span className="mp-model">{a.origin?.role ?? a.model}</span>
+                </span>
+                <button
+                  className="btn primary sm"
+                  onClick={() => {
+                    onInviteAgent(a.id);
+                    setShowInvite(false);
+                  }}
+                >
+                  <PlusIcon size={12} /> Invite
+                </button>
+              </li>
+            ))}
+            {invitable.length === 0 && (
+              <li className="rail-empty">Every agent in the workspace is already here.</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {isChannel && (
+        <div className="filter-bar">
+          <span className="filter-label">Show</span>
+          <button
+            className={`filter-chip${filter.mode === 'all' ? ' is-on' : ''}`}
+            onClick={() => onSetFilter({ mode: 'all' })}
+            aria-pressed={filter.mode === 'all'}
+          >
+            Everything
+          </button>
+          <button
+            className={`filter-chip${filter.mode === 'directed' ? ' is-on' : ''}`}
+            onClick={() => onSetFilter({ mode: 'directed' })}
+            aria-pressed={filter.mode === 'directed'}
+            title="Only messages addressed to an agent with @"
+          >
+            Directed only
+          </button>
+          {members.map((a) => (
+            <button
+              key={a.id}
+              className={`filter-chip is-agent${
+                filter.mode === 'agent' && filter.agentId === a.id ? ' is-on' : ''
+              }`}
+              style={{ borderColor: `${a.accent}59`, color: a.accent }}
+              onClick={() => onSetFilter({ mode: 'agent', agentId: a.id })}
+              aria-pressed={filter.mode === 'agent' && filter.agentId === a.id}
+              title={`Only the thread addressed to ${a.name}`}
+            >
+              {a.emoji} {a.name}
+            </button>
+          ))}
+          {filter.mode !== 'all' && (
+            <span className="filter-count">
+              {visibleMessages.length} of {messages.length}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="message-scroll" ref={scrollRef}>
         <div className="message-list">
           <div className="thread-intro">
@@ -334,8 +474,17 @@ export function ChatPane({
             </div>
           )}
 
-          {messages.map((m, i) => {
-            const prev = messages[i - 1];
+          {visibleMessages.length === 0 && messages.length > 0 && (
+            <div className="empty-thread">
+              <p>
+                No messages match this filter. Switch back to <strong>Everything</strong> to see
+                the whole channel.
+              </p>
+            </div>
+          )}
+
+          {visibleMessages.map((m, i) => {
+            const prev = visibleMessages[i - 1];
             const agent = m.authorId ? agentsById.get(m.authorId) : undefined;
             const showDay = isNewDay(prev?.createdAt, m.createdAt);
             const groupedWithPrev =

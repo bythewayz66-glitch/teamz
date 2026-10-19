@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react';
-import type { TemplateCategory } from '../types';
+import type { Seniority, TemplateCategory } from '../types';
 import {
   type AgentTemplate,
+  SENIORITY_BLURB,
+  SENIORITY_LABELS,
+  SENIORITY_ORDER,
+  filterTemplates,
   getCatalogueSummary,
   getCategories,
-  getTemplatesByCategory,
-  searchTemplates,
+  getTemplates,
+  projectTemplate,
 } from '../data/templates';
 import { AgentAvatar } from './Avatar';
 import { SearchIcon } from './Icons';
@@ -19,6 +23,8 @@ interface TemplatePickerProps {
 }
 
 type Tab = 'all' | TemplateCategory;
+/** `any` keeps each template at its own level; a level projects every role onto it. */
+type LevelFilter = 'any' | Seniority;
 
 /**
  * Browse + search the template catalogue.
@@ -26,22 +32,41 @@ type Tab = 'all' | TemplateCategory;
  * Everything here is pure data lookups over `src/data/templates` — no agent is
  * created until the caller acts on `onCreate`, so opening this panel costs
  * nothing beyond rendering the current result page.
+ *
+ * The three controls compose: category narrows the pool, seniority projects
+ * it, and the search box filters what is left. All active constraints apply
+ * together, so "engineering" + "senior" + "react" is a genuinely narrow query.
  */
 export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePickerProps) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('all');
+  const [level, setLevel] = useState<LevelFilter>('any');
   const [expandedId, setExpandedId] = useState<string | null>(selectedId);
 
   const categories = useMemo(() => getCategories(), []);
   const summary = useMemo(() => getCatalogueSummary(), []);
 
-  const results = useMemo(() => {
-    const base = query.trim() ? searchTemplates(query) : getTemplatesByCategory(tab as TemplateCategory);
-    if (query.trim() && tab !== 'all') return base.filter((t) => t.category === tab);
-    return base;
-  }, [query, tab]);
+  /**
+   * The pool the other two controls act on.
+   *
+   * With no level chosen this is the catalogue as authored. With a level
+   * chosen, every role is projected onto that level — which is what makes
+   * "Senior Frontend Engineer" and "Frontend Engineer" comparable: they are
+   * the same role, rendered at two levels, rather than two unrelated entries.
+   */
+  const pool = useMemo(() => {
+    if (level === 'any') return getTemplates();
+    return getTemplates().map((t) => projectTemplate(t, level));
+  }, [level]);
 
-  const totalForTab = tab === 'all' ? summary.templates : categories.find((c) => c.category === tab)?.count ?? 0;
+  const results = useMemo(() => {
+    const inCategory =
+      tab === 'all' ? pool : pool.filter((t) => t.category === tab);
+    return filterTemplates(inCategory, query);
+  }, [pool, tab, query]);
+
+  const totalForTab =
+    tab === 'all' ? pool.length : pool.filter((t) => t.category === tab).length;
 
   const handleClick = (template: AgentTemplate) => {
     const next = expandedId === template.id ? null : template.id;
@@ -90,6 +115,35 @@ export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePicke
         ))}
       </div>
 
+      <div className="tpl-levels" role="group" aria-label="Seniority filter">
+        <span className="tpl-levels-label">Level</span>
+        <button
+          className={`tpl-level${level === 'any' ? ' is-on' : ''}`}
+          onClick={() => setLevel('any')}
+          aria-pressed={level === 'any'}
+          title="Show each role at the level its name implies"
+        >
+          Any
+        </button>
+        {SENIORITY_ORDER.map((s) => (
+          <button
+            key={s}
+            className={`tpl-level${level === s ? ' is-on' : ''}`}
+            onClick={() => setLevel(s)}
+            aria-pressed={level === s}
+            title={SENIORITY_BLURB[s]}
+          >
+            {SENIORITY_LABELS[s]}
+          </button>
+        ))}
+        {level !== 'any' && (
+          <span className="tpl-levels-note">
+            every role shown as <strong>{SENIORITY_LABELS[level]}</strong> — compare it against
+            another level
+          </span>
+        )}
+      </div>
+
       <div className="tpl-meta">
         <span>
           {results.length === totalForTab || query
@@ -97,7 +151,9 @@ export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePicke
             : `${results.length} of ${totalForTab}`}
           {query && <em> matching “{query}”</em>}
         </span>
-        <span className="tpl-meta-hint">{summary.skills} skills bundled · pick one to create on demand</span>
+        <span className="tpl-meta-hint">
+          {summary.skills} skills bundled · pick one to create on demand
+        </span>
       </div>
 
       <div className="tpl-list" role="list">
@@ -113,7 +169,7 @@ export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePicke
           const isSelected = selectedId === template.id;
           return (
             <div
-              key={template.id}
+              key={`${template.id}-${template.seniority}`}
               className={`tpl-card${isSelected ? ' is-selected' : ''}${isOpen ? ' is-open' : ''}`}
               role="listitem"
             >
@@ -128,6 +184,9 @@ export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePicke
                   <span className="tpl-card-title">
                     {template.name}
                     <span className="tpl-chip">{template.category}</span>
+                    <span className={`tpl-chip is-level lv-${template.seniority}`}>
+                      {SENIORITY_LABELS[template.seniority]}
+                    </span>
                   </span>
                   <span className="tpl-card-desc">{template.description}</span>
                   <span className="tpl-skills">

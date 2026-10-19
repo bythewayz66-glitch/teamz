@@ -2,6 +2,13 @@
 
 export type AgentStatus = 'online' | 'busy' | 'offline';
 
+/**
+ * The seniority axis. Declared here rather than in `data/templates/seniority`
+ * so the domain types stay the single source of truth and the template layer
+ * can import it without a cycle.
+ */
+export type Seniority = 'junior' | 'mid' | 'senior' | 'lead' | 'principal';
+
 /** Which agent template an agent was instantiated from, if any. */
 export interface AgentOrigin {
   /** Template id, e.g. `engineering.senior-frontend-engineer`. */
@@ -10,6 +17,11 @@ export interface AgentOrigin {
   familySlug: string;
   /** Human role label at creation time, e.g. "Senior Frontend Engineer". */
   role: string;
+  /**
+   * Level the agent was created at. Absent on agents made before the
+   * seniority axis existed, and on hand-made agents.
+   */
+  seniority?: Seniority;
 }
 
 /**
@@ -67,6 +79,21 @@ export interface Conversation {
 
 export type MessageStatus = 'sent' | 'pending' | 'error';
 
+/**
+ * Per-conversation message filter.
+ *
+ * `all` is the default and means "show everything" — the view a user who
+ * never touches the control always gets. `directed` narrows to messages that
+ * were addressed to somebody via `@mention`. `agent` narrows to messages
+ * addressed to one specific agent, which is how a single @mention thread is
+ * read on its own.
+ */
+export interface MessageFilter {
+  mode: 'all' | 'directed' | 'agent';
+  /** Set only when `mode === 'agent'`. */
+  agentId?: string;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -91,6 +118,11 @@ export interface WorkspaceState {
   conversations: Conversation[];
   /** Messages keyed by conversation id, oldest first. */
   messages: Record<string, Message[]>;
+  /**
+   * Message filter per conversation id. A conversation with no entry is
+   * unfiltered, so this map stays empty for anyone who never uses the control.
+   */
+  filters: Record<string, MessageFilter>;
   activeConversationId: string | null;
 }
 

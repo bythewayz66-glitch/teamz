@@ -45,45 +45,77 @@ export function handleFor(name: string): string {
 export function parseMentions(text: string, agents: Agent[]): Agent[] {
   if (!text.includes('@') || agents.length === 0) return [];
 
-  // Longest name first so "@Senior Frontend Engineer" beats "@Senior".
   const candidates = agents
     .map((agent) => ({ agent, name: agent.name.trim(), handle: handleFor(agent.name) }))
-    .filter((c) => c.name.length > 0)
-    .sort((a, b) => b.name.length - a.name.length);
+    .filter((c) => c.name.length > 0);
 
-  const hit = new Map<string, Agent>();
+  /**
+   * Every place an agent could be mentioned, as a half-open span in `text`.
+   *
+   * We collect *all* candidate spans first and only then decide which ones
+   * count, because "longest name wins" is a property of the whole message, not
+   * of one agent: `@Frontend Engineer` must resolve to the specific agent and
+   * must NOT also fire the generic "Frontend" agent whose name is a prefix of
+   * it. Testing each agent independently cannot express that — the shorter
+   * agent matches perfectly well on its own terms.
+   */
+  interface Span {
+    agent: Agent;
+    start: number;
+    end: number;
+    length: number;
+  }
+
+  const spans: Span[] = [];
 
   for (const { agent, name, handle } of candidates) {
-    // `@` + the full display name, matched literally but case-insensitively.
-    const nameRe = new RegExp(`(^|[^\\w@/])@${escapeRe(name)}(?=$|${BOUNDARY.source})`, 'i');
-    if (nameRe.test(text)) {
-      hit.set(agent.id, agent);
-      continue;
-    }
-    // `@` + the kebab handle, also matched as a token.
-    if (handle) {
-      const handleRe = new RegExp(`(^|[^\\w@/])@${escapeRe(handle)}(?=$|${BOUNDARY.source})`, 'i');
-      if (handleRe.test(text)) hit.set(agent.id, agent);
+    // The display name and the kebab handle are both valid ways to address
+    // the same agent, so both are collected.
+    for (const token of [name, handle]) {
+      if (!token) continue;
+
+      const re = new RegExp(
+        `(^|[^\\w@/])@${escapeRe(token)}(?=$|${BOUNDARY.source})`,
+        'gi',
+      );
+
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(text)) !== null) {
+        // `match[1]` is the boundary character (or empty at the start), which
+        // is not part of the mention itself.
+        const start = match.index + match[1].length;
+        spans.push({ agent, start, end: start + 1 + token.length, length: token.length });
+
+        // Zero-length matches cannot happen here, but guard the loop anyway.
+        if (match.index === re.lastIndex) re.lastIndex += 1;
+      }
     }
   }
 
-  if (hit.size === 0) return [];
+  // Longest token first, so the most specific name claims its span before a
+  // shorter name can. Ties break on position to keep the result deterministic.
+  spans.sort((a, b) => b.length - a.length || a.start - b.start);
+
+  const claimed: { start: number; end: number }[] = [];
+  const firstSeen = new Map<string, number>();
+
+  for (const span of spans) {
+    // A span that overlaps one already claimed is part of a longer mention
+    // that has been resolved — drop it.
+    const overlaps = claimed.some((c) => span.start < c.end && span.end > c.start);
+    if (overlaps) continue;
+
+    claimed.push({ start: span.start, end: span.end });
+    if (!firstSeen.has(span.agent.id)) firstSeen.set(span.agent.id, span.start);
+  }
+
+  if (firstSeen.size === 0) return [];
 
   // Preserve the order the mentions appear in the text.
-  return [...hit.values()].sort((a, b) => {
-    const ia = firstIndex(text, a);
-    const ib = firstIndex(text, b);
-    return ia - ib;
-  });
-}
-
-function firstIndex(text: string, agent: Agent): number {
-  const lower = text.toLowerCase();
-  const byName = lower.indexOf(`@${agent.name.trim().toLowerCase()}`);
-  const byHandle = lower.indexOf(`@${handleFor(agent.name)}`);
-  if (byName === -1) return byHandle;
-  if (byHandle === -1) return byName;
-  return Math.min(byName, byHandle);
+  return [...firstSeen.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([id]) => agents.find((a) => a.id === id)!)
+    .filter(Boolean);
 }
 
 /**

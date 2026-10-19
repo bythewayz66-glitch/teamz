@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Agent } from './types';
+import type { Agent, Seniority } from './types';
 import { useWorkspace } from './store/useWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
@@ -37,9 +37,14 @@ export default function App() {
     setSettingsAgentId(null);
   };
 
-  const handleCreateFromTemplate = (templateId: string, name?: string) => {
+  const handleCreateFromTemplate = (
+    templateId: string,
+    name?: string,
+    seniority?: Seniority,
+  ) => {
     ws.createAgentFromTemplate(templateId, {
       name,
+      seniority,
       conversationId: ws.state.activeConversationId,
       openDirect: false,
     });
@@ -83,8 +88,13 @@ export default function App() {
           conversation={ws.activeConversation}
           messages={ws.activeMessages}
           agentsById={ws.agentsById}
+          allAgents={ws.state.agents}
           typingAgentIds={ws.activeConversation ? ws.typing[ws.activeConversation.id] ?? [] : []}
           canReply={ws.canReply}
+          filter={ws.activeFilter}
+          onSetFilter={(filter) => {
+            if (ws.activeConversation) ws.setConversationFilter(ws.activeConversation.id, filter);
+          }}
           onSend={ws.sendMessage}
           onOpenAgentSettings={(id) => setSettingsAgentId(id)}
           onManageMembers={() => setShowMembers(true)}
@@ -92,6 +102,11 @@ export default function App() {
             if (ws.activeConversation) ws.deleteConversation(ws.activeConversation.id);
           }}
           onOpenDirectChat={(id) => ws.openDirectChat(id)}
+          onInviteAgent={(agentId) => {
+            if (ws.activeConversation) {
+              ws.inviteAgentToConversation(ws.activeConversation.id, agentId);
+            }
+          }}
           apiMode={API_MODE}
         />
       </div>

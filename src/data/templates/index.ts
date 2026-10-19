@@ -17,15 +17,21 @@
  *  template data; the per-category files are an implementation detail.
  */
 
-import type { Agent, AgentOrigin, AgentSkill, TemplateCategory } from '../../types';
+import type { Agent, AgentOrigin, AgentSkill, Seniority, TemplateCategory } from '../../types';
 import {
   CATEGORY_EMOJI,
   CATEGORY_LABELS,
   CATEGORY_ORDER,
   DEFAULT_ACCENT,
-  skillsFor,
+  skillsForLevel,
+  slugify,
   type AgentTemplate,
 } from './model';
+import {
+  SENIORITY_ORDER,
+  SENIORITY_PREFIX,
+  SENIORITY_PROMPT,
+} from './seniority';
 
 import { engineeringTemplates } from './engineering';
 import { designTemplates } from './design';
@@ -51,7 +57,18 @@ export {
   DEFAULT_ACCENT,
   slugify,
   skillsFor,
+  skillsForLevel,
 } from './model';
+export {
+  SENIORITY_BLURB,
+  SENIORITY_LABELS,
+  SENIORITY_ORDER,
+  SENIORITY_PREFIX,
+  SENIORITY_PROMPT,
+  baseRoleOf,
+  seniorityOf,
+} from './seniority';
+export type { Seniority } from './seniority';
 export { SKILLS, getSkill, getSkillsForCategory } from './skills';
 
 /** Every template, in category-tab order. Built once at module load. */
@@ -113,7 +130,12 @@ export function getTemplatesByCategory(category: TemplateCategory): AgentTemplat
 const HAYSTACK = new Map<string, string>();
 
 function haystack(t: AgentTemplate): string {
-  const cached = HAYSTACK.get(t.id);
+  // Keyed by id *and* name: a projected template can share an id with a real
+  // one (projecting "Frontend Engineer" to senior yields the id of the real
+  // "Senior Frontend Engineer"), but its prompt differs, so the cache must not
+  // conflate the two.
+  const cacheKey = `${t.id}|${t.name}`;
+  const cached = HAYSTACK.get(cacheKey);
   if (cached) return cached;
 
   const text = [
@@ -128,7 +150,7 @@ function haystack(t: AgentTemplate): string {
     .join(' ')
     .toLowerCase();
 
-  HAYSTACK.set(t.id, text);
+  HAYSTACK.set(cacheKey, text);
   return text;
 }
 
@@ -141,12 +163,23 @@ function haystack(t: AgentTemplate): string {
  * then skill matches, then description/tag matches.
  */
 export function searchTemplates(query: string): AgentTemplate[] {
+  return filterTemplates(ALL, query);
+}
+
+/**
+ * The same search, over an arbitrary list.
+ *
+ * Needed because the picker searches *projected* templates when a seniority
+ * filter is active — those are derived on the fly and are not in `ALL`, so
+ * `searchTemplates` cannot see them.
+ */
+export function filterTemplates(list: AgentTemplate[], query: string): AgentTemplate[] {
   const q = query.trim().toLowerCase();
-  if (!q) return ALL;
+  if (!q) return list;
 
   const tokens = q.split(/\s+/).filter(Boolean);
 
-  const matches = ALL.filter((t) => {
+  const matches = list.filter((t) => {
     const hay = haystack(t);
     return tokens.every((token) => hay.includes(token));
   });
@@ -192,6 +225,59 @@ export interface InstantiateOptions {
   endpointUrl?: string;
   /** Override the display name — handy when instantiating two of the same type. */
   name?: string;
+  /**
+   * Create at a different level than the template's own. Defaults to the
+   * template's level, so omitting this is exactly the old behaviour.
+   */
+  seniority?: Seniority;
+}
+
+/**
+ * Project a template onto another seniority level.
+ *
+ * Returns the template unchanged when the level already matches, so callers
+ * can project unconditionally without paying for a copy.
+ *
+ * The projection renames the role, prepends a level-appropriate clause to the
+ * prompt, and re-levels the skills. It is *derived on demand* — nothing is
+ * stored, so the catalogue stays 473 entries rather than 2,365.
+ */
+export function projectTemplate(
+  template: AgentTemplate,
+  seniority: Seniority,
+): AgentTemplate {
+  if (seniority === template.seniority) return template;
+
+  const prefix = SENIORITY_PREFIX[seniority];
+  const name = prefix ? `${prefix} ${template.baseRole}` : template.baseRole;
+
+  return {
+    ...template,
+    id: `${template.category}.${slugify(name)}`,
+    name,
+    seniority,
+    systemPrompt: `${SENIORITY_PROMPT[seniority]} ${template.systemPrompt}`,
+  };
+}
+
+/**
+ * Every level of one role, for side-by-side comparison in the picker.
+ * Always returns all five, junior first.
+ */
+export function getVariants(templateId: string): AgentTemplate[] {
+  const template = BY_ID.get(templateId);
+  if (!template) return [];
+  return SENIORITY_ORDER.map((level) => projectTemplate(template, level));
+}
+
+/** How many templates sit at each level, for the filter's counts. */
+export function getSeniorityCounts(): { seniority: Seniority; count: number }[] {
+  const counts = new Map<Seniority, number>();
+  for (const t of ALL) counts.set(t.seniority, (counts.get(t.seniority) ?? 0) + 1);
+  return SENIORITY_ORDER.map((seniority) => ({
+    seniority,
+    count: counts.get(seniority) ?? 0,
+  }));
 }
 
 /**
@@ -207,27 +293,31 @@ export function instantiateTemplate(templateId: string, options: InstantiateOpti
     throw new Error(`Unknown template id: "${templateId}"`);
   }
 
+  const level = options.seniority ?? template.seniority;
+  const projected = projectTemplate(template, level);
+
   return {
     id: freshAgentId(),
-    name: options.name?.trim() || template.name,
-    emoji: template.emoji,
-    accent: template.accent || DEFAULT_ACCENT,
+    name: options.name?.trim() || projected.name,
+    emoji: projected.emoji,
+    accent: projected.accent || DEFAULT_ACCENT,
     status: 'online',
     endpointUrl: options.endpointUrl?.trim() || 'http://localhost:8001/chat',
-    model: options.model?.trim() || template.model,
-    systemPrompt: template.systemPrompt,
-    skills: skillsFor(template.skills),
-    origin: originFor(template),
+    model: options.model?.trim() || projected.model,
+    systemPrompt: projected.systemPrompt,
+    skills: skillsForLevel(projected.skills, level, projected.category),
+    origin: originFor(projected, level),
     createdAt: Date.now(),
   };
 }
 
 /** Provenance record written onto every template-made agent. */
-export function originFor(template: AgentTemplate): AgentOrigin {
+export function originFor(template: AgentTemplate, seniority?: Seniority): AgentOrigin {
   return {
     templateId: template.id,
     familySlug: template.category,
     role: template.name,
+    seniority: seniority ?? template.seniority,
   };
 }
 

@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Agent, Conversation, Message, WorkspaceState } from '../types';
+import type {
+  Agent,
+  Conversation,
+  Message,
+  MessageFilter,
+  Seniority,
+  WorkspaceState,
+} from '../types';
 import { seedState, ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
 import {
   getTemplateById,
@@ -22,6 +29,9 @@ function migrate(parsed: WorkspaceState): WorkspaceState {
   return {
     ...parsed,
     agents: parsed.agents.map((a) => ({ ...a, skills: a.skills ?? [] })),
+    // Filters arrived after the first release; an old blob has none, and the
+    // default (no filter) is exactly the old behaviour.
+    filters: parsed.filters ?? {},
   };
 }
 
@@ -37,6 +47,7 @@ function loadState(): WorkspaceState {
       agents: parsed.agents,
       conversations: parsed.conversations,
       messages: parsed.messages ?? {},
+      filters: parsed.filters ?? {},
       activeConversationId:
         parsed.activeConversationId ?? parsed.conversations[0]?.id ?? null,
     });
@@ -54,9 +65,12 @@ function loadState(): WorkspaceState {
  */
 export function agentFromTemplate(
   template: AgentTemplate,
-  tint: { accent?: string; emoji?: string; name?: string } = {},
+  tint: { accent?: string; emoji?: string; name?: string; seniority?: Seniority } = {},
 ): Omit<Agent, 'id' | 'createdAt' | 'status'> {
-  const built = instantiateTemplate(template.id, { name: tint.name });
+  const built = instantiateTemplate(template.id, {
+    name: tint.name,
+    seniority: tint.seniority,
+  });
   return {
     name: built.name,
     emoji: tint.emoji ?? built.emoji,
@@ -72,6 +86,8 @@ export function agentFromTemplate(
 export interface CreateAgentFromTemplateOptions {
   /** Override the display name (defaults to the template name). */
   name?: string;
+  /** Create at a different level than the template's own. */
+  seniority?: Seniority;
   /** Invite into this conversation. Defaults to the active conversation. */
   conversationId?: string | null;
   /** Also open (or create) the 1:1 DM with the new agent afterwards. */
@@ -97,6 +113,10 @@ export interface UseWorkspace {
   ) => Agent | null;
   /** Add an existing agent to a channel. */
   inviteAgentToConversation: (conversationId: string, agentId: string) => void;
+  /** The active conversation's message filter (defaults to "show everything"). */
+  activeFilter: MessageFilter;
+  /** Set the filter for one conversation; persisted with the rest of state. */
+  setConversationFilter: (conversationId: string, filter: MessageFilter) => void;
   updateAgent: (id: string, patch: Partial<Agent>) => void;
   deleteAgent: (id: string) => void;
   createChannel: (name: string, agentIds: string[], topic?: string) => Conversation;
@@ -338,6 +358,7 @@ export function useWorkspace(): UseWorkspace {
 
       const input = agentFromTemplate(template, {
         accent: ACCENT_PALETTE[Math.floor(Math.random() * ACCENT_PALETTE.length)],
+        seniority: options.seniority,
       });
 
       const agent = insertAgent(
@@ -363,6 +384,27 @@ export function useWorkspace(): UseWorkspace {
       ),
     }));
   }, []);
+
+  /**
+   * Per-conversation message filter.
+   *
+   * Stored in the same persisted blob as everything else, keyed by
+   * conversation id, so each channel remembers its own filter across a reload
+   * and switching channels restores that channel's view rather than carrying
+   * one global setting around.
+   */
+  const setConversationFilter = useCallback(
+    (conversationId: string, filter: MessageFilter) => {
+      setState((s) => {
+        const filters = { ...s.filters };
+        // "all" is the default, so storing it would only bloat the blob.
+        if (filter.mode === 'all') delete filters[conversationId];
+        else filters[conversationId] = filter;
+        return { ...s, filters };
+      });
+    },
+    [],
+  );
 
   const updateAgent = useCallback((id: string, patch: Partial<Agent>) => {
     setState((s) => {
@@ -482,6 +524,11 @@ export function useWorkspace(): UseWorkspace {
     setState(structuredClone(seedState));
   }, []);
 
+  const activeFilter: MessageFilter =
+    (state.activeConversationId ? state.filters[state.activeConversationId] : undefined) ?? {
+      mode: 'all',
+    };
+
   return {
     state,
     activeConversation,
@@ -494,6 +541,8 @@ export function useWorkspace(): UseWorkspace {
     createAgent,
     createAgentFromTemplate,
     inviteAgentToConversation,
+    activeFilter,
+    setConversationFilter,
     updateAgent,
     deleteAgent,
     createChannel,
