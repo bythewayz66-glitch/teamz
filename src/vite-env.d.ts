@@ -1,8 +1,12 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** 'mock' (default) runs fully local; 'live' calls each agent's endpointUrl. */
-  readonly VITE_API_MODE?: 'mock' | 'live';
+  /**
+   * Default provider for a fresh browser (users can switch at runtime):
+   * unset / 'pollinations' → Pollinations.ai, 'live' → each agent's endpointUrl,
+   * 'mock' → canned offline replies.
+   */
+  readonly VITE_API_MODE?: 'pollinations' | 'mock' | 'live';
 }
 
 interface ImportMeta {

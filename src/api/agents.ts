@@ -8,14 +8,15 @@
  *    sendToAgent(agent, history, options)  -> Promise<string>
  *    pingAgent(agent)                      -> Promise<{ ok, latencyMs }>
  *
- *  Mode is chosen by VITE_API_MODE:
+ *  Provider is chosen at runtime in Workspace & API settings:
  *
- *    mock  (default) — no network at all. Returns persona-flavoured canned
- *                      replies after a short delay so the UI is fully usable
- *                      offline. This is what ships in the repo.
+ *    pollinations (default) — real LLM replies from Pollinations.ai, see
+ *                             `pollinations.ts`.
  *
- *    live            — POSTs to `agent.endpointUrl`, exactly as described in
- *                      README → "Connecting real agents".
+ *    custom                 — POSTs to `agent.endpointUrl`, exactly as described in
+ *                             README → "Connecting your own server".
+ *
+ *    mock                   — no network at all; canned replies, labelled.
  *
  *  To adapt this to your own server, you normally only need to edit
  *  `buildRequest()` and `parseReply()` (both clearly marked below). Nothing
@@ -23,11 +24,27 @@
  */
 
 import type { Agent, Message } from '../types';
+import { getSettings, type Provider } from './settings';
+import {
+  buildPollinationsRequest,
+  callPollinations,
+  hasKey,
+  resolveModel,
+} from './pollinations';
 
-export type ApiMode = 'mock' | 'live';
+/**
+ * Which transport replies. Chosen at runtime in Workspace & API settings
+ * (persisted in localStorage); the build-time default is Pollinations.
+ *
+ *   pollinations — real LLM replies from Pollinations.ai (default)
+ *   custom       — POST to each agent's own `endpointUrl` (old "live" mode)
+ *   mock         — canned offline replies, clearly labelled as such
+ */
+export type ApiMode = Provider;
 
-export const API_MODE: ApiMode =
-  (import.meta.env.VITE_API_MODE as ApiMode | undefined) ?? 'mock';
+export function currentMode(): ApiMode {
+  return getSettings().provider;
+}
 
 /** What a caller can send along with the message history. */
 export interface SendOptions {
@@ -45,6 +62,12 @@ export interface SendOptions {
   directed?: boolean;
   /** Abort a slow request (e.g. user switched conversations). */
   signal?: AbortSignal;
+  /** `direct` or `channel` — shapes the system prompt. */
+  conversationKind?: 'direct' | 'channel';
+  /** Channel topic, if any. */
+  topic?: string;
+  /** Called with the full text so far while a reply streams in. */
+  onDelta?: (fullText: string) => void;
 }
 
 /* ---------------------------------------------------------------------------
@@ -241,16 +264,57 @@ export async function sendToAgent(
   agentsById: Map<string, Agent>,
   options: SendOptions,
 ): Promise<string> {
-  if (API_MODE === 'live') {
+  const settings = getSettings();
+  if (settings.provider === 'pollinations') {
+    const request = buildPollinationsRequest(
+      agent,
+      history,
+      agentsById,
+      {
+        conversationKind: options.conversationKind ?? (options.otherAgents?.length ? 'channel' : 'direct'),
+        conversationName: options.conversationName,
+        topic: options.topic,
+        otherAgents: options.otherAgents,
+        directed: options.directed,
+      },
+      settings,
+    );
+    return callPollinations(request, { signal: options.signal, onDelta: options.onDelta });
+  }
+  if (settings.provider === 'custom') {
     return callLive(agent, buildRequest(agent, history, agentsById, options), options);
   }
-  return callMock(agent, options);
+  return `_[mock reply — switch to Pollinations in Workspace & API for real answers]_\n\n${await callMock(agent, options)}`;
 }
 
 /** Lightweight reachability check used by the settings panel's "Test" button. */
 export async function pingAgent(agent: Agent): Promise<{ ok: boolean; latencyMs: number; message: string }> {
   const started = performance.now();
-  if (API_MODE === 'mock') {
+  const settings = getSettings();
+  if (settings.provider === 'pollinations') {
+    try {
+      const request = buildPollinationsRequest(
+        agent,
+        [{ id: 'ping', conversationId: 'ping', authorType: 'user', text: 'Reply with the single word: pong', createdAt: Date.now(), status: 'sent' }],
+        new Map(),
+        { conversationKind: 'direct', conversationName: 'ping' },
+        { ...settings, stream: false },
+      );
+      const reply = await callPollinations(request);
+      return {
+        ok: true,
+        latencyMs: Math.round(performance.now() - started),
+        message: `Pollinations ${hasKey(settings) ? '(API key)' : '(anonymous)'} · ${resolveModel(settings)} replied “${reply.trim().slice(0, 40)}”`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        latencyMs: Math.round(performance.now() - started),
+        message: err instanceof Error ? err.message : 'Request failed',
+      };
+    }
+  }
+  if (settings.provider === 'mock') {
     await sleep(320);
     return {
       ok: agent.status !== 'offline',
@@ -258,7 +322,7 @@ export async function pingAgent(agent: Agent): Promise<{ ok: boolean; latencyMs:
       message:
         agent.status === 'offline'
           ? 'Mock mode: this agent is marked offline.'
-          : 'Mock mode — always reachable. Set VITE_API_MODE=live to test the real endpoint.',
+          : 'Mock mode — always reachable. Switch provider in Workspace & API to test a real endpoint.',
     };
   }
   try {

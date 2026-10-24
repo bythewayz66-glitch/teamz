@@ -7,8 +7,9 @@ One workspace, two kinds of conversation: a **1:1 chat** with a single agent, an
 name, an emoji, an accent colour, an endpoint URL, a model string and a system prompt —
 nothing is hard-coded to a vendor.
 
-Ships with mock replies so the UI is fully usable offline. Point it at your servers
-with one environment variable.
+Agents give **real LLM replies via [Pollinations.ai](https://pollinations.ai)** out of the
+box — no sign-up, no server. You can also point agents at your own servers, or switch to
+offline mock replies, from **Workspace & API** settings.
 
 ## Quick start
 
@@ -33,9 +34,38 @@ Requires Node 18+ (developed on Node 20).
 | Channels | Multi-agent rooms — every member replies, sequentially, so answers interleave readably |
 | Agent settings | Slide-over drawer: name, emoji, accent, model, endpoint URL, system prompt, status, and a **Test** button that pings the endpoint |
 | Persistence | Everything is mirrored to `localStorage` (`teamz:workspace:v1`); "Reset workspace" restores the seed data |
-| Offline | Mock transport returns persona-flavoured replies with realistic latency — no network calls at all |
+| AI replies | Pollinations.ai by default (streaming); own endpoints or labelled offline mock replies are one click away |
 
-## Connecting real agents
+## Real replies via Pollinations (default)
+
+Replies stream straight from the browser to Pollinations' OpenAI-compatible Chat
+Completions API (code: [`src/api/pollinations.ts`](src/api/pollinations.ts)).
+
+| | No API key (default) | With an API key |
+| --- | --- | --- |
+| Endpoint | `https://text.pollinations.ai/openai` | `https://gen.pollinations.ai/v1/chat/completions` |
+| Model | `openai-fast` (GPT-OSS 20B) | default `openai` (GPT-5.4 Nano); any id from [`/v1/models`](https://gen.pollinations.ai/v1/models) |
+| Limits | Anonymous tier, rate-limited per IP. **Rejects `localhost` origins** (Turnstile) — works on the deployed Pages site | Billed to the key's Pollen balance |
+
+* Each agent's system prompt, template role and top skills become the system message,
+  plus the channel name/topic, other members, and whether it was `@mentioned`.
+* The last 24 messages go along as context. The agent's own messages are `assistant`; the user
+  and other agents are `user` messages prefixed `[Name]:` in channels. In a channel, agents answer
+  one after another and each sees the replies before it.
+* `@mentions` work as before: only mentioned agents answer; otherwise every member answers.
+* Errors (rate limits, bad key, paid-only model) show up as a red message in the chat. Nothing
+  silently falls back to mock.
+
+**Settings** (Workspace & API → AI provider, or click the provider pill under the composer):
+provider (Pollinations / Own endpoints / Mock), optional API key, model, referrer, streaming
+on/off, and a **Test** button. They're saved in this browser's `localStorage`
+(`teamz:llm-settings:v1`) only — never in the build or the repo. Note that a key stored in a
+browser can be read by anything running on that page, so use a budget-limited key.
+
+`VITE_API_MODE` now only picks the default for a fresh browser: unset → Pollinations,
+`live` → own endpoints, `mock` → mock.
+
+## Connecting your own server
 
 All network code lives in [`src/api/agents.ts`](src/api/agents.ts). Two functions matter:
 
@@ -44,14 +74,10 @@ sendToAgent(agent, history, agentsById, options) // -> Promise<string>
 pingAgent(agent)                                 // -> { ok, latencyMs, message }
 ```
 
-### 1. Switch the mode
+### 1. Switch the provider
 
-```bash
-# .env.local
-VITE_API_MODE=live
-```
-
-Without this, the app stays in `mock` mode and never touches the network.
+Open **Workspace & API** and choose **Own endpoints** (or build with `VITE_API_MODE=live`
+to make that the default).
 
 ### 2. Know the request contract
 

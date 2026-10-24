@@ -5,6 +5,7 @@ import { AgentAvatar } from './Avatar';
 import { CheckIcon, RefreshIcon, TrashIcon } from './Icons';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
 import { pingAgent } from '../api/agents';
+import { getSettings } from '../api/settings';
 import { formatRelative } from '../lib/format';
 
 interface AgentSettingsProps {
@@ -196,7 +197,14 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
         )}
       </div>
 
-      <Field label="Model" hint="whatever your server expects">
+      <Field
+        label="Model"
+        hint={
+          getSettings().provider === 'pollinations'
+            ? 'own-endpoint mode only · Pollinations uses the model in Workspace & API'
+            : 'whatever your server expects'
+        }
+      >
         <input
           value={draft.model}
           onChange={(e) => patch({ model: e.target.value })}
