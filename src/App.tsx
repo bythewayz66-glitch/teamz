@@ -7,11 +7,19 @@ import { AgentSettings } from './components/AgentSettings';
 import { NewAgentDialog } from './components/NewAgentDialog';
 import { ChannelDialog } from './components/ChannelDialog';
 import { WorkspaceInfo } from './components/WorkspaceInfo';
-import { API_MODE } from './api/agents';
+import { useLlmSettings } from './store/useLlmSettings';
+import { hasKey, resolveModel } from './api/pollinations';
 import { MenuIcon } from './components/Icons';
 
 export default function App() {
   const ws = useWorkspace();
+  const [llm] = useLlmSettings();
+  const modeLabel =
+    llm.provider === 'pollinations'
+      ? `Pollinations · ${resolveModel(llm)}${hasKey(llm) ? '' : ' (free)'}`
+      : llm.provider === 'custom'
+        ? 'own endpoints'
+        : 'mock mode';
   const [settingsAgentId, setSettingsAgentId] = useState<string | null>(null);
   const [showNewAgent, setShowNewAgent] = useState(false);
   const [showNewChannel, setShowNewChannel] = useState(false);
@@ -107,7 +115,9 @@ export default function App() {
               ws.inviteAgentToConversation(ws.activeConversation.id, agentId);
             }
           }}
-          apiMode={API_MODE}
+          apiMode={llm.provider === 'mock' ? 'mock' : 'live'}
+          modeLabel={modeLabel}
+          onOpenSettings={() => setShowInfo(true)}
         />
       </div>
 

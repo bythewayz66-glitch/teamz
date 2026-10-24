@@ -15,6 +15,7 @@ import {
 } from '../data/templates';
 import { parseMentions } from '../lib/mentions';
 import { sendToAgent } from '../api/agents';
+import { getSettings } from '../api/settings';
 
 const STORAGE_KEY = 'teamz:workspace:v1';
 
@@ -220,7 +221,9 @@ export function useWorkspace(): UseWorkspace {
       };
       appendMessage(userMessage);
 
-      const history = [...activeMessages, userMessage];
+      // Grows as each agent answers, so later agents in a channel see what
+      // earlier ones just said and can build on it instead of repeating it.
+      const history: Message[] = [...activeMessages, userMessage];
       const others = members.map((a) => ({ id: a.id, name: a.name }));
 
       for (const agent of targets) {
@@ -247,14 +250,28 @@ export function useWorkspace(): UseWorkspace {
           const reply = await sendToAgent(agent, history, agentsById, {
             conversationId: conv.id,
             conversationName: conv.name,
+            conversationKind: conv.kind,
+            topic: conv.topic,
             otherAgents: others.filter((o) => o.id !== agent.id),
             directed,
             signal: controller.signal,
+            // Stream tokens into the placeholder bubble as they arrive.
+            onDelta: (partial) => patchMessage(conv.id, placeholderId, { text: partial }),
           });
+          const createdAt = Date.now();
           patchMessage(conv.id, placeholderId, {
             text: reply,
             status: 'sent',
-            createdAt: Date.now(),
+            createdAt,
+          });
+          history.push({
+            id: placeholderId,
+            conversationId: conv.id,
+            authorType: 'agent',
+            authorId: agent.id,
+            text: reply,
+            createdAt,
+            status: 'sent',
           });
         } catch (err) {
           if (err instanceof DOMException && err.name === 'AbortError') {
@@ -266,7 +283,11 @@ export function useWorkspace(): UseWorkspace {
           } else {
             const message = err instanceof Error ? err.message : 'Unknown error';
             patchMessage(conv.id, placeholderId, {
-              text: `Couldn\u2019t reach ${agent.name}.\n\n\`${message}\`\n\nCheck the endpoint URL in this agent\u2019s settings.`,
+              text: `\u26a0\ufe0f Couldn\u2019t get a reply from ${agent.name}.\n\n\`${message}\`\n\n${
+                getSettings().provider === 'custom'
+                  ? 'Check the endpoint URL in this agent\u2019s settings.'
+                  : 'Check Workspace & API settings (provider, model, API key) and try again.'
+              }`,
               status: 'error',
               createdAt: Date.now(),
             });

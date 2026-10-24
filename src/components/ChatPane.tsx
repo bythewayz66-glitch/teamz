@@ -36,6 +36,10 @@ interface ChatPaneProps {
   /** Add an agent that already exists to this channel. */
   onInviteAgent: (agentId: string) => void;
   apiMode: string;
+  /** Human label for the composer pill, e.g. "Pollinations · openai-fast". */
+  modeLabel?: string;
+  /** Open the provider settings. */
+  onOpenSettings?: () => void;
 }
 
 export function ChatPane({
@@ -54,6 +58,8 @@ export function ChatPane({
   onOpenDirectChat,
   onInviteAgent,
   apiMode,
+  modeLabel,
+  onOpenSettings,
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
   const [showMembers, setShowMembers] = useState(false);
@@ -612,9 +618,15 @@ export function ChatPane({
             <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·{' '}
             <kbd>@</kbd> to address an agent
           </span>
-          <span className={`mode-pill${apiMode === 'live' ? ' is-live' : ''}`}>
-            {apiMode === 'live' ? 'live endpoints' : 'mock mode'}
-          </span>
+          <button
+            type="button"
+            className={`mode-pill${apiMode === 'live' ? ' is-live' : ''}`}
+            onClick={onOpenSettings}
+            title="AI provider settings"
+            style={{ cursor: onOpenSettings ? 'pointer' : undefined }}
+          >
+            {modeLabel ?? (apiMode === 'live' ? 'live endpoints' : 'mock mode')}
+          </button>
         </div>
       </div>
     </main>
