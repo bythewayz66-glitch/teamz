@@ -93,6 +93,28 @@ export interface AgentRequest {
   directed?: boolean;
 }
 
+/** Character budget kept for the message history sent to an agent. */
+export const HISTORY_CHAR_BUDGET = 12000;
+
+/**
+ * Keep the most recent messages whose cumulative character count stays
+ * within `HISTORY_CHAR_BUDGET`, always retaining at least the last turn.
+ * Returns a new array (does not mutate input).
+ */
+export function windowHistory(history: Message[], budget: number = HISTORY_CHAR_BUDGET): Message[] {
+  if (history.length === 0) return [];
+  // Walk backwards, accumulating character cost until the budget is spent.
+  const kept: Message[] = [];
+  let used = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const cost = (history[i].text ?? '').length + 32;
+    if (kept.length > 0 && used + cost > budget) break;
+    kept.unshift(history[i]);
+    used += cost;
+  }
+  if (kept.length === 0) kept.push(history[history.length - 1]);
+  return kept;
+}
 /* ---------------------------------------------------------------------------
  * MARKER 1 — build the request body sent to your server.
  * ------------------------------------------------------------------------- */
@@ -109,7 +131,7 @@ export function buildRequest(
       model: agent.model,
       systemPrompt: agent.systemPrompt,
     },
-    messages: history.map((m) => ({
+    messages: windowHistory(history).map((m) => ({
       role: m.authorType === 'user' ? 'user' : 'assistant',
       content: m.text,
       authorName:
@@ -153,7 +175,8 @@ export function parseReply(payload: unknown): string {
     if (textBlock) return textBlock.text;
   }
 
-  throw new Error('Could not find reply text in the agent response. Edit parseReply() in src/api/agents.ts.');
+  console.warn('[teamz] parseReply: could not extract reply from payload', payload);
+  throw new Error('The agent replied, but the response did not contain readable text.');
 }
 
 /* ---------------------------------------------------------------------------
@@ -169,24 +192,68 @@ async function callLive(
     throw new Error(`${agent.name} has no endpoint URL. Open its settings and add one.`);
   }
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-    signal: options.signal,
-  });
+  const TIMEOUT_MS = 20000;
+  const MAX_ATTEMPTS = 3;
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`${agent.name} replied ${res.status} ${res.statusText}${detail ? ` — ${detail.slice(0, 240)}` : ''}`);
-  }
+  // Combine caller signal with an internal timeout.
+  const makeSignal = (timeoutMs: number) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new DOMException('Timed out', 'AbortError')), timeoutMs);
+    if (options.signal) {
+      if (options.signal.aborted) ctrl.abort(options.signal.reason);
+      options.signal.addEventListener('abort', () => ctrl.abort(options.signal!.reason), { once: true });
+    }
+    return { signal: ctrl.signal, clear: () => clearTimeout(timer) };
+  };
 
-  const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('application/json')) {
-    return parseReply(await res.json());
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const { signal, clear } = makeSignal(TIMEOUT_MS);
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        signal,
+      });
+      clear();
+
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        const err = new Error(
+          `${agent.name} replied ${res.status} ${res.statusText}${detail ? ` — ${detail.slice(0, 240)}` : ''}`,
+        );
+        // Retry only on server-side / transient failures.
+        if (res.status >= 500 && res.status < 600 && attempt < MAX_ATTEMPTS) {
+          lastError = err;
+          await new Promise((r) => setTimeout(r, 300 * attempt + Math.random() * 200));
+          continue;
+        }
+        throw err;
+      }
+
+      const contentType = res.headers.get('content-type') ?? '';
+      if (contentType.includes('application/json')) {
+        return parseReply(await res.json());
+      }
+      // Fall back to plain text bodies.
+      return (await res.text()).trim() || '…';
+    } catch (err) {
+      clear();
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Distinguish caller-abort from timeout: if caller signal aborted, propagate.
+        if (options.signal?.aborted) throw err;
+        lastError = new Error(`${agent.name} did not respond within ${TIMEOUT_MS / 1000}s.`);
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 300 * attempt + Math.random() * 200));
+        continue;
+      }
+    }
   }
-  // Fall back to plain text bodies.
-  return (await res.text()).trim() || '…';
+  throw lastError ?? new Error(`${agent.name} request failed.`);
 }
 
 /* ---------------------------------------------------------------------------
@@ -326,17 +393,32 @@ export async function pingAgent(agent: Agent): Promise<{ ok: boolean; latencyMs:
     };
   }
   try {
-    const res = await fetch(agent.endpointUrl, { method: 'GET' });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(agent.endpointUrl, { method: 'GET', signal: controller.signal });
+    clearTimeout(timer);
     return {
       ok: res.ok,
       latencyMs: Math.round(performance.now() - started),
       message: res.ok ? `Reachable (${res.status})` : `Responded ${res.status}`,
     };
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return {
+        ok: false,
+        latencyMs: Math.round(performance.now() - started),
+        message: 'Timed out after 8s.',
+      };
+    }
+    const msg = err instanceof Error ? err.message : 'Request failed';
+    const isNetwork =
+      err instanceof TypeError || /failed to fetch/i.test(msg) || /networkerror/i.test(msg);
     return {
       ok: false,
       latencyMs: Math.round(performance.now() - started),
-      message: err instanceof Error ? err.message : 'Request failed',
+      message: isNetwork
+        ? 'Could not reach the endpoint (network error or CORS). Check the URL and CORS headers.'
+        : msg,
     };
   }
 }

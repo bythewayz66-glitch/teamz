@@ -133,14 +133,46 @@ export function useWorkspace(): UseWorkspace {
   const [typing, setTyping] = useState<Record<string, string[]>>({});
   const aborters = useRef<Map<string, AbortController>>(new Map());
 
-  // Persist on every change.
+  // Abort every in-flight request if the component unmounts.
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      /* storage full / disabled — the UI still works in memory */
-    }
+    return () => {
+      aborters.current.forEach((c) => c.abort());
+      aborters.current.clear();
+    };
+  }, []);
+
+  // Persist on every change (debounced).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (err) {
+        // Surface quota failures instead of silently dropping the write.
+        if (err instanceof DOMException && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          console.warn('[teamz] localStorage quota exceeded; workspace not saved.');
+          window.dispatchEvent(new CustomEvent('teamz:storage-error', { detail: 'quota' }));
+        }
+      }
+    }, 300);
+    return () => clearTimeout(timer);
   }, [state]);
+
+  // Cross-tab sync: reload when another tab writes the workspace.
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key !== STORAGE_KEY || !e.newValue) return;
+      try {
+        const parsed = JSON.parse(e.newValue) as WorkspaceState;
+        if (parsed?.agents?.length && parsed?.conversations?.length) {
+          setState(migrate(parsed));
+        }
+      } catch {
+        /* ignore malformed */
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, []);
 
   const agentsById = useMemo(
     () => new Map(state.agents.map((a) => [a.id, a])),

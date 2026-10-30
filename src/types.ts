@@ -58,6 +58,10 @@ export interface Agent {
   skills: AgentSkill[];
   /** Provenance — absent for hand-made agents. */
   origin?: AgentOrigin;
+  /** Last reachability check result (persisted). */
+  lastPingAt?: number;
+  lastPingOk?: boolean;
+  lastPingMessage?: string;
   createdAt: number;
 }
 

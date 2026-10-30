@@ -18,6 +18,24 @@ interface AgentSettingsProps {
 
 const STATUSES: AgentStatus[] = ['online', 'busy', 'offline'];
 
+function validateEndpoint(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return 'Enter a valid URL (e.g. http://localhost:8001/chat).';
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return 'URL must start with http:// or https://.';
+  }
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && url.protocol === 'http:') {
+    return 'Mixed content: an https page cannot call an http endpoint.';
+  }
+  return null;
+}
+
 export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: AgentSettingsProps) {
   const [draft, setDraft] = useState<Agent | null>(agent);
   const [testing, setTesting] = useState(false);
@@ -26,8 +44,16 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
 
   useEffect(() => {
     setDraft(agent);
-    setTestResult(null);
     setConfirmDelete(false);
+    if (agent?.lastPingAt) {
+      setTestResult({
+        ok: agent.lastPingOk ?? false,
+        message: agent.lastPingMessage ?? '',
+        latencyMs: 0,
+      });
+    } else {
+      setTestResult(null);
+    }
   }, [agent]);
 
   if (!draft) return null;
@@ -55,7 +81,19 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
     const result = await pingAgent(draft);
     setTestResult(result);
     setTesting(false);
+    const pingPatch = {
+      lastPingAt: Date.now(),
+      lastPingOk: result.ok,
+      lastPingMessage: result.message,
+    };
+    setDraft((d) => (d ? { ...d, ...pingPatch } : d));
+    onSave(draft.id, pingPatch);
   };
+
+  const nameError = draft.name.trim() === '' ? 'Name is required.' : null;
+  const modelError = draft.model.trim() === '' ? 'Model is required.' : null;
+  const endpointError = validateEndpoint(draft.endpointUrl);
+  const canSave = !nameError && !modelError && !endpointError;
 
   return (
     <Modal
@@ -69,7 +107,7 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
           <div className="foot-left">
             {confirmDelete ? (
               <div className="confirm-inline">
-                <span>Delete this agent?</span>
+                <span>Delete this agent? Their direct chat and any channel they’re the last member of will be removed.</span>
                 <button className="btn danger sm" onClick={() => onDelete(draft.id)}>
                   Yes, delete
                 </button>
@@ -87,7 +125,7 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
             <button className="btn ghost sm" onClick={() => { onOpenChat(draft.id); onClose(); }}>
               Open chat
             </button>
-            <button className="btn primary sm" onClick={save} disabled={!dirty}>
+            <button className="btn primary sm" onClick={save} disabled={!dirty || !canSave}>
               <CheckIcon size={14} /> Save changes
             </button>
           </div>
@@ -129,6 +167,7 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
           placeholder="e.g. Researcher"
           autoFocus
         />
+        {nameError && <span className="field-error">{nameError}</span>}
       </Field>
 
       <div className="field-grid">
@@ -184,6 +223,7 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
           placeholder="http://localhost:8001/chat"
           spellCheck={false}
         />
+        {endpointError && <span className="field-error">{endpointError}</span>}
       </Field>
 
       <div className="test-row">
@@ -192,7 +232,8 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
         </button>
         {testResult && (
           <span className={`test-out${testResult.ok ? ' ok' : ' bad'}`}>
-            {testResult.ok ? '✓' : '✕'} {testResult.message} · {testResult.latencyMs}ms
+            {testResult.ok ? '✓' : '✕'} {testResult.message}
+            {testResult.latencyMs > 0 ? ` · ${testResult.latencyMs}ms` : ''}
           </span>
         )}
       </div>
@@ -211,6 +252,7 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
           placeholder="gpt-4o-mini · qwen2.5-coder:32b · llama3.1:70b"
           spellCheck={false}
         />
+        {modelError && <span className="field-error">{modelError}</span>}
       </Field>
 
       <Field label="System prompt" hint={`${draft.systemPrompt.length} chars`}>

@@ -228,6 +228,17 @@ export function ChatPane({
     return allAgents.filter((a) => !inRoom.has(a.id));
   }, [allAgents, conversation]);
 
+  const lastAgentReply = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.authorType === 'agent' && m.status === 'sent' && m.text.trim()) {
+        const a = m.authorId ? agentsById.get(m.authorId) : undefined;
+        return { name: a?.name ?? 'Agent', text: m.text };
+      }
+    }
+    return null;
+  }, [messages, agentsById]);
+
   if (!conversation) {
     return (
       <main className="chat-pane empty-pane">
@@ -245,8 +256,18 @@ export function ChatPane({
 
   return (
     <main className="chat-pane">
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {typingAgentIds.length > 0
+          ? `${typingAgentIds
+              .map((id) => agentsById.get(id)?.name)
+              .filter(Boolean)
+              .join(', ')} is typing`
+          : lastAgentReply
+            ? `${lastAgentReply.name} replied: ${lastAgentReply.text.slice(0, 160)}`
+            : ''}
+      </div>
       <header className="chat-head">
-        <div className="chat-head-id">
+          <div className="chat-head-id">
           <div className={`chat-head-badge${isChannel ? ' is-channel' : ''}`}>
             {isChannel ? <HashIcon size={17} /> : soloAgent ? <AgentAvatar agent={soloAgent} size={34} showStatus={soloAgent.status} /> : '?'}
           </div>
@@ -527,7 +548,7 @@ export function ChatPane({
           })}
 
           {typingAgentIds.length > 0 && (
-            <div className="typing-row">
+            <div className="typing-row" aria-live="polite" aria-atomic="false">
               {typingAgentIds.map((id) => {
                 const a = agentsById.get(id);
                 if (!a) return null;

@@ -62,7 +62,7 @@ export function RichText({ text }: { text: string }) {
           nodes.push(
             <ul className="md-list" key={`ul-${blockIndex}-${nodes.length}`}>
               {listBuffer.map((item, i) => (
-                <li key={i}>{renderInline(item, `li-${blockIndex}-${nodes.length}-${i}`)}</li>
+                <li key={item || i}>{renderInline(item, `li-${blockIndex}-${nodes.length}-${i}`)}</li>
               ))}
             </ul>,
           );
