@@ -168,3 +168,255 @@ export interface CatalogSkill {
   /** Extra search terms, not shown in the UI. */
   tags?: string[];
 }
+
+/* ---------------------------------------------------------------------------
+ * Orchestration layer
+ *
+ * Everything below was added for the agent-workspace feature set: sessions,
+ * triggers, connected accounts, the policy engine, the audit trail, approval
+ * requests, widgets and workspace membership. All of it is plain data that
+ * lives in the same persisted workspace blob as the rest, so a reload restores
+ * exactly what the user was looking at.
+ * ------------------------------------------------------------------------- */
+
+/** How much reasoning budget an agent gets. Shapes the request, not the UI. */
+export type Effort = 'low' | 'medium' | 'high';
+/** Latency/cost trade-off. `fast` prefers the small model. */
+export type Speed = 'normal' | 'fast';
+
+/** Per-agent model configuration, mirroring the model pill in the header. */
+export interface ModelConfig {
+  /** Model id, e.g. `openai`, `openai-fast`, `claude-sonnet-4`. */
+  model: string;
+  effort: Effort;
+  speed: Speed;
+}
+
+/**
+ * A session is one conversation thread with one agent, the way a chat app
+ * groups messages. An agent can have many; the newest is the default.
+ */
+export interface Session {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Pinned sessions sort first and are never auto-pruned. */
+  pinned?: boolean;
+}
+
+/** A capability an agent has been given, with usage tracking. */
+export interface SkillDef {
+  id: string;
+  /** Machine key, e.g. `forecast-stockouts`. */
+  key: string;
+  name: string;
+  /** One line describing what the skill does; injected into the prompt. */
+  description: string;
+  /** Where it came from: a template, the catalogue, or the user. */
+  source: 'template' | 'catalogue' | 'custom';
+  addedAt: number;
+  lastUsedAt?: number;
+  /** How many times the agent has actually applied it. */
+  uses: number;
+}
+
+/** A connected third-party account an agent may act through. */
+export interface Connection {
+  id: string;
+  /** Connector slug, e.g. `gmail`, `slack`, `shopify`. */
+  service: string;
+  /** Human label of the account, e.g. `mira@alderandoak.com` or `#growth`. */
+  account: string;
+  /** OAuth scopes granted. Drives what the policy engine can allow. */
+  scopes: string[];
+  connectedAt: number;
+  lastUsedAt?: number;
+  /** `connected` after a successful link; `error` when the token expired. */
+  status: 'connected' | 'error' | 'revoked';
+  /** Set when status is `error`, shown inline. */
+  error?: string;
+}
+
+/** What a policy rule does when it matches. */
+export type PolicyDecision = 'allow' | 'review' | 'block';
+
+/**
+ * One rule in an agent's policy. Rules are evaluated most-specific-first:
+ * a rule naming both a service and an action beats a service-wide rule, which
+ * beats the agent default. This is the "scoped by software rules, not prompts"
+ * guarantee — the model cannot talk its way past it.
+ */
+export interface PolicyRule {
+  id: string;
+  /** Connector slug, or `*` for every service. */
+  service: string;
+  /** Action pattern, e.g. `orders.list`, `products.delete`, `*`. */
+  action: string;
+  decision: PolicyDecision;
+  /** Optional human note shown in the policy editor. */
+  note?: string;
+}
+
+/** A single tool call an agent asked to make, before policy is applied. */
+export interface AgentAction {
+  service: string;
+  action: string;
+  /** Free-form arguments the agent supplied. */
+  args: Record<string, unknown>;
+  /** One-line human summary, e.g. "Send 3 emails with Gmail". */
+  summary: string;
+}
+
+/** The outcome of evaluating one action against the policy. */
+export interface PolicyVerdict {
+  decision: PolicyDecision;
+  /** The rule that decided it, or null when the agent default applied. */
+  ruleId: string | null;
+  /** Human explanation, shown in the approval card and the audit log. */
+  reason: string;
+}
+
+/** A queued action waiting for a human decision. */
+export interface Approval {
+  id: string;
+  agentId: string;
+  sessionId: string;
+  action: AgentAction;
+  verdict: PolicyVerdict;
+  createdAt: number;
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  decidedAt?: number;
+  /** Who decided it — a member id, or `you`. */
+  decidedBy?: string;
+}
+
+/** One line in the audit trail. Append-only. */
+export interface AuditEntry {
+  id: string;
+  at: number;
+  agentId?: string;
+  sessionId?: string;
+  /** Dotted action name, e.g. `gmail.send` or `fs.read`. */
+  action: string;
+  /** What the policy said. */
+  decision: PolicyDecision | 'info';
+  /** Short human detail, e.g. "3 emails to Linen & Co". */
+  detail: string;
+  /** Rule that produced the decision, when there was one. */
+  ruleId?: string;
+  /** Set when the action was actually executed after approval. */
+  executed?: boolean;
+}
+
+/** A widget an agent published into its workspace. */
+export type WidgetKind = 'metric' | 'bars' | 'table' | 'list' | 'progress';
+
+export interface WidgetMetric {
+  label: string;
+  value: string;
+  /** Optional delta, e.g. "+12%". */
+  delta?: string;
+  tone?: 'good' | 'warn' | 'bad';
+}
+
+export interface WidgetBar {
+  label: string;
+  value: number;
+  /** Optional caption under the bar, e.g. "9d · Oct 14". */
+  caption?: string;
+  tone?: 'good' | 'warn' | 'bad';
+}
+
+export interface WidgetRow {
+  cells: string[];
+  tone?: 'good' | 'warn' | 'bad';
+}
+
+export interface Widget {
+  id: string;
+  agentId: string;
+  title: string;
+  kind: WidgetKind;
+  /** Column headers for `table`. */
+  columns?: string[];
+  metrics?: WidgetMetric[];
+  bars?: WidgetBar[];
+  rows?: WidgetRow[];
+  /** 0..1 for `progress`. */
+  progress?: number;
+  /** Caption under the title, e.g. "412 SKUs · forecast updated 7:02 AM". */
+  caption?: string;
+  updatedAt: number;
+}
+
+/** A scheduled or event-driven run. */
+export type TriggerKind = 'cron' | 'webhook';
+
+export interface Trigger {
+  id: string;
+  agentId: string;
+  name: string;
+  kind: TriggerKind;
+  /** Standard 5-field cron, e.g. `0 7 * * 1-5`. Only for `cron`. */
+  cron?: string;
+  /** Opaque token used in the webhook URL. Only for `webhook`. */
+  token?: string;
+  /** The prompt the trigger sends to the agent. */
+  prompt: string;
+  enabled: boolean;
+  createdAt: number;
+  lastFiredAt?: number;
+  /** How many times it has fired since creation. */
+  fireCount: number;
+  /** Last error, if the last run failed. */
+  lastError?: string;
+}
+
+/** One recorded execution of a trigger. */
+export interface TriggerRun {
+  id: string;
+  triggerId: string;
+  agentId: string;
+  at: number;
+  status: 'ok' | 'error';
+  /** Short result summary, e.g. "412 SKUs checked". */
+  summary: string;
+}
+
+/** A human with access to the workspace. */
+export interface Member {
+  id: string;
+  name: string;
+  email: string;
+  role: 'owner' | 'editor' | 'viewer';
+  /** `you` marks the signed-in account. */
+  isYou?: boolean;
+  joinedAt: number;
+  /** Two-letter monogram used by the avatar. */
+  initials: string;
+}
+
+/** A notification in the bell menu. */
+export interface Notification {
+  id: string;
+  at: number;
+  kind: 'approval' | 'trigger' | 'error' | 'info';
+  title: string;
+  body: string;
+  read: boolean;
+  /** Where clicking it should go. */
+  agentId?: string;
+  sessionId?: string;
+}
+
+/** Per-agent, per-day token accounting. */
+export interface UsageEntry {
+  /** `YYYY-MM-DD` in local time. */
+  day: string;
+  agentId: string;
+  promptTokens: number;
+  completionTokens: number;
+  runs: number;
+}

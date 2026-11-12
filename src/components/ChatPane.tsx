@@ -16,6 +16,16 @@ import {
 import { formatDayLabel, formatTime, isNewDay } from '../lib/format';
 import { activeQuery, applyMention, parseMentions, rankMentions } from '../lib/mentions';
 
+/**
+ * Upper bound on a single message, in characters.
+ *
+ * The composer previously accepted any paste length. A 2 MB paste was sent to
+ * the model verbatim and then written into the persisted workspace blob, which
+ * is where the storage-quota failures came from. 32k characters is well past
+ * any real message and still comfortably inside a model's context window.
+ */
+const MAX_MESSAGE_CHARS = 32_000;
+
 interface ChatPaneProps {
   conversation: Conversation | null;
   messages: Message[];
@@ -184,6 +194,11 @@ export function ChatPane({
   const submit = () => {
     const text = draft.trim();
     if (!text || !canReply) return;
+    // Hard cap: an unbounded paste would be sent to the model verbatim and
+    // then persisted in localStorage, which can blow the storage quota and
+    // stall the request. Refuse rather than silently truncate, so the user
+    // knows their message was not sent whole.
+    if (text.length > MAX_MESSAGE_CHARS) return;
     onSend(text);
     setDraft('');
     setMentionToken(null);
@@ -629,8 +644,20 @@ export function ChatPane({
             rows={1}
             disabled={!canReply}
             aria-label="Message composer"
+            aria-invalid={draft.length > MAX_MESSAGE_CHARS}
           />
-          <button className="send-btn" onClick={submit} disabled={!draft.trim() || !canReply} aria-label="Send">
+          {draft.length > MAX_MESSAGE_CHARS && (
+            <span className="composer-limit" role="alert">
+              {(draft.length - MAX_MESSAGE_CHARS).toLocaleString()} characters over the{' '}
+              {MAX_MESSAGE_CHARS.toLocaleString()} limit — shorten the message to send it.
+            </span>
+          )}
+          <button
+            className="send-btn"
+            onClick={submit}
+            disabled={!draft.trim() || !canReply || draft.length > MAX_MESSAGE_CHARS}
+            aria-label="Send"
+          >
             <SendIcon size={17} />
           </button>
         </div>

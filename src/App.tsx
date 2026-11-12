@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Seniority } from './types';
 import { useWorkspace } from './store/useWorkspace';
+import { useOrchestration } from './store/useOrchestration';
+import { Automations } from './components/Automations';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
 import { AgentSettings } from './components/AgentSettings';
@@ -26,8 +28,53 @@ export default function App() {
   const [showMembers, setShowMembers] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** Which surface the main column shows. */
+  const [view, setView] = useState<'chat' | 'automations'>('chat');
+  const orch = useOrchestration();
 
   const settingsAgent = settingsAgentId ? ws.agentsById.get(settingsAgentId) ?? null : null;
+
+  /**
+   * Fold real activity into the usage ledger.
+   *
+   * The first pass is skipped so the seeded history is not re-counted, and
+   * every message id is remembered so a re-render never double-counts a turn.
+   */
+  const countedRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const seen = countedRef.current;
+    if (seen === null) {
+      countedRef.current = new Set(
+        Object.values(ws.state.messages)
+          .flat()
+          .map((m) => m.id),
+      );
+      return;
+    }
+    for (const list of Object.values(ws.state.messages)) {
+      for (const m of list) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        if (m.authorType === 'agent' && m.authorId && m.status === 'sent' && m.text.trim()) {
+          orch.recordRun(m.authorId, '', m.text);
+        }
+      }
+    }
+  }, [ws.state.messages, orch]);
+
+  /** Send, and record the turn in the audit trail. */
+  const handleSend = (text: string) => {
+    const conv = ws.activeConversation;
+    void ws.sendMessage(text);
+    if (!conv) return;
+    orch.logAudit({
+      agentId: conv.agentIds[0],
+      sessionId: conv.id,
+      action: 'chat.send',
+      decision: 'info',
+      detail: `Message sent to ${conv.name}`,
+    });
+  };
 
   /** Newest message timestamp per conversation — drives sidebar ordering hints. */
   const lastMessageAt = useMemo(() => {
@@ -85,6 +132,12 @@ export default function App() {
           setSidebarOpen(false);
         }}
         onOpenWorkspaceInfo={() => setShowInfo(true)}
+        onOpenAutomations={() => {
+          setView('automations');
+          setSidebarOpen(false);
+        }}
+        automationsActive={view === 'automations'}
+        approvalBadge={orch.pendingApprovals.length}
       />
 
       <div className="main-column">
@@ -92,6 +145,30 @@ export default function App() {
           <MenuIcon size={18} />
         </button>
 
+        {view === 'automations' ? (
+          <Automations
+            agents={ws.state.agents}
+            agentsById={ws.agentsById}
+            triggers={orch.state.triggers}
+            connections={orch.state.connections}
+            policies={orch.state.policies}
+            audit={orch.state.audit}
+            approvals={orch.state.approvals}
+            usage={orch.state.usage}
+            widgets={orch.state.widgets}
+            contextMessages={ws.activeMessages}
+            onToggleTrigger={orch.toggleTrigger}
+            onRunTrigger={orch.runTrigger}
+            onDeleteTrigger={orch.deleteTrigger}
+            onAddTrigger={orch.addTrigger}
+            onConnect={orch.connect}
+            onDisconnect={orch.disconnect}
+            onSetDecision={orch.setDecision}
+            onAddRule={orch.addRule}
+            onRemoveRule={orch.removeRule}
+            onDecideApproval={orch.decideApproval}
+          />
+        ) : (
         <ChatPane
           conversation={ws.activeConversation}
           messages={ws.activeMessages}
@@ -103,7 +180,7 @@ export default function App() {
           onSetFilter={(filter) => {
             if (ws.activeConversation) ws.setConversationFilter(ws.activeConversation.id, filter);
           }}
-          onSend={ws.sendMessage}
+          onSend={handleSend}
           onOpenAgentSettings={(id) => setSettingsAgentId(id)}
           onManageMembers={() => setShowMembers(true)}
           onDeleteConversation={() => {
@@ -119,6 +196,7 @@ export default function App() {
           modeLabel={modeLabel}
           onOpenSettings={() => setShowInfo(true)}
         />
+        )}
       </div>
 
       <AgentSettings

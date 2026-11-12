@@ -17,6 +17,12 @@ interface SidebarProps {
   onOpenAgentSettings: (agentId: string) => void;
   onOpenAgentChat: (agentId: string) => void;
   onOpenWorkspaceInfo: () => void;
+  /** Switch the main column to the Automations surface. */
+  onOpenAutomations: () => void;
+  /** True while the Automations surface is showing. */
+  automationsActive: boolean;
+  /** Pending approvals, shown as a badge on the nav entry. */
+  approvalBadge: number;
 }
 
 export function Sidebar({
@@ -32,6 +38,9 @@ export function Sidebar({
   onOpenAgentSettings,
   onOpenAgentChat,
   onOpenWorkspaceInfo,
+  onOpenAutomations,
+  automationsActive,
+  approvalBadge,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
 
@@ -77,6 +86,23 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-scroll">
+        <nav className="rail-nav">
+          <button
+            className={`nav-row${automationsActive ? ' is-active' : ''}`}
+            onClick={onOpenAutomations}
+            aria-current={automationsActive ? 'page' : undefined}
+          >
+            <span className="nav-glyph">
+              <SparkIcon size={15} />
+            </span>
+            <span className="nav-text">
+              <strong>Automations</strong>
+              <small>Triggers, policy, audit</small>
+            </span>
+            {approvalBadge > 0 && <span className="nav-badge">{approvalBadge}</span>}
+          </button>
+        </nav>
+
         <section className="rail-section">
           <div className="rail-heading">
             <span>Agents</span>
