@@ -252,54 +252,102 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     });
   });
 
+/** How long a single request may hang before it is aborted. */
+export const REQUEST_TIMEOUT_MS = 90_000;
+
+/**
+ * Combine the caller's abort signal with a timeout.
+ *
+ * Without this, a stalled connection left the composer in its "thinking" state
+ * forever: `fetch` has no default timeout, so a request that never resolves
+ * never rejects either, and the UI had no path back to idle. The timeout turns
+ * that into a normal error the caller already knows how to display.
+ */
+function withTimeout(signal: AbortSignal | undefined, ms: number): {
+  signal: AbortSignal;
+  clear: () => void;
+  timedOut: () => boolean;
+} {
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, ms);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort);
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    },
+    timedOut: () => didTimeout,
+  };
+}
+
 /** Send the request; stream deltas through `onDelta` when streaming. */
 export async function callPollinations(
   request: PollinationsRequest,
   opts: { signal?: AbortSignal; onDelta?: (fullText: string) => void } = {},
 ): Promise<string> {
   let res: Response | null = null;
-  // One polite retry on 429 — the anonymous tier queues per IP.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    res = await fetch(request.url, {
-      method: 'POST',
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: opts.signal,
-    });
-    if (res.status !== 429 || attempt === 1) break;
-    const retryAfter = Number(res.headers.get('retry-after'));
-    await sleep(Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 3000, 10000), opts.signal);
-  }
-  if (!res) throw new Error('Pollinations request failed');
-  if (!res.ok) throw new Error(await describeHttpError(res));
-
-  const contentType = res.headers.get('content-type') ?? '';
-  if (request.body.stream && contentType.includes('text/event-stream') && res.body) {
-    const parser = createSseParser();
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let text = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const deltas = parser.push(decoder.decode(value, { stream: true }));
-      if (deltas.length) {
-        text += deltas.join('');
-        opts.onDelta?.(text);
-      }
+  const guard = withTimeout(opts.signal, REQUEST_TIMEOUT_MS);
+  try {
+    // One polite retry on 429 — the anonymous tier queues per IP.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      res = await fetch(request.url, {
+        method: 'POST',
+        headers: request.headers,
+        body: JSON.stringify(request.body),
+        signal: guard.signal,
+      });
+      if (res.status !== 429 || attempt === 1) break;
+      const retryAfter = Number(res.headers.get('retry-after'));
+      await sleep(Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 3000, 10000), guard.signal);
     }
-    parser.push(decoder.decode() + '\n');
-    if (!text.trim()) throw new Error('Pollinations returned an empty reply. Try again or pick another model.');
-    return text;
-  }
+    if (!res) throw new Error('Pollinations request failed');
+    if (!res.ok) throw new Error(await describeHttpError(res));
 
-  const payload = contentType.includes('application/json') ? await res.json() : await res.text();
-  const content =
-    typeof payload === 'string' ? payload : (payload as any)?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('Pollinations returned an empty reply. Try again or pick another model.');
+    const contentType = res.headers.get('content-type') ?? '';
+    if (request.body.stream && contentType.includes('text/event-stream') && res.body) {
+      const parser = createSseParser();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const deltas = parser.push(decoder.decode(value, { stream: true }));
+        if (deltas.length) {
+          text += deltas.join('');
+          opts.onDelta?.(text);
+        }
+      }
+      parser.push(decoder.decode() + '\n');
+      if (!text.trim()) throw new Error('Pollinations returned an empty reply. Try again or pick another model.');
+      return text;
+    }
+
+    const payload = contentType.includes('application/json') ? await res.json() : await res.text();
+    const content =
+      typeof payload === 'string' ? payload : (payload as any)?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new Error('Pollinations returned an empty reply. Try again or pick another model.');
+    }
+    return content;
+  } catch (err) {
+    // A timeout surfaces as an AbortError; say so plainly instead of letting
+    // the caller report it as a user cancellation.
+    if (guard.timedOut()) {
+      throw new Error(
+        `Pollinations did not respond within ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s. Try again, or pick a faster model.`,
+      );
+    }
+    throw err;
+  } finally {
+    guard.clear();
   }
-  return content;
 }
 
 export interface ModelOption {
