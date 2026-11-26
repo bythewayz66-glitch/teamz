@@ -239,6 +239,173 @@ describe('processDue — Reviewer approval flow', () => {
     expect(out.approvals[0].status).toBe('pending');
     expect(out.jobs[0].status).toBe('awaiting_approval');
   });
+
+  it('the Reviewer request carries completed stage outputs, so it judges the actual change', async () => {
+    const job = createJob({
+      name: 'Two-stage reviewable job',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      stages: [
+        {
+          stage: 'design',
+          agentId: 'agent-atlas',
+          prompt: 'Plan the check.',
+          expectedOutput: 'A check plan.',
+        },
+        {
+          stage: 'build',
+          agentId: 'agent-atlas',
+          prompt: 'Do the routine build step.',
+          expectedOutput: 'Built.',
+          flags: { requiresReview: true },
+        },
+      ],
+    });
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [job],
+    };
+    const reviewerPrompts: string[] = [];
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent, prompt: string) => {
+        if (a.id === 'agent-reviewer') {
+          reviewerPrompts.push(prompt);
+          return 'APPROVE: routine, matches the plan.';
+        }
+        return 'Design done: check the cartoon page for the stale line.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    };
+    // Tick 1: design completes. Tick 2: the gated build stage asks the
+    // Reviewer — with the design output in the request.
+    let out = await processDue(state, T0, deps);
+    expect(out.state.jobs[0].currentStageIndex).toBe(1);
+    out = await processDue(out.state, new Date(T0.getTime() + 2000), deps);
+    expect(reviewerPrompts).toHaveLength(1);
+    expect(reviewerPrompts[0]).toContain('Design done: check the cartoon page for the stale line.');
+    expect(reviewerPrompts[0]).toContain('judge the actual change');
+    // And the push-path distinction: a routine repo commit is not a
+    // public release, so the Reviewer can judge it on its merits.
+    expect(reviewerPrompts[0]).toContain('NOT a public release');
+    expect(out.state.approvals[0].decidedBy).toBe('reviewer');
+  });
+
+  it('a gated command stage persists state before executing (onBeforeCommand), so the push script can verify the approval', async () => {
+    const job = createJob({
+      name: 'Push job',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      workdir: '/srv/mem20',
+      allowedCommands: [['sudo', '/opt/teamz-runner/push-mem20.py']],
+      stages: [
+        {
+          stage: 'upgrade',
+          agentId: 'agent-atlas',
+          prompt: 'Push the staged change.',
+          expectedOutput: 'The push record.',
+          flags: { requiresReview: true },
+          command: { argv: ['sudo', '/opt/teamz-runner/push-mem20.py'] },
+        },
+      ],
+    });
+    const liveApproval = {
+      id: 'appr-live',
+      jobId: job.id,
+      jobName: job.name,
+      stage: 'upgrade' as const,
+      reason: 'Stage "upgrade" needs a decision',
+      requestedAt: T0.getTime(),
+      status: 'approved' as const,
+      decidedAt: T0.getTime(),
+      consumedAt: null,
+      decidedBy: 'reviewer' as const,
+    };
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [job],
+      approvals: [liveApproval],
+    };
+    const order: string[] = [];
+    let persistedApprovals: unknown = null;
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async () => {
+        throw new Error('no prompt dispatch on a gated command tick');
+      },
+      executeCommand: async () => {
+        order.push('execute');
+        return { ok: true, exitCode: 0, output: 'PUSHED abc123', timedOut: false, blocked: false, blockedReason: null };
+      },
+      onBeforeCommand: async (s) => {
+        order.push('persist');
+        persistedApprovals = s.approvals;
+      },
+      log: silentLog(),
+    });
+    expect(order).toEqual(['persist', 'execute']);
+    expect(persistedApprovals).toHaveLength(1);
+    expect((persistedApprovals as Array<{ id: string }>)[0].id).toBe('appr-live');
+    expect(out.jobs[0].status).toBe('done');
+    expect(out.approvals[0].consumedAt).not.toBeNull();
+  });
+
+  it('a failing onBeforeCommand refuses the gated command stage — nothing executes, approval unconsumed', async () => {
+    const job = createJob({
+      name: 'Push job',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      workdir: '/srv/mem20',
+      allowedCommands: [['sudo', '/opt/teamz-runner/push-mem20.py']],
+      stages: [
+        {
+          stage: 'upgrade',
+          agentId: 'agent-atlas',
+          prompt: 'Push the staged change.',
+          expectedOutput: 'The push record.',
+          flags: { requiresReview: true },
+          command: { argv: ['sudo', '/opt/teamz-runner/push-mem20.py'] },
+        },
+      ],
+    });
+    const liveApproval = {
+      id: 'appr-live',
+      jobId: job.id,
+      jobName: job.name,
+      stage: 'upgrade' as const,
+      reason: 'Stage "upgrade" needs a decision',
+      requestedAt: T0.getTime(),
+      status: 'approved' as const,
+      decidedAt: T0.getTime(),
+      consumedAt: null,
+      decidedBy: 'reviewer' as const,
+    };
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [job],
+      approvals: [liveApproval],
+    };
+    let executed = false;
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async () => {
+        throw new Error('no prompt dispatch on a gated command tick');
+      },
+      executeCommand: async () => {
+        executed = true;
+        return { ok: true, exitCode: 0, output: '', timedOut: false, blocked: false, blockedReason: null };
+      },
+      onBeforeCommand: async () => {
+        throw new Error('disk full');
+      },
+      log: silentLog(),
+    });
+    expect(executed).toBe(false);
+    expect(out.jobs[0].runs[0].status).toBe('failed');
+    expect(out.jobs[0].currentStageIndex).toBe(0);
+    expect(out.approvals[0].consumedAt).toBeNull();
+  });
 });
 
 describe('processDue — inter-dispatch spacing', () => {

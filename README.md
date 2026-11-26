@@ -203,8 +203,11 @@ and posted in the Build Room. Full detail:
 - Templates (real data, instantiated with your agents — **Jobs &
   Scheduler → New job from a template**): **Ship a release** (the full
   eight-stage loop), **Publish docs** (design → document, gated on publish),
-  **Nightly repo check** (design → command → document; the command stage
-  runs `git status --short` in the repo working directory).
+  **Nightly repo check** (design → implement → upgrade → document;
+  the implement stage verifies one live claim with the repo tools and
+  stages a small correction; the upgrade stage is the governed push —
+  allowlisted `sudo /opt/teamz-runner/push-mem20.py`, gated on the
+  Reviewer — see `docs/PUSH_PATH.md`).
 - **Command stages** do real work on a checked-out repo. A command runs
   only when its exact argv is on the job's explicit allowlist, only via
   `spawn` with no shell (metacharacters are data, never a second command),

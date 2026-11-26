@@ -112,6 +112,13 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     log: (message) => log(`  ${message}`),
     rateLimitEvents: async () => readRateLimitEvents(),
     acknowledgeRateLimitEvents: async (ids) => acknowledgeRateLimitEvents(ids),
+    // Before a gated command stage runs, persist the state (with the live
+    // approval) so the governed push script can verify the approval on
+    // disk. The tick's normal save-after still happens.
+    onBeforeCommand: async (s) => {
+      saveRunnerState(statePath, s);
+      log('  state persisted before gated command stage (approval on disk for the push script)');
+    },
     reloadAgents: async () => {
       try {
         return loadRunnerState(statePath).state.agents;

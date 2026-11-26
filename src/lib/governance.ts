@@ -182,7 +182,7 @@ export function canExecuteStage(
   return {
     allowed: false,
     needsApproval: true,
-    reason: `stage "${stage}" requires Jesse's approval before it can run`,
+    reason: `stage "${stage}" requires approval before it can run`,
   };
 }
 

@@ -274,39 +274,62 @@ describe('processDue — one headless tick', () => {
     expect(out.state.approvals[0].consumedAt).not.toBeNull();
   });
 
-  it('executes a due command stage and records the captured output', async () => {
+  it('runs the Nightly chain end to end: design → implement → Reviewer-approved push → document', async () => {
     const job = repoCheckTemplate({
       channelId: 'conv-build-room',
       agentId: 'agent-atlas',
       workdir: process.cwd(),
       schedule: { kind: 'interval', everyMs: 60_000 },
     });
-    const dispatched: string[] = [];
-    const out = await processDue(baseState(job), new Date(T0), {
-      dispatchPrompt: async () => {
-        dispatched.push('design');
-        return 'Check plan: status only.';
-      },
-      executeCommand: (j, argv) => executeAllowedCommand(j, argv),
-      log: () => {},
+    const state = baseState(job);
+    state.agents.push({
+      id: 'agent-reviewer',
+      name: 'Reviewer',
+      endpointUrl: 'http://127.0.0.1:9/chat',
+      model: 'test',
+      systemPrompt: '',
     });
-    // Only the design stage fired on this tick (one stage per tick per job).
-    expect(dispatched).toHaveLength(1);
+    const executed: string[][] = [];
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent) => {
+        if (a.id === 'agent-reviewer') return 'APPROVE: no patch staged, nothing to push — safe.';
+        return 'NO-CHANGE: nothing verifiably wrong.';
+      },
+      executeCommand: async (_j: ProductJob, argv: string[]): Promise<CommandResult> => {
+        executed.push(argv);
+        return {
+          ok: true,
+          exitCode: 0,
+          output: 'NOTHING-TO-PUSH: no staged patch',
+          timedOut: false,
+          blocked: false,
+          blockedReason: null,
+        };
+      },
+      log: () => {},
+    };
+    // Tick 1: design (prompt). Tick 2: implement (prompt, NO-CHANGE).
+    let out = await processDue(state, new Date(T0), deps);
     expect(out.state.jobs[0].currentStageIndex).toBe(1);
-    // Next tick: the implement stage is a command stage — it executes
-    // for real in the repo working directory.
-    const out2 = await processDue(out.state, new Date(T0 + 61_000), {
-      dispatchPrompt: async () => {
-        throw new Error('no prompt dispatch on a command tick');
-      },
-      executeCommand: (j, argv) => executeAllowedCommand(j, argv),
-      log: () => {},
-    });
-    const runs = out2.state.jobs[0].runs;
-    expect(runs).toHaveLength(2);
-    expect(runs[1].kind).toBe('command');
-    expect(runs[1].status).toBe('ok');
-    expect(out2.state.jobs[0].currentStageIndex).toBe(2);
+    out = await processDue(out.state, new Date(T0 + 61_000), deps);
+    expect(out.state.jobs[0].currentStageIndex).toBe(2);
+    expect(out.state.jobs[0].runs[1].output).toContain('NO-CHANGE');
+    // Tick 3: the push stage is gated — the Reviewer approves in the same
+    // tick (decidedBy 'reviewer'), the allowlisted push command executes,
+    // and the approval is consumed on success.
+    out = await processDue(out.state, new Date(T0 + 122_000), deps);
+    expect(executed).toEqual([['sudo', '/opt/teamz-runner/push-mem20.py']]);
+    expect(out.state.approvals).toHaveLength(1);
+    expect(out.state.approvals[0].status).toBe('approved');
+    expect(out.state.approvals[0].decidedBy).toBe('reviewer');
+    expect(out.state.approvals[0].stage).toBe('upgrade');
+    expect(out.state.approvals[0].consumedAt).not.toBeNull();
+    expect(out.state.jobs[0].runs[2].kind).toBe('command');
+    expect(out.state.jobs[0].runs[2].output).toContain('NOTHING-TO-PUSH');
+    expect(out.state.jobs[0].currentStageIndex).toBe(3);
+    // Tick 4: document records the push (or its absence) and the job ends.
+    out = await processDue(out.state, new Date(T0 + 183_000), deps);
+    expect(out.state.jobs[0].status).toBe('done');
   });
 
   it('a failed prompt dispatch is recorded as a failed run and retried next tick', async () => {

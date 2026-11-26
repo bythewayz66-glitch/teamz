@@ -1,0 +1,13 @@
+# Teamz governed push path (see docs/PUSH_PATH.md).
+#
+# The teamz-runner service (user teamz) may run ONLY the push script, as
+# root, without a password. The script is root-owned and not writable by
+# teamz; it commits and pushes one staged patch to /opt/mem20 after
+# re-checking the Reviewer approval, the branch, and the diff. The
+# GitHub token stays root's (gh auth / git credential store) — the
+# script never reads, copies, or prints it.
+#
+# Install: cp deploy/teamz-push-mem20.sudoers /etc/sudoers.d/teamz-push-mem20
+#          chmod 0440 /etc/sudoers.d/teamz-push-mem20
+#          visudo -cf /etc/sudoers.d/teamz-push-mem20
+teamz ALL=(root) NOPASSWD: /opt/teamz-runner/push-mem20.py

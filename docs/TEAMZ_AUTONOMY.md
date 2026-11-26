@@ -32,8 +32,10 @@ the one in the UI seed (`src/data/mock.ts`) — tested in
   Creator, Meeting Notes Specialist, CEO Assistant, Senior Project
   Manager, Personal Growth Mentor. Each has skills and the tool set
   (`wikipedia`, `weather`, `calculator` — plus `web_search`,
-  `create_automation`, `add_provider`, `reassign_agent` on the
-  endpoint side).
+  `create_automation`, `add_provider`, `reassign_agent`,
+  `repo_read`, `stage_patch` on the endpoint side; the last two are
+  the governed push path's read/stage half — see
+  `docs/PUSH_PATH.md`).
 - **Reviewer** (`agent-reviewer`): the approval gate for routine
   operational decisions. See `docs/REVIEWER_POLICY.md`.
 - **Orchestrator** (`agent-orchestrator`): triage and assignment in
@@ -71,6 +73,15 @@ matches. Every hourly target is a concrete, bounded task the agent
 can finish in one dispatch, read-only against `/opt/mem20` — see the
 `HOURLY_TASKS` table in `scripts/build-runner-state.mjs`. Command
 cron jobs are refused (no allowlist).
+
+The Nightly repo check is the one product job that writes: design →
+implement → upgrade → document. The implement stage verifies one live
+claim with the `repo_read` / `stage_patch` tools; the upgrade stage is
+the governed push (allowlisted `sudo /opt/teamz-runner/push-mem20.py`,
+gated on the Reviewer — see `docs/PUSH_PATH.md`); the document stage
+records the push (commit hash, remote main) or why nothing was
+pushed. Most nights there is nothing to fix and the push stage
+reports `NOTHING-TO-PUSH`.
 
 ## The Build Room (`conv-build-room`)
 

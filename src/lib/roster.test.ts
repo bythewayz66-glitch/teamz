@@ -68,6 +68,13 @@ describe('roster — runner-agents.json is the single source of truth', () => {
     expect(km.systemPrompt).not.toMatch(/sk-[A-Za-z0-9]/);
     expect(km.systemPrompt).not.toMatch(/gho_[A-Za-z0-9]/);
   });
+
+  it('the Reviewer draws the push-path line: a routine repo commit is not a public release', () => {
+    const reviewer = roster.find((a: { id: string }) => a.id === 'agent-reviewer');
+    expect(reviewer.systemPrompt).toContain('One distinction matters');
+    expect(reviewer.systemPrompt).toContain('not a public release');
+    expect(reviewer.systemPrompt).toContain('release / advertise / sell stages');
+  });
 });
 
 describe('UI seed — mock.ts matches the roster exactly', () => {

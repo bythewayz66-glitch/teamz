@@ -49,7 +49,7 @@ describe('canExecuteStage — the gate', () => {
     const check = canExecuteStage('job-1', 'release', []);
     expect(check.allowed).toBe(false);
     expect(check.needsApproval).toBe(true);
-    expect(check.reason).toMatch(/requires Jesse's approval/);
+    expect(check.reason).toMatch(/requires approval before it can run/);
   });
 
   it('a gated stage refuses to run on a pending request alone', () => {

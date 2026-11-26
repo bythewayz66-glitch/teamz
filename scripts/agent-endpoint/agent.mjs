@@ -174,6 +174,12 @@ const REASSIGNMENTS_PATH =
   process.env.REASSIGNMENTS_PATH ?? '/var/lib/teamz-agent/reassignments.json';
 const RATE_LIMIT_EVENTS_PATH =
   process.env.RATE_LIMIT_EVENTS_PATH ?? '/var/lib/teamz-agent/rate-limit-events.jsonl';
+// The mem20 checkout the runner works on, and the patch staging area.
+// repo_read reads files under MEM20_ROOT; stage_patch writes patch JSON
+// (never repo files) under PATCH_DIR. The privileged push script
+// (root, via sudo) is the only thing that applies a patch to the repo.
+const MEM20_ROOT = resolve(process.env.MEM20_ROOT ?? '/opt/mem20');
+const PATCH_DIR = process.env.PATCH_DIR ?? '/var/lib/teamz-runner/patches';
 // The UI is served from port 8895, this service from 8897, so the
 // browser treats the UI's fetch as cross-origin. Read-only + no auth
 // on a tailnet-only service, so a wildcard origin is acceptable.
@@ -416,6 +422,210 @@ function recordRateLimitEvent(event) {
     log(`rate-limit event NOT recorded: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
+}
+
+/* ===========================================================================
+ * Repo tools — the governed push path's read/stage half (docs/PUSH_PATH.md).
+ *
+ * The agents work on the mem20 checkout at MEM20_ROOT, but they never
+ * write to it directly: repo_read reads files, stage_patch stages ONE
+ * small patch as JSON under PATCH_DIR. The privileged push script
+ * (root, via sudo) is the only thing that applies a patch to the repo,
+ * and only after the Reviewer approved the push stage.
+ *
+ * Both tools treat their inputs as untrusted: paths must stay inside
+ * the repo, blocked paths are refused, and stage_patch verifies the job
+ * is really sitting on its implement stage (the patch-producing stage)
+ * before it stages anything.
+ * ========================================================================= */
+
+// Paths a staged patch may never touch: workflow files (the token has no
+// `workflow` scope and Jesse applies those himself), the starlette cap in
+// requirements.txt, and anything secret.
+const PATCH_BLOCKED_PREFIXES = ['.github/', '.git/'];
+const PATCH_BLOCKED_NAMES = new Set(['requirements.txt']);
+const PATCH_BLOCKED_SEGMENTS = new Set(['secrets', '.git']);
+const PATCH_BLOCKED_SUFFIXES = ['.env'];
+// Reads are harmless, so repo_read blocks only secrets and git internals.
+const READ_BLOCKED_SEGMENTS = new Set(['secrets', '.git']);
+const READ_BLOCKED_SUFFIXES = ['.env'];
+
+const JOB_ID_RE = /^job-[a-z0-9][a-z0-9-]*$/;
+const MAX_READ_CHARS = 1000;
+const MAX_OLD_TEXT_CHARS = 2000;
+const MAX_NEW_TEXT_CHARS = 5000;
+const MAX_MESSAGE_CHARS = 200;
+
+/** Resolve `rel` under MEM20_ROOT, or null when it escapes / is malformed. */
+function resolveRepoPath(rel) {
+  if (typeof rel !== 'string' || !rel || rel.includes('\0') || rel.includes('\\')) return null;
+  if (rel.startsWith('/')) return null;
+  const parts = rel.split('/');
+  if (parts.some((p) => p === '..' || p === '')) return null;
+  const abs = resolve(MEM20_ROOT, rel);
+  if (abs !== MEM20_ROOT && !abs.startsWith(`${MEM20_ROOT}/`)) return null;
+  return { rel: parts.join('/'), abs };
+}
+
+function pathBlocked(rel, { segments, prefixes, names, suffixes }) {
+  const parts = rel.split('/');
+  if (parts.some((p) => segments.has(p))) return true;
+  if (prefixes.some((pre) => rel.startsWith(pre))) return true;
+  if (names.has(parts[parts.length - 1])) return true;
+  if (suffixes.some((suf) => rel.endsWith(suf))) return true;
+  return false;
+}
+
+function countOccurrences(text, needle) {
+  if (!needle) return 0;
+  return text.split(needle).length - 1;
+}
+
+/**
+ * Read a file (or the excerpt around a search string) under MEM20_ROOT.
+ * Args JSON: {"file", "find"?}. Returns at most ~1000 chars — the tool
+ * loop truncates observations at 1200, so a longer return would be cut
+ * mid-sentence. `find` is how the agent reaches a sentence deep in a
+ * file: the excerpt is centred on the first match.
+ */
+export function runRepoRead(args) {
+  let input;
+  try {
+    input = JSON.parse(args);
+  } catch {
+    throw new Error('repo_read needs a JSON object like {"file": "docs/README.md", "find": "some sentence"}');
+  }
+  const resolved = resolveRepoPath(input.file);
+  if (!resolved) {
+    throw new Error(`repo_read refused: bad path ${JSON.stringify(input.file)} — relative paths inside the repo only`);
+  }
+  if (
+    pathBlocked(resolved.rel, {
+      segments: READ_BLOCKED_SEGMENTS,
+      prefixes: [],
+      names: new Set(),
+      suffixes: READ_BLOCKED_SUFFIXES,
+    })
+  ) {
+    throw new Error(`repo_read refused: ${resolved.rel} is not readable through this tool`);
+  }
+  let text;
+  try {
+    text = readFileSync(resolved.abs, 'utf-8');
+  } catch {
+    throw new Error(`repo_read: cannot read ${resolved.rel} — no such file in the repo`);
+  }
+  const find = typeof input.find === 'string' && input.find ? input.find : null;
+  if (!find) {
+    const head = text.slice(0, MAX_READ_CHARS);
+    return `${resolved.rel} (${text.length} chars total):\n${head}${text.length > MAX_READ_CHARS ? '\n…[truncated]' : ''}`;
+  }
+  const idx = text.indexOf(find);
+  if (idx === -1) return `no match for ${JSON.stringify(find)} in ${resolved.rel} (${text.length} chars total)`;
+  const start = Math.max(0, idx - 400);
+  const end = Math.min(text.length, idx + find.length + 400);
+  let excerpt = text.slice(start, end);
+  if (excerpt.length > MAX_READ_CHARS) excerpt = excerpt.slice(0, MAX_READ_CHARS);
+  return `${resolved.rel} — match for ${JSON.stringify(find)} at char ${idx} of ${text.length}:\n${start > 0 ? '…' : ''}${excerpt}${end < text.length ? '…' : ''}`;
+}
+
+/**
+ * Stage ONE small patch for a job's implement stage. Args JSON:
+ * {"jobId", "file", "oldText", "newText", "message"}. Writes a patch
+ * JSON under PATCH_DIR — it never touches the repo. The push script
+ * applies it only after Reviewer approval. Refuses unless the job
+ * exists in the runner state AND is currently sitting on its implement
+ * stage, so a patch can only be staged for the job that is actually
+ * producing a change right now.
+ */
+export function runStagePatch(args) {
+  let input;
+  try {
+    input = JSON.parse(args);
+  } catch {
+    throw new Error(
+      'stage_patch needs a JSON object like {"jobId": "job-...", "file": "docs/x.md", "oldText": "...", "newText": "...", "message": "docs: fix ..."}',
+    );
+  }
+  const { jobId, file, oldText, newText, message } = input ?? {};
+  if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) {
+    throw new Error('stage_patch refused: jobId must look like "job-..." (see the runner context in your prompt)');
+  }
+  if (typeof oldText !== 'string' || !oldText || oldText.length > MAX_OLD_TEXT_CHARS) {
+    throw new Error(`stage_patch refused: oldText must be 1–${MAX_OLD_TEXT_CHARS} chars`);
+  }
+  if (typeof newText !== 'string' || !newText || newText.length > MAX_NEW_TEXT_CHARS) {
+    throw new Error(`stage_patch refused: newText must be 1–${MAX_NEW_TEXT_CHARS} chars`);
+  }
+  if (
+    typeof message !== 'string' ||
+    !message.trim() ||
+    message.trim().length > MAX_MESSAGE_CHARS ||
+    /\n/.test(message)
+  ) {
+    throw new Error(`stage_patch refused: message must be one line, 1–${MAX_MESSAGE_CHARS} chars`);
+  }
+  const resolved = resolveRepoPath(file);
+  if (!resolved) {
+    throw new Error(`stage_patch refused: bad path ${JSON.stringify(file)} — relative paths inside the repo only`);
+  }
+  if (
+    pathBlocked(resolved.rel, {
+      segments: PATCH_BLOCKED_SEGMENTS,
+      prefixes: PATCH_BLOCKED_PREFIXES,
+      names: PATCH_BLOCKED_NAMES,
+      suffixes: PATCH_BLOCKED_SUFFIXES,
+    })
+  ) {
+    throw new Error(
+      `stage_patch refused: ${resolved.rel} is blocked — workflow files, requirements.txt, and secrets are never pushed by this path`,
+    );
+  }
+  let state;
+  try {
+    state = loadRunnerStateJson();
+  } catch (err) {
+    throw new Error(
+      `stage_patch refused: cannot read runner state — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const job = (state.jobs ?? []).find((j) => j.id === jobId);
+  if (!job) throw new Error(`stage_patch refused: unknown job "${jobId}"`);
+  const current = job.stages?.[job.currentStageIndex];
+  if (!current || current.stage !== 'implement') {
+    throw new Error(
+      `stage_patch refused: job "${jobId}" is not on its implement stage (current: ${current?.stage ?? 'done'})`,
+    );
+  }
+  let text;
+  try {
+    text = readFileSync(resolved.abs, 'utf-8');
+  } catch {
+    throw new Error(`stage_patch: cannot read ${resolved.rel} — no such file in the repo`);
+  }
+  const occurrences = countOccurrences(text, oldText);
+  if (occurrences !== 1) {
+    throw new Error(
+      `stage_patch refused: oldText occurs ${occurrences} times in ${resolved.rel} — it must occur exactly once (re-read the file and copy the exact text)`,
+    );
+  }
+  const patch = {
+    jobId,
+    file: resolved.rel,
+    oldText,
+    newText,
+    message: message.trim(),
+    stagedAt: new Date().toISOString(),
+  };
+  mkdirSync(PATCH_DIR, { recursive: true });
+  const path = `${PATCH_DIR}/${jobId}.json`;
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(patch, null, 2) + '\n', 'utf-8');
+  renameSync(tmp, path);
+  const added = newText.split('\n').length;
+  const removed = oldText.split('\n').length;
+  log(`patch staged: job=${jobId} file=${resolved.rel} (${removed}→${added} lines)`);
+  return `patch staged for job ${jobId}: ${resolved.rel} (${removed} line(s) → ${added} line(s)). It is NOT in the repo yet — the governed push step commits and pushes it only after the Reviewer approves the push. Reply with a one-paragraph summary of the change for the record.`;
 }
 
 function log(message) {
@@ -945,6 +1155,24 @@ const TOOL_DEFS = [
       return result.ok ? result.reason : `reassign_agent FAILED: ${result.reason}`;
     },
   },
+  {
+    name: 'repo_read',
+    description:
+      'Read a file in the mem20 repo (/opt/mem20) — or the excerpt around a search string in it. ' +
+      'Args must be a JSON object: {"file" (repo-relative path), "find" (optional sentence to centre the excerpt on)}. ' +
+      'Returns at most ~1000 chars. Never reads secrets or git internals.',
+    usage: 'a JSON object, e.g. {"file": "docs/series/cartoon/index.html", "find": "no episode has been produced yet"}',
+    run: async (args) => runRepoRead(args),
+  },
+  {
+    name: 'stage_patch',
+    description:
+      'Stage ONE small patch for your job\'s implement stage: the smallest verified correction to one repo file. ' +
+      'Args must be a JSON object: {"jobId" (from the runner context in your prompt), "file" (repo-relative path), "oldText" (exact text, must occur exactly once), "newText", "message" (one-line commit message)}. ' +
+      'Stages the patch for the governed push — it does NOT edit the repo. Refused for workflow files, requirements.txt, and secrets, and unless your job is on its implement stage.',
+    usage: 'a JSON object, e.g. {"jobId": "job-...", "file": "docs/x.md", "oldText": "...", "newText": "...", "message": "docs: fix ..."}',
+    run: async (args) => runStagePatch(args),
+  },
 ];
 
 const TOOL_NAMES = TOOL_DEFS.map((d) => d.name);
@@ -971,6 +1199,9 @@ const TOOL_ALIASES = {
   addprovider: 'add_provider',
   reassignagent: 'reassign_agent',
   reassign: 'reassign_agent',
+  reporead: 'repo_read',
+  readrepo: 'repo_read',
+  stagepatch: 'stage_patch',
 };
 
 function resolveToolName(name) {

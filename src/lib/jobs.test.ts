@@ -162,6 +162,9 @@ describe('stage progression', () => {
     const built = buildStagePrompt(job, currentStage(job)!);
     expect(built).toContain('The design: three modules.');
     expect(built).toContain('Build it.');
+    // And the runner context the agent's tools need (job id, stage).
+    expect(built).toContain(`job id "${job.id}"`);
+    expect(built).toContain('stage "build"');
 
     const started2 = startStage(job, [], T0 + 120_000);
     expect(started2.ok).toBe(true);
@@ -401,21 +404,30 @@ describe('command stages and the allowlist', () => {
     expect(started.run.kind).toBe('prompt');
   });
 
-  it('repoCheckTemplate builds a design → implement(command) → document chain', () => {
+  it('repoCheckTemplate builds a design → implement → upgrade(push) → document chain', () => {
     const job = repoCheckTemplate({
       channelId: CHANNEL,
       agentId: 'agent-atlas',
       workdir: '/srv/mem20',
     });
-    expect(job.stages.map((s) => s.stage)).toEqual(['design', 'implement', 'document']);
+    expect(job.stages.map((s) => s.stage)).toEqual(['design', 'implement', 'upgrade', 'document']);
     expect(job.workdir).toBe('/srv/mem20');
-    expect(job.stages[1].command).toEqual({ argv: ['git', 'status', '--short'] });
     expect(job.schedule).toEqual({ kind: 'cron', expr: '0 7 * * *' });
-    expect(isCommandAllowed(job, ['git', 'status', '--short'])).toBe(true);
-    // Round-trips through serialisation with the command intact.
+    // The only command stage is the governed push; it is gated on the
+    // Reviewer and allowlisted — and nothing else is.
+    expect(job.stages[2].command).toEqual({ argv: ['sudo', '/opt/teamz-runner/push-mem20.py'] });
+    expect(job.stages[2].flags).toEqual({ requiresReview: true });
+    expect(job.stages[2].humanInput).toBe(true);
+    expect(job.stages[0].command).toBeUndefined();
+    expect(job.stages[1].command).toBeUndefined();
+    expect(job.stages[3].command).toBeUndefined();
+    expect(isCommandAllowed(job, ['sudo', '/opt/teamz-runner/push-mem20.py'])).toBe(true);
+    expect(isCommandAllowed(job, ['git', 'status', '--short'])).toBe(false);
+    // Round-trips through serialisation with the command and gate intact.
     const restored = deserializeJob(JSON.parse(serializeJob(job)));
-    expect(restored.stages[1].command).toEqual({ argv: ['git', 'status', '--short'] });
-    expect(restored.allowedCommands).toEqual([['git', 'status', '--short']]);
+    expect(restored.stages[2].command).toEqual({ argv: ['sudo', '/opt/teamz-runner/push-mem20.py'] });
+    expect(restored.stages[2].flags).toEqual({ requiresReview: true });
+    expect(restored.allowedCommands).toEqual([['sudo', '/opt/teamz-runner/push-mem20.py']]);
     expect(restored.workdir).toBe('/srv/mem20');
   });
 });

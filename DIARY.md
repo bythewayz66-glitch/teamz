@@ -3,6 +3,68 @@
 A running record of what changed in this repo and why. Newest first.
 Dates are in Jesse's time (MST).
 
+## 2026-11-26 — Governed push path: agents' changes land in mem20
+
+Jesse's ask (Nov 26, afternoon MST — "Yes please do absolutely"):
+build the governed push path so the Teamz agents' changes land in
+the mem20 GitHub repo. Routine code/doc changes go through the
+Reviewer; releases, public publishing, and destructive changes still
+route to Jesse.
+
+- **The rule** (`docs/PUSH_PATH.md`): routine changes are
+  Reviewer-approved (`decidedBy: 'reviewer'`); carve-outs go to Jesse
+  first, before the Reviewer is ever asked. The push stage is
+  Reviewer-gated (`requiresReview`), not a carve-out — a routine
+  commit to the team's own repo is not a release.
+- **The mechanism**: agents read with the new `repo_read` tool and
+  stage ONE small patch with `stage_patch` (patch JSON under
+  `/var/lib/teamz-runner/patches/`, never a repo edit); the Nightly
+  repo check is now design → implement → upgrade → document, where
+  `upgrade` is the only command stage
+  (`sudo /opt/teamz-runner/push-mem20.py`, Reviewer-gated) and
+  `document` records the push; the privileged script
+  (`scripts/push-mem20.py`, root-owned, sudo-only) re-checks the live
+  Reviewer approval on disk, the branch, the clean tree, `HEAD ==
+  origin/main`, and the diff (one file, ≤ 50 lines, no deletions, no
+  blocked paths) before it commits and pushes — and verifies the
+  remote moved. The runner persists state before a gated command
+  stage (`onBeforeCommand`) so the approval is on disk for the
+  script. The Reviewer now sees completed stage outputs with the
+  request (`reviewContext`), so it judges the actual staged change.
+- **Live finding, fixed in the run**: the Reviewer first DENIED the
+  push as "carve-out — needs Jesse (push to GitHub remote main is a
+  public release)" — the old wording left the line blurry. The denial
+  is preserved in the approval record. The fix was a prompt
+  clarification (Reviewer system prompt in `runner-agents.json` and
+  `src/data/mock.ts`, identical, plus the dispatch prompt): a routine
+  repo commit through the governed push script is NOT a public
+  release. The retry was APPROVED by the Reviewer ("Small one-file
+  doc correction … not a public release — routine governed push").
+- **E2E status — push BLOCKED, job paused**: the script correctly
+  refused to push — remote `main` had moved to `7b4534eb` (another
+  worker's docs fix, 487/129 → 527/135) while `/opt/mem20` was still
+  at `30c2123`. The re-sync then hit a runtime security notice (the
+  freshly fetched remote content failed an execution-risk check), so
+  the verification job (`job-push-path-verify`) is PAUSED at the
+  `upgrade` stage with the patch still staged and the Reviewer
+  approval still live and unconsumed. Nothing was committed or
+  pushed. To finish: Jesse gives the go-ahead in plain words, a
+  worker fast-forwards `/opt/mem20` to `origin/main`, resumes the
+  job, and the next tick pushes under the existing approval.
+- **Deploy**: endpoint + runner redeployed on jnet1 (agent
+  `dec9a7e3…`, runner `520b44d5…`); sudo rule installed
+  (`/etc/sudoers.d/teamz-push-mem20`, `visudo -cf` clean); patches
+  dir created; Nightly job updated in live state (v2 stages,
+  currentStageIndex 1 — next 07:00 run uses the new flow). Live
+  smoke test: Atlas used `repo_read` through `/chat` and quoted the
+  stale sentence exactly. Teamz-ui was NOT restarted (unchanged).
+- **Tests**: 356 passing (was 335) — new coverage for the template
+  chain, the Reviewer context + push-path distinction,
+  `onBeforeCommand`, and the endpoint repo tools.
+- **Sync state**: `/opt/mem20` at `30c2123` (527/135), tree clean;
+  the 2 mem20agentz mods stay on branch `jnet1-mem20agentz-mods`
+  (`3c7b5b62`), never touched, never pushed.
+
 ## 2026-11-26 — The 24/7 team: 26 Teamily agents, Orchestrator, Reviewer, Provider Researcher, Keymaster
 
 Jesse's ask (Nov 26, ~00:55–01:10 MST): add ALL 26 Teamily agents to

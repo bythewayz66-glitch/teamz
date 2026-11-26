@@ -447,6 +447,25 @@ export function resolveMentionedAgents(
   return out;
 }
 
+/**
+ * Completed stage outputs of a job, as context for the Reviewer: the
+ * Reviewer judges the actual work (e.g. the staged patch summary from
+ * the implement stage), not just the gated stage's description. Capped
+ * per stage so the request stays bounded; a job with nothing completed
+ * yet returns ''.
+ */
+export function reviewContext(job: ProductJob): string {
+  const blocks: string[] = [];
+  for (const run of job.runs) {
+    if (run.status === 'ok' && run.output) {
+      blocks.push(
+        `--- Output of the ${run.stage} stage (by ${run.agentId}) ---\n${run.output.slice(0, 1500)}`,
+      );
+    }
+  }
+  return blocks.join('\n\n');
+}
+
 /** The Reviewer's verdict, from a one-line `APPROVE: <reason>` / `DENY: <reason>` reply. */
 export function parseReviewerReply(
   reply: string,
@@ -667,6 +686,15 @@ export interface RunnerDeps {
    * this tick was running, and a resend must use the NEW assignment.
    */
   reloadAgents?: () => Promise<RunnerAgent[]>;
+  /**
+   * Called before executing a gated command stage (one with a live
+   * approval), with the in-memory state. The live runner persists the
+   * state here so a privileged helper the command invokes — the governed
+   * push script — can verify the approval on disk instead of trusting
+   * that it was approved. Only called for gated stages; a failure refuses
+   * the stage (it retries on a later tick, approval unconsumed).
+   */
+  onBeforeCommand?: (state: RunnerState) => Promise<void>;
   /**
    * Minimum milliseconds between the END of one dispatch and the START
    * of the next (default 0 — tests). The live runner passes 50_000:
@@ -1042,6 +1070,9 @@ export async function processDue(
       // the decision recorded as decidedBy 'reviewer'; denied parks the
       // job. If the Reviewer is unreachable or its reply is unreadable,
       // fall back to a Jesse approval request — never silently approve.
+      // The Reviewer judges the actual work, not just the stage
+      // description: completed stage outputs (e.g. the staged patch
+      // summary) travel with the request.
       const reviewer = agentById.get('agent-reviewer');
       if (!reviewer) {
         requestJesse('No Reviewer agent configured — routed to Jesse.');
@@ -1052,9 +1083,16 @@ export async function processDue(
           `REVIEW REQUEST — decide this routine operational stage.\n` +
           `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}\n` +
           `Stage prompt: ${plan.prompt}\nExpected output: ${plan.expectedOutput}\n` +
+          `What has happened so far in this job (completed stage outputs — judge the actual change, not just the description):\n${reviewContext(job) || '(nothing yet)'}\n` +
           `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". ` +
           `You must NEVER approve spending money, public releases, or destructive or deletion ` +
-          `actions — if this request touches any of those, reply "DENY: carve-out — needs Jesse".`;
+          `actions — if this request touches any of those, reply "DENY: carve-out — needs Jesse". ` +
+          `One distinction: pushing a routine code or doc change to the team's own repo through the ` +
+          `governed push script is NOT a public release — a release is release notes, an announcement, ` +
+          `publishing the docs site, or selling something. The push script only commits one small staged ` +
+          `change (one file, a few lines, nothing deleted, no workflow files). Judge the staged change in ` +
+          `the context above: approve it only if it is that kind of small routine change; deny anything ` +
+          `bigger, destructive, or release-shaped.`;
         const reply = await dispatch(reviewer, reviewerPrompt, job.channelId);
         const verdict = parseReviewerReply(reply);
         if (!verdict) {
@@ -1098,6 +1136,27 @@ export async function processDue(
     // Record the dispatched run first, so a crash mid-stage cannot lose it.
     state.jobs = state.jobs.map((j) => (j.id === job.id ? started.job : j));
     if (started.run.kind === 'command' && plan.command) {
+      // Gated command stage: persist state first, so a privileged helper
+      // the command invokes can verify the live approval on disk. A
+      // persist failure refuses the stage — it retries on a later tick
+      // with the approval unconsumed.
+      if (started.run.approvalId && deps.onBeforeCommand) {
+        try {
+          await deps.onBeforeCommand(state);
+        } catch (err) {
+          const { job: nextJob } = completeStageRun(
+            started.job,
+            started.run.id,
+            `refused: could not persist state before gated command — ${err instanceof Error ? err.message : String(err)}`,
+            false,
+            state.approvals,
+            Date.now(),
+          );
+          state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
+          fired.push(`job ${job.name} / ${plan.stage}: command REFUSED (state persist failed)`);
+          continue;
+        }
+      }
       const result = await deps.executeCommand(job, plan.command.argv);
       if (result.blocked) {
         const { job: nextJob, approvals: nextApprovals } = completeStageRun(

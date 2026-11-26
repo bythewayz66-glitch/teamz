@@ -326,6 +326,10 @@ export function buildStagePrompt(job: ProductJob, plan: StagePlan): string {
     parts.push('Context from earlier stages of this job — build on it, do not redo it:\n' + contextBlocks.join('\n\n'));
   }
   parts.push(`Expected output for this stage: ${plan.expectedOutput.trim()}`);
+  // Runner context: the agent's tools need the job id (e.g. stage_patch
+  // stages a patch for THIS job), and the agent should know which stage
+  // it is running. Appended last so it never crowds out the task itself.
+  parts.push(`[runner context: job id "${job.id}", stage "${plan.stage}", channel "${job.channelId}"]`);
   return parts.join('\n\n');
 }
 
@@ -693,22 +697,35 @@ export function shipReleaseTemplate(input: TemplateInput, nowMs: number = Date.n
 
 /**
  * "Check the repo": the nightly verification loop for a checked-out repo —
- * plan what to verify, run read-only git commands in the working directory,
- * then write up the findings. The command stages are the executor's proof
- * of work: each command is an exact argv on the job's allowlist, run with
- * no shell, in `workdir`. No command here writes anything — status, log,
- * and diff stat are all reads.
+ * plan what to verify, verify one live claim with the repo tools, then —
+ * only for a Reviewer-approved change — commit and push it, and write up
+ * the findings. The command stages are the executor's proof of work: each
+ * command is an exact argv on the job's allowlist, run with no shell, in
+ * `workdir`.
+ *
+ * The push path (see docs/PUSH_PATH.md): the implement stage is a prompt
+ * stage — the agent reads repo files with the repo_read tool and stages
+ * the smallest verified correction with the stage_patch tool (the patch
+ * file lives outside the repo; nothing is edited yet). The upgrade stage
+ * is the only command stage: it runs the governed push script, which
+ * re-checks the Reviewer approval, the branch, and the diff before it
+ * commits and pushes anything. The upgrade stage is gated with
+ * `requiresReview`, so it never runs without a Reviewer approval
+ * (decidedBy 'reviewer'); releases, public publishing, and destructive
+ * changes still route to Jesse, never to the Reviewer. Most nights there
+ * is nothing to fix: the implement stage replies NO-CHANGE, the push
+ * script reports NOTHING-TO-PUSH, and the document stage records that.
  */
 export function repoCheckTemplate(
   input: TemplateInput & { workdir: string },
   nowMs: number = Date.now(),
 ): ProductJob {
-  const allowedCommands = [['git', 'status', '--short']];
+  const allowedCommands = [['sudo', '/opt/teamz-runner/push-mem20.py']];
   return createJob(
     {
       name: input.name ?? 'Nightly repo check',
       description:
-        'Nightly verification of the checked-out repo: plan the check, run the read-only git status check in the working directory, write up what changed. The command runs only from the job allowlist, with no shell.',
+        'Nightly verification of the checked-out repo: plan the check, verify one live claim with the repo tools, and — only for a Reviewer-approved change — commit and push it. The push runs only from the job allowlist, with no shell, through the governed push script.',
       channelId: input.channelId,
       managerAgentId: input.managerAgentId ?? null,
       schedule: input.schedule ?? { kind: 'cron', expr: '0 7 * * *' },
@@ -719,26 +736,38 @@ export function repoCheckTemplate(
           stage: 'design',
           agentId: stageAgent(input, 'design'),
           prompt:
-            'Plan tonight’s repo check: given the repo’s recent history, what should be verified — uncommitted changes, recent commits, and anything that looks unfinished? List the checks and what each one would prove.',
-          expectedOutput: 'A check plan: the checks to run and what each one proves.',
+            'Plan tonight’s repo check: given the repo’s recent history, which live claims (surface numbers, episode/production status, links) are most likely stale, and which exact files would prove or disprove each one? List the checks and what each one would prove.',
+          expectedOutput: 'A check plan: the live claims to verify, the exact file for each, and what each check would prove.',
           contextStages: [],
         },
         {
           stage: 'implement',
           agentId: stageAgent(input, 'implement'),
           prompt:
-            'Run the allowlisted repo check in the working directory (git status) and report its exact output. Do not run anything else, and do not modify the repo.',
-          expectedOutput: 'The exact output of the read-only git status check.',
+            'Verify one live claim from the design plan with the repo_read tool (read the exact file, find the exact sentence) and, ONLY if the file text proves the claim wrong, stage the smallest correction with the stage_patch tool (exact old text, exact new text, one file, one short commit message). Rules: never stage a change you cannot verify from the file text itself; never touch .github/, requirements.txt, secrets, or any history/dated record (daily reports, changelogs, evidence files state what was true then — leave them alone); if nothing is verifiably wrong, reply NO-CHANGE and stage nothing. Your job id is in the runner context at the end of this prompt — pass it to stage_patch exactly.',
+          expectedOutput:
+            'Either NO-CHANGE (nothing verifiably wrong), or the staged patch summary: file, old text, new text, and why the old text was wrong.',
           contextStages: ['design'],
-          command: { argv: ['git', 'status', '--short'] },
+        },
+        {
+          stage: 'upgrade',
+          agentId: stageAgent(input, 'upgrade'),
+          prompt:
+            'Push the staged change (if any) to GitHub through the governed push script. This stage runs the allowlisted command only — it never edits files itself. The push happens only because the Reviewer approved this stage; the script re-checks the approval, the branch, and the diff before pushing.',
+          expectedOutput:
+            'The push record: the commit hash and remote main, or NOTHING-TO-PUSH when no patch was staged.',
+          contextStages: ['design', 'implement'],
+          flags: { requiresReview: true },
+          command: { argv: ['sudo', '/opt/teamz-runner/push-mem20.py'] },
         },
         {
           stage: 'document',
           agentId: stageAgent(input, 'document'),
           prompt:
-            'Write the nightly repo-check report from the design plan and the command output: what changed, what is unfinished, and what needs a human decision. Quote the command output; do not invent findings.',
-          expectedOutput: 'A short report: changes, unfinished work, and decisions needed.',
-          contextStages: ['design', 'implement'],
+            'Write the nightly repo-check report from the design plan, the implement output, and the push record: what changed, what was pushed (commit hash, remote main) or why nothing was pushed, what is unfinished, and what needs a human decision. Quote the push record; do not invent findings.',
+          expectedOutput:
+            'A short report: the change (if any), the push record with commit hash and remote main, unfinished work, and decisions needed.',
+          contextStages: ['design', 'implement', 'upgrade'],
         },
       ],
     },
