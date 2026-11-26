@@ -31,6 +31,13 @@ import {
   hasKey,
   resolveModel,
 } from './pollinations';
+import { enabledToolNames } from '../lib/tools';
+import {
+  buildToolSystemPrompt,
+  runToolLoop,
+  MAX_TOOL_ITERATIONS,
+  type LoopStep,
+} from '../lib/toolLoop';
 
 /**
  * Which transport replies. Chosen at runtime in Workspace & API settings
@@ -277,7 +284,7 @@ const MOCK_REPLIES: Record<string, string[]> = {
     'Add the empty state before the happy path. A channel with no members is the most common first-run screen and right now it’s just… blank.',
   ],
   Sage: [
-    'Tightened it. Cut 30% of the words, kept every claim:\n\n> A Teamily-style workspace for agents you host yourself. Sidebar for the roster, one pane for the thread, settings inline. Runs with mock data on first launch; point it at your servers when you’re ready.',
+    'Tightened it. Cut 30% of the words, kept every claim:\n\n> A workspace for agents you host yourself. Sidebar for the roster, one pane for the thread, settings inline. Runs with mock data on first launch; point it at your servers when you’re ready.',
     'One idea per paragraph and lead with the verb. “Configure the endpoint” beats “The endpoint can be configured”.',
   ],
   _default: [
@@ -322,6 +329,97 @@ async function callMock(agent: Agent, options: SendOptions): Promise<string> {
 }
 
 /* ---------------------------------------------------------------------------
+ * Tool-using replies — strict-JSON action contract, no provider
+ * function-calling needed. See `src/lib/toolLoop.ts` for the loop.
+ *
+ * Each iteration rebuilds the request from the chat history plus the loop
+ * transcript so far (the model's earlier JSON actions as `assistant`
+ * turns, tool observations as `user` turns), with the system prompt
+ * swapped for the tool prompt. Tool turns are non-streaming: the model
+ * must return a complete JSON action before anything is executed.
+ * Tool use is visible while it happens: every tool step is pushed through
+ * `onDelta` as a transient "running …" status, so the reply bubble shows
+ * the work instead of sitting blank.
+ * ------------------------------------------------------------------------- */
+
+/** Rebuild the loop transcript as Message objects the transports accept. */
+function loopHistory(base: Message[], priorActions: string[], observations: string[]): Message[] {
+  const out = [...base];
+  for (let i = 0; i < priorActions.length; i++) {
+    out.push({
+      id: `tool-action-${i}`,
+      conversationId: base[0]?.conversationId ?? 'tool-loop',
+      authorType: 'agent',
+      text: priorActions[i],
+      createdAt: Date.now(),
+      status: 'sent',
+    });
+    if (i < observations.length) {
+      out.push({
+        id: `tool-obs-${i}`,
+        conversationId: base[0]?.conversationId ?? 'tool-loop',
+        authorType: 'user',
+        text: observations[i],
+        createdAt: Date.now(),
+        status: 'sent',
+      });
+    }
+  }
+  return out;
+}
+
+async function sendWithTools(
+  agent: Agent,
+  history: Message[],
+  agentsById: Map<string, Agent>,
+  options: SendOptions,
+  toolNames: string[],
+): Promise<string> {
+  const settings = getSettings();
+  const systemPrompt = buildToolSystemPrompt(agent, toolNames);
+  const ctx = {
+    conversationKind: options.conversationKind ?? (options.otherAgents?.length ? 'channel' : 'direct'),
+    conversationName: options.conversationName,
+    topic: options.topic,
+    otherAgents: options.otherAgents,
+    directed: options.directed,
+  };
+
+  const propose = async (observations: string[], priorActions: string[]): Promise<string> => {
+    const loopMessages = loopHistory(history, priorActions, observations);
+    if (settings.provider === 'custom') {
+      const toolAgent = { ...agent, systemPrompt };
+      return callLive(agent, buildRequest(toolAgent, loopMessages, agentsById, options), {
+        ...options,
+        signal: options.signal,
+      });
+    }
+    // Pollinations (default): same request builder, tool system prompt
+    // swapped in, non-streaming so each turn returns one complete action.
+    const request = buildPollinationsRequest(agent, loopMessages, agentsById, ctx, {
+      ...settings,
+      stream: false,
+    });
+    request.body.messages[0] = { role: 'system', content: systemPrompt };
+    return callPollinations(request, { signal: options.signal });
+  };
+
+  const onStep = (step: LoopStep) => {
+    if (step.action === 'tool') {
+      options.onDelta?.(`\u{1F527} Running ${step.tool}…`);
+    }
+  };
+
+  const result = await runToolLoop(propose, {
+    maxIterations: MAX_TOOL_ITERATIONS,
+    onStep,
+    signal: options.signal,
+  });
+  options.onDelta?.(result.text);
+  return result.text;
+}
+
+/* ---------------------------------------------------------------------------
  * Public API used by the UI
  * ------------------------------------------------------------------------- */
 
@@ -332,6 +430,13 @@ export async function sendToAgent(
   options: SendOptions,
 ): Promise<string> {
   const settings = getSettings();
+  // Agents with tools enabled take the tool loop on the two transports
+  // that return real model text. Mock mode and tool-less agents are
+  // untouched: the strict-JSON contract never fires for them.
+  const toolNames = enabledToolNames(agent.enabledTools);
+  if (toolNames.length > 0 && (settings.provider === 'pollinations' || settings.provider === 'custom')) {
+    return sendWithTools(agent, history, agentsById, options, toolNames);
+  }
   if (settings.provider === 'pollinations') {
     const request = buildPollinationsRequest(
       agent,

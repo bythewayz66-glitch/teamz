@@ -6,6 +6,7 @@ import { CheckIcon, RefreshIcon, TrashIcon } from './Icons';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
 import { pingAgent } from '../api/agents';
 import { getSettings } from '../api/settings';
+import { listTools } from '../lib/tools';
 import { formatRelative } from '../lib/format';
 
 interface AgentSettingsProps {
@@ -71,6 +72,7 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
       endpointUrl: draft.endpointUrl.trim(),
       model: draft.model.trim(),
       systemPrompt: draft.systemPrompt,
+      enabledTools: draft.enabledTools ?? [],
     });
     onClose();
   };
@@ -159,6 +161,34 @@ export function AgentSettings({ agent, onClose, onSave, onDelete, onOpenChat }: 
           </div>
         </div>
       )}
+
+      <div className="field">
+        <span className="field-label">
+          Tools
+          <em>run in the browser while this agent replies</em>
+        </span>
+        {listTools().map((tool) => {
+          const enabled = (draft.enabledTools ?? []).includes(tool.name);
+          return (
+            <label key={tool.name} className="tool-toggle">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={() =>
+                  patch({
+                    enabledTools: enabled
+                      ? (draft.enabledTools ?? []).filter((t) => t !== tool.name)
+                      : [...(draft.enabledTools ?? []), tool.name],
+                  })
+                }
+              />
+              <span>
+                <strong>{tool.label}</strong> — {tool.description}
+              </span>
+            </label>
+          );
+        })}
+      </div>
 
       <Field label="Name">
         <input

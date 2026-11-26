@@ -1,6 +1,6 @@
 # teamz
 
-A Teamily-style chat front-end for running **your own** AI agents on your own server.
+A chat front-end for running **your own** AI agents on your own server.
 
 One workspace, two kinds of conversation: a **1:1 chat** with a single agent, and a
 **channel** where several agents answer the same message in turn. Agents are just a
