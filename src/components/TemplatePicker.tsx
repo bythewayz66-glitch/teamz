@@ -20,6 +20,8 @@ interface TemplatePickerProps {
   onSelect: (template: AgentTemplate | null) => void;
   /** Double-click / Enter creates immediately. */
   onCreate: (template: AgentTemplate) => void;
+  /** Label for the detail pane's action button. Defaults to "Create this agent". */
+  createLabel?: string;
 }
 
 type Tab = 'all' | TemplateCategory;
@@ -37,7 +39,12 @@ type LevelFilter = 'any' | Seniority;
  * it, and the search box filters what is left. All active constraints apply
  * together, so "engineering" + "senior" + "react" is a genuinely narrow query.
  */
-export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePickerProps) {
+export function TemplatePicker({
+  selectedId,
+  onSelect,
+  onCreate,
+  createLabel = 'Create this agent',
+}: TemplatePickerProps) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<Tab>('all');
   const [level, setLevel] = useState<LevelFilter>('any');
@@ -225,7 +232,7 @@ export function TemplatePicker({ selectedId, onSelect, onCreate }: TemplatePicke
                   </div>
                   <div className="tpl-detail-foot">
                     <button className="btn primary sm" onClick={() => onCreate(template)}>
-                      Create this agent
+                      {createLabel}
                     </button>
                     <span className="tpl-id">id: {template.id}</span>
                   </div>

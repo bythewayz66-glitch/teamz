@@ -226,6 +226,43 @@ export function getSkill(category: TemplateCategory, id: string): CatalogSkill {
   return skill;
 }
 
+/**
+ * Look up a skill by registry key (`category.id`, e.g.
+ * `engineering.code-review`) — the form bundles and the picker store.
+ * Throws on an unknown key so a broken bundle fails loudly at module load.
+ */
+export function getSkillByKey(key: string): CatalogSkill {
+  const skill = SKILLS[key];
+  if (!skill) {
+    throw new Error(
+      `Unknown skill key "${key}". Expected "category.id", e.g. "engineering.code-review".`,
+    );
+  }
+  return skill;
+}
+
+/** Every skill in the registry, in category-tab order. */
+export function getAllSkills(): CatalogSkill[] {
+  return Object.values(SKILLS);
+}
+
+/**
+ * Free-text search over name, description, category and tags. Every
+ * whitespace-separated token must appear somewhere, so "code review" narrows
+ * rather than widens. An empty query returns everything.
+ */
+export function searchSkills(query: string): CatalogSkill[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return getAllSkills();
+  const tokens = q.split(/\s+/).filter(Boolean);
+  return getAllSkills().filter((skill) => {
+    const hay = [skill.name, skill.description, skill.category, ...(skill.tags ?? [])]
+      .join(' ')
+      .toLowerCase();
+    return tokens.every((token) => hay.includes(token));
+  });
+}
+
 /** Every skill in one category — used by the picker's skill filter later on. */
 export function getSkillsForCategory(category: TemplateCategory): CatalogSkill[] {
   return BY_CATEGORY[category];

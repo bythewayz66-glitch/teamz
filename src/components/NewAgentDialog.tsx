@@ -1,93 +1,226 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Agent, Conversation, Seniority } from '../types';
 import { Modal, Field } from './Modal';
 import { AgentAvatar } from './Avatar';
-import { CheckIcon, HashIcon, PlusIcon, SparkIcon } from './Icons';
+import { CheckIcon, ChevronIcon, PlusIcon, SparkIcon } from './Icons';
 import { TemplatePicker } from './TemplatePicker';
+import { SkillPicker } from './SkillPicker';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
 import {
   SENIORITY_BLURB,
   SENIORITY_LABELS,
-  SENIORITY_ORDER,
+  agentSkillsForKeys,
+  expandSkillKeys,
   getCatalogueSummary,
+  originFor,
   type AgentTemplate,
 } from '../data/templates';
+import {
+  DEFAULT_AGENT_MODEL,
+  DEFAULT_ENDPOINT_URL,
+  DEFAULT_MAX_ITERATIONS,
+  composeSystemPrompt,
+} from '../lib/agentPrompt';
 
 interface NewAgentDialogProps {
   open: boolean;
   onClose: () => void;
-  /** Hand-made agent (blank form). */
+  /**
+   * Every path — template or from scratch — creates through here, so the
+   * wizard's edited prompt, picked skills and budgets survive. The template
+   * id is carried on the agent's `origin` instead.
+   */
   onCreate: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => void;
-  /** Template agent: created AND invited into the current room. */
+  /**
+   * Kept for API compatibility with the previous dialog. Creation no longer
+   * goes through the template-only path: it cannot carry an edited prompt,
+   * extra skills or budgets, which is exactly what this wizard exists for.
+   */
   onCreateFromTemplate: (templateId: string, name?: string, seniority?: Seniority) => void;
   /** Room the new agent will be invited into. */
   room: Conversation | null;
 }
 
-type Tab = 'templates' | 'custom';
+const STEPS = ['Role', 'Identity', 'Skills', 'Review'] as const;
 
-export function NewAgentDialog({
-  open,
-  onClose,
-  onCreate,
-  onCreateFromTemplate,
-  room,
-}: NewAgentDialogProps) {
-  const [tab, setTab] = useState<Tab>('templates');
+type Step = 0 | 1 | 2 | 3;
 
-  /* ----------------------------- template tab ----------------------------- */
+/** One capability / value per line in the textareas. */
+function parseLines(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+function parseBudget(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
+export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialogProps) {
+  const [step, setStep] = useState<Step>(0);
+  const [visited, setVisited] = useState<Set<number>>(new Set([0]));
+
+  /* ------------------------------ step 1: role ----------------------------- */
+  const [mode, setMode] = useState<'template' | 'custom'>('template');
   const [selected, setSelected] = useState<AgentTemplate | null>(null);
-  const [overrideName, setOverrideName] = useState('');
+  const [customRole, setCustomRole] = useState('');
 
-  /* ------------------------------ custom tab ------------------------------ */
+  /* --------------------------- step 2: identity ---------------------------- */
   const [name, setName] = useState('');
+  const [role, setRole] = useState('');
+  const [goal, setGoal] = useState('');
+  const [backstory, setBackstory] = useState('');
+  const [capabilitiesText, setCapabilitiesText] = useState('');
+  const [valuesText, setValuesText] = useState('');
   const [emoji, setEmoji] = useState(EMOJI_PALETTE[4]);
   const [accent, setAccent] = useState(ACCENT_PALETTE[0]);
-  const [endpointUrl, setEndpointUrl] = useState('http://localhost:8005/chat');
-  const [model, setModel] = useState('gpt-4o-mini');
-  const [systemPrompt, setSystemPrompt] = useState('');
+  const [model, setModel] = useState(DEFAULT_AGENT_MODEL);
+
+  /* ---------------------------- step 3: skills ----------------------------- */
+  const [skillKeys, setSkillKeys] = useState<string[]>([]);
+
+  /* ----------------------- step 4: review + advanced ------------------------ */
+  const [endpointUrl, setEndpointUrl] = useState(DEFAULT_ENDPOINT_URL);
+  const [maxIterations, setMaxIterations] = useState('');
+  const [maxExecutionTime, setMaxExecutionTime] = useState('');
+  /** The prompt as shown in review. Null means "the composed prompt". */
+  const [promptOverride, setPromptOverride] = useState<string | null>(null);
 
   const [summary] = useState(getCatalogueSummary);
 
+  const capabilities = useMemo(() => parseLines(capabilitiesText), [capabilitiesText]);
+  const values = useMemo(() => parseLines(valuesText), [valuesText]);
+  const skills = useMemo(() => expandSkillKeys(skillKeys), [skillKeys]);
+
+  const brief = mode === 'template' ? selected?.systemPrompt ?? '' : '';
+
+  const composed = useMemo(
+    () =>
+      composeSystemPrompt({
+        name,
+        role,
+        goal,
+        backstory,
+        capabilities,
+        values,
+        brief,
+        skills,
+        seniority: mode === 'template' ? selected?.seniority : undefined,
+        maxIterations: parseBudget(maxIterations),
+        maxExecutionTimeSeconds: parseBudget(maxExecutionTime),
+      }),
+    [
+      name,
+      role,
+      goal,
+      backstory,
+      capabilities,
+      values,
+      brief,
+      skills,
+      mode,
+      selected?.seniority,
+      maxIterations,
+      maxExecutionTime,
+    ],
+  );
+
+  /** What step 4 shows and creation sends: the edit, or the composed prompt. */
+  const prompt = promptOverride ?? composed;
+  /** The prompt is stale when the fields changed after the user edited it. */
+  const promptStale = promptOverride !== null && promptOverride !== composed;
+
   useEffect(() => {
     if (!open) return;
-    setTab('templates');
+    setStep(0);
+    setVisited(new Set([0]));
+    setMode('template');
     setSelected(null);
-    setOverrideName('');
-
+    setCustomRole('');
     setName('');
+    setRole('');
+    setGoal('');
+    setBackstory('');
+    setCapabilitiesText('');
+    setValuesText('');
     setEmoji(EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)]);
     setAccent(ACCENT_PALETTE[Math.floor(Math.random() * ACCENT_PALETTE.length)]);
-    setEndpointUrl('http://localhost:8005/chat');
-    setModel('gpt-4o-mini');
-    setSystemPrompt('');
+    setModel(DEFAULT_AGENT_MODEL);
+    setSkillKeys([]);
+    setEndpointUrl(DEFAULT_ENDPOINT_URL);
+    setMaxIterations('');
+    setMaxExecutionTime('');
+    setPromptOverride(null);
   }, [open]);
 
-  const handleSelect = (template: AgentTemplate | null) => {
+  /** Fill the identity + skills from a picked template. */
+  const applyTemplate = (template: AgentTemplate | null) => {
     setSelected(template);
-    if (template) setOverrideName(template.name);
-  };
-
-  const instantiate = (template: AgentTemplate | null = selected) => {
     if (!template) return;
-    const finalName = overrideName.trim() || template.name;
-    onCreateFromTemplate(
-      template.id,
-      finalName === template.name ? undefined : finalName,
-      template.seniority,
-    );
-    onClose();
+    setName(template.name);
+    setRole(template.name);
+    setGoal(template.description);
+    setBackstory('');
+    setCapabilitiesText('');
+    setValuesText('');
+    setEmoji(template.emoji);
+    setAccent(template.accent || ACCENT_PALETTE[0]);
+    setModel(template.model);
+    setSkillKeys(template.skills.map((s) => `${s.category}.${s.id}`));
+    setPromptOverride(null);
   };
 
-  const createCustom = () => {
+  const startCustom = () => {
+    setMode('custom');
+    setSelected(null);
+    setRole(customRole);
+    setName('');
+    setGoal('');
+    setBackstory('');
+    setCapabilitiesText('');
+    setValuesText('');
+    setModel(DEFAULT_AGENT_MODEL);
+    setSkillKeys([]);
+    setPromptOverride(null);
+  };
+
+  const goTo = (next: Step) => {
+    setStep(next);
+    setVisited((v) => new Set(v).add(next));
+  };
+
+  const roleReady =
+    mode === 'template' ? selected !== null : customRole.trim() !== '' && role.trim() !== '';
+  const identityReady = name.trim() !== '';
+  const promptReady = prompt.trim() !== '';
+
+  const canNext = step === 0 ? roleReady : step === 1 ? identityReady : step === 2 ? true : promptReady;
+
+  const create = () => {
+    if (!promptReady) return;
     onCreate({
       name: name.trim() || 'New Agent',
       emoji,
       accent,
-      endpointUrl: endpointUrl.trim(),
-      model: model.trim(),
-      systemPrompt,
-      skills: [],
+      endpointUrl: endpointUrl.trim() || DEFAULT_ENDPOINT_URL,
+      model: model.trim() || DEFAULT_AGENT_MODEL,
+      systemPrompt: prompt,
+      skills: agentSkillsForKeys(skillKeys),
+      origin:
+        mode === 'template' && selected
+          ? originFor(selected, selected.seniority)
+          : undefined,
+      role: role.trim(),
+      goal: goal.trim(),
+      backstory: backstory.trim(),
+      capabilities,
+      values,
+      maxIterations: parseBudget(maxIterations),
+      maxExecutionTimeSeconds: parseBudget(maxExecutionTime),
     });
     onClose();
   };
@@ -98,23 +231,26 @@ export function NewAgentDialog({
       : room.name
     : 'your workspace';
 
+  const stepSubtitle = [
+    `${summary.templates} templates across ${summary.categories} categories. Pick a role and it joins ${roomLabel} — or start from scratch.`,
+    'Who is this agent? The role, goal and backstory below compose its system prompt.',
+    'Pick the skills this agent draws on. Bundles add a whole group in one click.',
+    'Read the composed prompt, edit it if you like, then create the agent.',
+  ][step];
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Add an agent"
-      subtitle={
-        tab === 'templates'
-          ? `${summary.templates} templates across ${summary.categories} categories. Pick a role and it joins ${roomLabel} as a member, with the skills of that role.`
-          : 'An agent is just a name, an endpoint and a prompt. Nothing else is required.'
-      }
+      subtitle={stepSubtitle}
       width={820}
       footer={
         <>
           <div className="foot-left">
-            {tab === 'templates' && selected && (
+            {step === 3 && selected && (
               <span className="picker-count">
-                <HashIcon size={12} /> joins {roomLabel}
+                <CheckIcon size={12} /> joins {roomLabel}
               </span>
             )}
           </div>
@@ -122,12 +258,17 @@ export function NewAgentDialog({
             <button className="btn ghost sm" onClick={onClose}>
               Cancel
             </button>
-            {tab === 'templates' ? (
-              <button className="btn primary sm" onClick={() => instantiate()} disabled={!selected}>
-                <PlusIcon size={14} /> Create &amp; invite
+            {step > 0 && (
+              <button className="btn ghost sm" onClick={() => goTo((step - 1) as Step)}>
+                Back
+              </button>
+            )}
+            {step < 3 ? (
+              <button className="btn primary sm" onClick={() => goTo((step + 1) as Step)} disabled={!canNext}>
+                Next
               </button>
             ) : (
-              <button className="btn primary sm" onClick={createCustom}>
+              <button className="btn primary sm" onClick={create} disabled={!promptReady}>
                 <PlusIcon size={14} /> Create agent
               </button>
             )}
@@ -135,96 +276,157 @@ export function NewAgentDialog({
         </>
       }
     >
-      <div className="tabs" role="tablist">
-        <button
-          className={`tab${tab === 'templates' ? ' is-on' : ''}`}
-          onClick={() => setTab('templates')}
-          role="tab"
-          aria-selected={tab === 'templates'}
-        >
-          <SparkIcon size={14} /> From a template
-          <span className="tab-count">{summary.templates}</span>
-        </button>
-        <button
-          className={`tab${tab === 'custom' ? ' is-on' : ''}`}
-          onClick={() => setTab('custom')}
-          role="tab"
-          aria-selected={tab === 'custom'}
-        >
-          <PlusIcon size={14} /> Custom
-        </button>
+      <div className="tabs" role="tablist" aria-label="Creation steps">
+        {STEPS.map((label, i) => (
+          <button
+            key={label}
+            className={`tab${step === i ? ' is-on' : ''}`}
+            onClick={() => visited.has(i) && goTo(i as Step)}
+            role="tab"
+            aria-selected={step === i}
+            disabled={!visited.has(i)}
+          >
+            {i + 1}. {label}
+          </button>
+        ))}
       </div>
 
-      {tab === 'templates' ? (
+      {step === 0 && (
         <>
-          <TemplatePicker
-            selectedId={selected?.id ?? null}
-            onSelect={handleSelect}
-            onCreate={instantiate}
-          />
-
-          {selected && (
-            <div className="tpl-invite-row">
-              <Field label="Name">
-                <input
-                  value={overrideName}
-                  onChange={(e) => setOverrideName(e.target.value)}
-                  placeholder={selected.name}
-                  onKeyDown={(e) => e.key === 'Enter' && instantiate()}
-                />
-              </Field>
-
-              <div className="tpl-invite-note">
-                <CheckIcon size={13} />
-                Creates the agent and invites it into <strong>{roomLabel}</strong>.
-              </div>
+          <div className="field">
+            <span className="field-label">
+              Start from
+              <em>pick a role, or describe your own</em>
+            </span>
+            <div className="seg">
+              <button
+                className={mode === 'template' ? 'is-on' : ''}
+                onClick={() => setMode('template')}
+              >
+                <SparkIcon size={13} /> A template
+              </button>
+              <button className={mode === 'custom' ? 'is-on' : ''} onClick={startCustom}>
+                <PlusIcon size={13} /> From scratch
+              </button>
             </div>
-          )}
+          </div>
 
-          {selected && (
-            <div className="tpl-level-row">
-              <span className="tpl-level-row-label">
-                Level
-                <em>{SENIORITY_BLURB[selected.seniority]}</em>
-              </span>
-              <div className="tpl-level-row-opts">
-                {SENIORITY_ORDER.map((s) => (
-                  <span
-                    key={s}
-                    className={`tpl-level-pill${selected.seniority === s ? ' is-on' : ''}`}
-                  >
-                    {SENIORITY_LABELS[s]}
+          {mode === 'template' ? (
+            <>
+              <TemplatePicker
+                selectedId={selected?.id ?? null}
+                onSelect={applyTemplate}
+                onCreate={() => goTo(1)}
+                createLabel="Use this role →"
+              />
+              {selected && (
+                <div className="tpl-level-row">
+                  <span className="tpl-level-row-label">
+                    Level
+                    <em>{SENIORITY_BLURB[selected.seniority]}</em>
                   </span>
-                ))}
-              </div>
-              <span className="tpl-level-row-hint">
-                Set by the template you picked — use the Level filter above to compare roles across
-                levels.
-              </span>
-            </div>
+                  <div className="tpl-level-row-opts">
+                    <span className="tpl-level-pill is-on">
+                      {SENIORITY_LABELS[selected.seniority]}
+                    </span>
+                  </div>
+                  <span className="tpl-level-row-hint">
+                    Set by the template you picked — use the Level filter above to compare
+                    roles across levels.
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            <Field
+              label="Role"
+              hint="what this agent is — e.g. Code Reviewer, Researcher, Support Lead"
+            >
+              <input
+                value={customRole}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setCustomRole(v);
+                  setRole(v);
+                  // Suggest the role as the name until the user types their own.
+                  if (!name.trim()) setName(v);
+                }}
+                placeholder="e.g. Code Reviewer"
+                autoFocus
+                onKeyDown={(e) => e.key === 'Enter' && roleReady && goTo(1)}
+              />
+            </Field>
           )}
         </>
-      ) : (
+      )}
+
+      {step === 1 && (
         <>
           <div className="settings-preview">
             <AgentAvatar agent={{ name, emoji, accent }} size={52} />
             <div>
               <strong>{name.trim() || 'New Agent'}</strong>
               <span>
-                {model || 'no model set'} · {endpointUrl || 'no endpoint yet'}
+                {role.trim() || 'no role yet'} · {model || 'no model set'}
               </span>
             </div>
           </div>
 
-          <Field label="Name">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Reviewer"
-              autoFocus
-              onKeyDown={(e) => e.key === 'Enter' && createCustom()}
+          <div className="field-grid">
+            <Field label="Name">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Reviewer"
+                autoFocus
+              />
+            </Field>
+            <Field label="Role" hint="appears in the prompt as “You are {name}, a {role}”">
+              <input
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                placeholder="e.g. Code Reviewer"
+                spellCheck={false}
+              />
+            </Field>
+          </div>
+
+          <Field label="Goal" hint="one sentence — what this agent is for">
+            <textarea
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              rows={2}
+              placeholder="e.g. Review every pull request for correctness, tests and blast radius, and say which comments block."
             />
           </Field>
+
+          <Field label="Backstory" hint="optional — where this agent comes from, how it works">
+            <textarea
+              value={backstory}
+              onChange={(e) => setBackstory(e.target.value)}
+              rows={2}
+              placeholder="e.g. You spent years reviewing other people's code, and it shows: you read the diff before the description."
+            />
+          </Field>
+
+          <div className="field-grid">
+            <Field label="Capabilities" hint="one per line — what it can do">
+              <textarea
+                value={capabilitiesText}
+                onChange={(e) => setCapabilitiesText(e.target.value)}
+                rows={3}
+                placeholder={'review pull requests\nwrite tests that fail for the right reason'}
+              />
+            </Field>
+            <Field label="Values" hint="one per line — how it works">
+              <textarea
+                value={valuesText}
+                onChange={(e) => setValuesText(e.target.value)}
+                rows={3}
+                placeholder={'cite the source, never the summary\nno workarounds'}
+              />
+            </Field>
+          </div>
 
           <Field label="Avatar">
             <div className="emoji-picker">
@@ -255,33 +457,103 @@ export function NewAgentDialog({
             </div>
           </Field>
 
-          <div className="field-grid">
-            <Field label="Endpoint URL">
+          <Field
+            label="Model"
+            hint="used by own-endpoint mode · Pollinations uses the model in Workspace & API"
+          >
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={DEFAULT_AGENT_MODEL}
+              spellCheck={false}
+            />
+          </Field>
+        </>
+      )}
+
+      {step === 2 && (
+        <SkillPicker
+          selectedKeys={skillKeys}
+          onChange={setSkillKeys}
+          focusCategory={mode === 'template' ? selected?.category : undefined}
+        />
+      )}
+
+      {step === 3 && (
+        <>
+          <div className="settings-preview">
+            <AgentAvatar agent={{ name, emoji, accent }} size={52} />
+            <div>
+              <strong>{name.trim() || 'New Agent'}</strong>
+              <span>
+                {role.trim() || 'no role yet'} · {model || 'no model set'} ·{' '}
+                {skills.length} {skills.length === 1 ? 'skill' : 'skills'}
+                {selected ? ` · from ${selected.id}` : ' · from scratch'}
+              </span>
+            </div>
+          </div>
+
+          <Field
+            label="System prompt"
+            hint={`${prompt.length} chars · composed from role, goal, backstory, capabilities and skills — edit freely`}
+          >
+            <textarea
+              value={prompt}
+              onChange={(e) => setPromptOverride(e.target.value)}
+              rows={10}
+              spellCheck={false}
+            />
+          </Field>
+          {promptStale && (
+            <div className="field">
+              <span className="field-error">
+                You edited this prompt, and the fields changed since. Your edit is kept.
+              </span>
+              <div>
+                <button className="btn ghost sm" onClick={() => setPromptOverride(null)}>
+                  <ChevronIcon size={13} /> Re-compose from the fields
+                </button>
+              </div>
+            </div>
+          )}
+          {!promptReady && (
+            <span className="field-error">The system prompt cannot be empty.</span>
+          )}
+
+          <div className="field">
+            <span className="field-label">
+              Advanced
+              <em>optional — leave blank for the workspace defaults</em>
+            </span>
+            <div className="field-grid">
+              <Field label="Endpoint URL" hint="own-endpoint mode only">
+                <input
+                  value={endpointUrl}
+                  onChange={(e) => setEndpointUrl(e.target.value)}
+                  placeholder={DEFAULT_ENDPOINT_URL}
+                  spellCheck={false}
+                />
+              </Field>
+              <Field label="Max iterations" hint={`per task · default ${DEFAULT_MAX_ITERATIONS}`}>
+                <input
+                  value={maxIterations}
+                  onChange={(e) => setMaxIterations(e.target.value)}
+                  placeholder={String(DEFAULT_MAX_ITERATIONS)}
+                  inputMode="numeric"
+                  spellCheck={false}
+                />
+              </Field>
+            </div>
+            <Field label="Max execution time (seconds)" hint="blank means unlimited">
               <input
-                value={endpointUrl}
-                onChange={(e) => setEndpointUrl(e.target.value)}
-                placeholder="http://localhost:8001/chat"
-                spellCheck={false}
-              />
-            </Field>
-            <Field label="Model">
-              <input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="gpt-4o-mini"
+                value={maxExecutionTime}
+                onChange={(e) => setMaxExecutionTime(e.target.value)}
+                placeholder="unlimited"
+                inputMode="numeric"
                 spellCheck={false}
               />
             </Field>
           </div>
-
-          <Field label="System prompt" hint="optional">
-            <textarea
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              rows={3}
-              placeholder="You are a helpful agent that…"
-            />
-          </Field>
         </>
       )}
     </Modal>
