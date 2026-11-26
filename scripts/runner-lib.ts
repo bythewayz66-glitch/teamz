@@ -131,6 +131,19 @@ export interface RateLimitRescue {
   attempts: number;
 }
 
+/** Per-provider backoff for rate-limit rescues: stops the rescue loop from
+ * spinning when a rescue dispatch itself hits a rate limit (402/429). The
+ * runner will not dispatch the Provider Researcher for this provider again
+ * until `nextAllowedTs`; the wait doubles on each consecutive failure. */
+export interface RateLimitBackoff {
+  /** Consecutive rescue attempts for this provider that failed with a rate limit. */
+  consecutiveFailures: number;
+  /** Epoch ms of the last failed rescue attempt for this provider. */
+  lastFailedTs: number;
+  /** Epoch ms before which no new rescue dispatch is attempted for this provider. */
+  nextAllowedTs: number;
+}
+
 /**
  * The runner's whole world, in one JSON file. `jobs` are product-loop
  * jobs, `cronJobs` are scheduled prompt jobs, `triggers` are interval
@@ -148,10 +161,12 @@ export interface RunnerState {
   channelMessages: ChannelMessage[];
   /** Rate-limit rescues, append-only (one record per event id). */
   rateLimitRescues: RateLimitRescue[];
+  /** Per-provider rescue backoff (keyed by provider id). */
+  rateLimitBackoff: Record<string, RateLimitBackoff>;
 }
 
 export function emptyRunnerState(): RunnerState {
-  return { version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [], channelMessages: [], rateLimitRescues: [] };
+  return { version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [], channelMessages: [], rateLimitRescues: [], rateLimitBackoff: {} };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -252,6 +267,17 @@ export function loadRunnerState(path: string): LoadResult {
       state.rateLimitRescues.push(r as unknown as RateLimitRescue);
     } else {
       warnings.push('dropped a rate-limit rescue entry with missing fields');
+    }
+  }
+  for (const [provider, b] of Object.entries(isRecord(parsed.rateLimitBackoff) ? parsed.rateLimitBackoff : {})) {
+    if (
+      typeof provider === 'string' && isRecord(b) &&
+      typeof b.consecutiveFailures === 'number' && typeof b.lastFailedTs === 'number' &&
+      typeof b.nextAllowedTs === 'number'
+    ) {
+      state.rateLimitBackoff[provider] = b as unknown as RateLimitBackoff;
+    } else {
+      warnings.push(`dropped a rate-limit backoff entry with missing fields for provider ${provider}`);
     }
   }
   return { state, warnings };
@@ -663,6 +689,30 @@ export interface ProcessDueResult {
 }
 
 /**
+ * Rescue backoff: when a rescue dispatch itself hits a rate limit (402/429),
+ * the next rescue for that provider waits at least this long, doubling on
+ * each consecutive failure up to the cap. Without it the loop spins — a
+ * rescue dispatch every ~50s, each 402ing and recording a new event, which
+ * re-triggers the loop. The rescue is NOT disabled: a genuine rate limit
+ * still wakes the Researcher, just no more often than the backoff allows.
+ */
+export const RESCUE_BACKOFF_BASE_MS = 30 * 60 * 1000; // 30 minutes
+export const RESCUE_BACKOFF_MAX_MS = 4 * 60 * 60 * 1000; // 4 hours
+export const RESCUE_BACKOFF_MAX_FAILURES = 8; // cap on consecutive failures tracked
+
+/** Delay before the next rescue attempt for a provider, doubling per failure. */
+export function rescueBackoffDelayMs(consecutiveFailures: number): number {
+  const exp = Math.max(0, Math.min(consecutiveFailures - 1, 10));
+  return Math.min(RESCUE_BACKOFF_BASE_MS * 2 ** exp, RESCUE_BACKOFF_MAX_MS);
+}
+
+/** True when an error is a rate-limit failure (402/429 / FREE_LIMIT). */
+export function isRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /402|429|rate|limit|FREE_LIMIT/i.test(msg);
+}
+
+/**
  * One tick: find due triggers, cron jobs, and product-job stages, and act
  * on them. This is the headless twin of the in-tab tick in
  * `store/useAutonomy.ts` — same `tick()` primitive, same governance gate,
@@ -808,7 +858,10 @@ export async function processDue(
   // Researcher, lets it provision/reassign via its tools, then resends
   // the original request on the (possibly new) provider so the failed
   // request is not lost. An event with a completed rescue, or 3 failed
-  // attempts, is not retried — the failure stays on the record.
+  // attempts, is not retried — the failure stays on the record. When a
+  // rescue dispatch itself hits a rate limit, the provider backs off
+  // exponentially (30m → 4h cap) instead of retrying on the next tick;
+  // the loop is quiet, not disabled.
   if (deps.rateLimitEvents) {
     let events: RateLimitEvent[] = [];
     try {
@@ -816,9 +869,27 @@ export async function processDue(
     } catch (err) {
       fired.push(`rate-limit check FAILED: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Providers already logged as backing off this tick (one line per provider).
+    const backedOffProviders = new Set<string>();
     for (const event of events) {
       const prior = state.rateLimitRescues.find((r) => r.eventId === event.id);
       if (prior && (prior.resendCompleted || prior.attempts >= 3)) continue;
+      // Backoff: if the last rescue for this provider failed with a rate
+      // limit, do not dispatch again until the cooldown expires. This is
+      // what stops the loop spinning when the rescue itself 402s.
+      const backoff = state.rateLimitBackoff[event.provider];
+      if (backoff && nowMs < backoff.nextAllowedTs) {
+        if (!backedOffProviders.has(event.provider)) {
+          backedOffProviders.add(event.provider);
+          fired.push(
+            `rate-limit rescue: backing off for provider "${event.provider}" — next attempt ${new Date(backoff.nextAllowedTs).toISOString()} (${backoff.consecutiveFailures} consecutive failures)`,
+          );
+        }
+        continue;
+      }
+      // True when this rescue attempt itself hits a rate limit (the
+      // Researcher dispatch 402/429s, or the resend 402/429s).
+      let rescueRateLimited = false;
       const researcher = agentById.get('agent-provider-researcher');
       const failedAgent = agentById.get(event.agentId);
       let researcherReply = 'no Provider Researcher agent configured';
@@ -842,6 +913,7 @@ export async function processDue(
           });
         } catch (err) {
           researcherReply = `Researcher dispatch failed: ${err instanceof Error ? err.message : String(err)}`;
+          if (isRateLimitError(err)) rescueRateLimited = true;
         }
       }
       // The Researcher's tools may have reassigned the agent in
@@ -877,6 +949,7 @@ export async function processDue(
           fired.push(`rate-limit rescue: resent @${resendAgent.name}'s request on ${resendAgent.provider ?? 'default provider'} — completed`);
         } catch (err) {
           resent = true;
+          if (isRateLimitError(err)) rescueRateLimited = true;
           fired.push(`rate-limit rescue: resend FAILED — ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
@@ -897,6 +970,28 @@ export async function processDue(
         ...state.rateLimitRescues.filter((r) => r.eventId !== event.id),
         rescue,
       ];
+      // Backoff update: a completed resend means the provider is healthy
+      // again, so clear its backoff. A rescue that itself hit a rate limit
+      // pushes the provider's next-allowed time out exponentially (30m, 1h,
+      // 2h, 4h cap). A failure for a non-rate-limit reason leaves the
+      // backoff alone — the per-event 3-attempt cap still applies.
+      if (resendCompleted) {
+        if (state.rateLimitBackoff[event.provider]) {
+          delete state.rateLimitBackoff[event.provider];
+        }
+      } else if (rescueRateLimited) {
+        const prev = state.rateLimitBackoff[event.provider];
+        const consecutive = Math.min((prev?.consecutiveFailures ?? 0) + 1, RESCUE_BACKOFF_MAX_FAILURES);
+        const delay = rescueBackoffDelayMs(consecutive);
+        state.rateLimitBackoff[event.provider] = {
+          consecutiveFailures: consecutive,
+          lastFailedTs: nowMs,
+          nextAllowedTs: nowMs + delay,
+        };
+        fired.push(
+          `rate-limit rescue: provider "${event.provider}" rate-limited again — backing off ${Math.round(delay / 60000)} min (failure ${consecutive})`,
+        );
+      }
       if (deps.acknowledgeRateLimitEvents && (resendCompleted || rescue.attempts >= 3)) {
         try {
           await deps.acknowledgeRateLimitEvents([event.id]);

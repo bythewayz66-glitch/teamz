@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   emptyRunnerState,
   processDue,
+  RESCUE_BACKOFF_BASE_MS,
   type RateLimitEvent,
   type RunnerAgent,
   type RunnerState,
@@ -395,5 +396,102 @@ describe('processDue — rate-limit rescue loop', () => {
       rateLimitEvents: async () => [event],
     });
     expect(calls).toEqual([]);
+  });
+
+  it('a rescue that itself 402s backs off the provider — no dispatch until the cooldown expires', async () => {
+    const qa = agent('agent-qa-tester', 'QA Tester');
+    const researcher = agent('agent-provider-researcher', 'Provider Researcher');
+    const event: RateLimitEvent = {
+      id: 'rl-test-backoff',
+      ts: T0.getTime(),
+      agentId: 'agent-qa-tester',
+      agentName: 'QA Tester',
+      channelId: 'conv-build-room',
+      prompt: 'Write the test plan.',
+      provider: 'pollinations',
+      error: 'Pollinations 402: Free limit reached',
+    };
+    const calls: string[] = [];
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent) => {
+        calls.push(a.id);
+        throw new Error('Pollinations 402: Free limit reached: 100 replies a day per IP');
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      rateLimitEvents: async () => [event],
+    };
+    // Tick 1: the rescue is attempted and itself 402s — backoff is set.
+    const first = await processDue({ ...emptyRunnerState(), agents: [qa, researcher] }, T0, deps);
+    expect(calls).toEqual(['agent-provider-researcher', 'agent-qa-tester']);
+    expect(first.state.rateLimitRescues).toHaveLength(1);
+    expect(first.state.rateLimitRescues[0].resendCompleted).toBe(false);
+    expect(first.state.rateLimitRescues[0].attempts).toBe(1);
+    const backoff = first.state.rateLimitBackoff['pollinations'];
+    expect(backoff).toBeDefined();
+    expect(backoff?.consecutiveFailures).toBe(1);
+    expect(backoff?.nextAllowedTs).toBe(T0.getTime() + RESCUE_BACKOFF_BASE_MS);
+    // Tick 2 (1 minute later): the same event is still pending, but the
+    // provider is backing off — no dispatch happens at all.
+    const second = await processDue(first.state, new Date(T0.getTime() + 60 * 1000), deps);
+    expect(calls).toEqual(['agent-provider-researcher', 'agent-qa-tester']);
+    expect(second.fired.some((f) => f.includes('backing off for provider "pollinations"'))).toBe(true);
+    expect(second.state.rateLimitRescues[0].attempts).toBe(1);
+    // Tick 3 (31 minutes later, cooldown expired): the rescue is attempted
+    // again, and the backoff doubles to 60 minutes.
+    const third = await processDue(second.state, new Date(T0.getTime() + 31 * 60 * 1000), deps);
+    expect(calls).toEqual([
+      'agent-provider-researcher',
+      'agent-qa-tester',
+      'agent-provider-researcher',
+      'agent-qa-tester',
+    ]);
+    expect(third.state.rateLimitRescues[0].attempts).toBe(2);
+    expect(third.state.rateLimitBackoff['pollinations']?.consecutiveFailures).toBe(2);
+    expect(third.state.rateLimitBackoff['pollinations']?.nextAllowedTs).toBe(
+      T0.getTime() + 31 * 60 * 1000 + 2 * RESCUE_BACKOFF_BASE_MS,
+    );
+  });
+
+  it('a completed resend clears the provider backoff', async () => {
+    const qa = agent('agent-qa-tester', 'QA Tester');
+    const researcher = agent('agent-provider-researcher', 'Provider Researcher');
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [qa, researcher],
+      rateLimitBackoff: {
+        pollinations: {
+          consecutiveFailures: 2,
+          lastFailedTs: T0.getTime() - 31 * 60 * 1000,
+          nextAllowedTs: T0.getTime() - 1000, // expired
+        },
+      },
+    };
+    const event: RateLimitEvent = {
+      id: 'rl-test-clear',
+      ts: T0.getTime(),
+      agentId: 'agent-qa-tester',
+      agentName: 'QA Tester',
+      channelId: 'conv-build-room',
+      prompt: 'Write the test plan.',
+      provider: 'pollinations',
+      error: 'Pollinations 402',
+    };
+    const calls: string[] = [];
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push(a.id);
+        if (a.id === 'agent-provider-researcher') return 'No new provider needed; agent already moved.';
+        return 'Resent test plan: here it is.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      rateLimitEvents: async () => [event],
+      acknowledgeRateLimitEvents: async () => {},
+      reloadAgents: async () => [qa, researcher],
+    });
+    expect(calls).toEqual(['agent-provider-researcher', 'agent-qa-tester']);
+    expect(out.rateLimitRescues[0].resendCompleted).toBe(true);
+    expect(out.rateLimitBackoff['pollinations']).toBeUndefined();
   });
 });

@@ -17,6 +17,7 @@ import { parseMentions } from '../lib/mentions';
 import { runMentionChain } from '../lib/mentionFlow';
 import { sendToAgent } from '../api/agents';
 import { getSettings } from '../api/settings';
+import { fetchRunnerState } from '../api/runnerState';
 
 const STORAGE_KEY = 'teamz:workspace:v1';
 
@@ -173,6 +174,53 @@ export function useWorkspace(): UseWorkspace {
     };
     window.addEventListener('storage', handler);
     return () => window.removeEventListener('storage', handler);
+  }, []);
+
+  // Server runner dispatches: the headless runner on jnet1 records the
+  // real dispatches (hourly agents, Orchestrator mentions, rate-limit
+  // rescues) in its channelMessages, but this tab's workspace comes from
+  // localStorage/seed and never sees them — so the Build Room only ever
+  // showed its seed messages. Merge the runner's recorded messages into
+  // the matching conversations once on mount, deduped by id, so the room
+  // shows the agents actually working. Read-only fetch: if the runner is
+  // unreachable the local messages are untouched. Only conversations
+  // this workspace already has receive messages — a stale workspace
+  // without the Build Room is a separate problem (see the Jobs panel).
+  useEffect(() => {
+    let cancelled = false;
+    fetchRunnerState()
+      .then((s) => {
+        if (cancelled || s.channelMessages.length === 0) return;
+        setState((prev) => {
+          let changed = false;
+          const messages: Record<string, Message[]> = { ...prev.messages };
+          for (const m of s.channelMessages) {
+            if (!prev.conversations.some((c) => c.id === m.channelId)) continue;
+            const existing = messages[m.channelId] ?? [];
+            if (existing.some((x) => x.id === m.id)) continue;
+            const incoming: Message = {
+              id: m.id,
+              conversationId: m.channelId,
+              authorType: 'agent',
+              authorId: m.agentId || undefined,
+              text: m.text,
+              createdAt: m.ts,
+              status: 'sent',
+            };
+            messages[m.channelId] = [...existing, incoming].sort(
+              (a, b) => a.createdAt - b.createdAt,
+            );
+            changed = true;
+          }
+          return changed ? { ...prev, messages } : prev;
+        });
+      })
+      .catch(() => {
+        // Server runner unreachable — the local workspace is unaffected.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const agentsById = useMemo(

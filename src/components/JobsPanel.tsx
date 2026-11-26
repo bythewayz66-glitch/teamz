@@ -120,6 +120,11 @@ export function JobsPanel({
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const channelName = (id: string) => conversations.find((c) => c.id === id)?.name ?? id;
+  // Server cron jobs name their agent by the runner's own agent id; resolve
+  // against the runner's agent list first (the local list may be an older
+  // workspace that does not have the agent yet).
+  const runnerAgentName = (id: string) =>
+    runnerState?.agents.find((a) => a.id === id)?.name ?? agentName(id);
 
   const createFromTemplate = () => {
     setTplError(null);
@@ -229,6 +234,7 @@ export function JobsPanel({
           <div>
             <p className="muted">
               {runnerState.jobs.length} job{runnerState.jobs.length === 1 ? '' : 's'}
+              {` · ${runnerState.cronJobs.length} cron job${runnerState.cronJobs.length === 1 ? '' : 's'}`}
               {runnerState.agents.length > 0 &&
                 ` · agent${runnerState.agents.length === 1 ? '' : 's'}: ${runnerState.agents
                   .map((a) => `${a.name}${a.model ? ` (${a.model})` : ''}`)
@@ -239,7 +245,9 @@ export function JobsPanel({
                 Refresh
               </button>
             </p>
-            {runnerState.jobs.length === 0 && <p className="muted">The server runner has no jobs.</p>}
+            {runnerState.jobs.length === 0 && runnerState.cronJobs.length === 0 && (
+              <p className="muted">The server runner has no jobs.</p>
+            )}
             {runnerState.jobs.map((job) => {
               const current = job.stages[job.currentStageIndex];
               let next = '—';
@@ -291,6 +299,47 @@ export function JobsPanel({
                 </div>
               );
             })}
+            {runnerState.cronJobs.length > 0 && (
+              <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border, #242f40)' }}>
+                <p>
+                  <strong>Cron jobs ({runnerState.cronJobs.length})</strong>{' '}
+                  <span className="muted">
+                    — the hourly automations and the Orchestrator, on the server runner. Read-only
+                    here: the cron jobs further down are this tab&apos;s own runner.
+                  </span>
+                </p>
+                {runnerState.cronJobs.map((j) => {
+                  let next: string = '—';
+                  try {
+                    next = formatRelative(nextRun(j).getTime());
+                  } catch {
+                    next = 'invalid schedule';
+                  }
+                  const last = j.runs.length > 0 ? j.runs[j.runs.length - 1] : null;
+                  return (
+                    <p key={j.id} className="muted" style={{ marginTop: 8 }}>
+                      <strong>{j.name}</strong> · <code>{j.schedule}</code> · next {next} ·{' '}
+                      {runnerAgentName(j.agentId ?? '')}
+                      {j.enabled ? '' : ' · disabled'}
+                      {' · '}
+                      {last
+                        ? `last run ${formatRelative(last.ts)} (${last.ok ? 'ok' : 'failed'})`
+                        : j.lastRunAt == null
+                          ? 'never run'
+                          : `last run ${formatRelative(j.lastRunAt)}`}
+                      {j.target
+                        ? ` · “${j.target.slice(0, 140)}${j.target.length > 140 ? '…' : ''}”`
+                        : ''}
+                    </p>
+                  );
+                })}
+              </div>
+            )}
+            {runnerState.cronJobs.length === 0 && runnerState.jobs.length > 0 && (
+              <p className="muted" style={{ marginTop: 10 }}>
+                No cron jobs on the server runner.
+              </p>
+            )}
           </div>
         )}
       </div>
