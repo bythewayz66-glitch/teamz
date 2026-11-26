@@ -59,6 +59,23 @@ describe('buildRequest', () => {
     expect(req2.directed).toBeUndefined();
   });
 
+  it('passes mentionedBy through only when another agent did the mentioning', () => {
+    const req = buildRequest(atlas, [msg('user', 'x')], byId, {
+      conversationId: 'c',
+      conversationName: 'c',
+      directed: true,
+      mentionedBy: 'Pixel',
+    });
+    expect(req.directed).toBe(true);
+    expect(req.mentionedBy).toBe('Pixel');
+    const req2 = buildRequest(atlas, [msg('user', 'x')], byId, {
+      conversationId: 'c',
+      conversationName: 'c',
+      directed: true,
+    });
+    expect(req2.mentionedBy).toBeUndefined();
+  });
+
   it('windows history to the character budget', () => {
     const big = 'x'.repeat(HISTORY_CHAR_BUDGET + 100);
     const history = [msg('user', big), msg('user', 'recent')];

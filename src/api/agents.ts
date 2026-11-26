@@ -62,11 +62,18 @@ export interface SendOptions {
   /** Display names of the other agents in a channel — useful for routing. */
   otherAgents?: { id: string; name: string }[];
   /**
-   * True when the user addressed this agent with an `@mention` rather than
+   * True when this agent was addressed with an `@mention` rather than
    * broadcasting to the whole room. Servers can use it to skip the
-   * "should I answer?" deliberation entirely.
+   * "should I answer?" deliberation entirely. Set for agents the user
+   * mentioned directly and for agents another agent's reply mentioned.
    */
   directed?: boolean;
+  /**
+   * Name of the agent whose reply @-mentioned this one, when the mention
+   * came from another agent rather than the user. Absent on user mentions
+   * and broadcasts.
+   */
+  mentionedBy?: string;
   /** Abort a slow request (e.g. user switched conversations). */
   signal?: AbortSignal;
   /** `direct` or `channel` — shapes the system prompt. */
@@ -98,6 +105,8 @@ export interface AgentRequest {
   };
   /** Present only on directed (@mention) messages. */
   directed?: boolean;
+  /** Name of the agent whose reply @-mentioned this one, if any. */
+  mentionedBy?: string;
 }
 
 /** Character budget kept for the message history sent to an agent. */
@@ -152,6 +161,7 @@ export function buildRequest(
       members: (options.otherAgents ?? []).map((a) => ({ id: a.id, name: a.name })),
     },
     ...(options.directed ? { directed: true } : {}),
+    ...(options.mentionedBy ? { mentionedBy: options.mentionedBy } : {}),
   };
 }
 
@@ -448,6 +458,7 @@ export async function sendToAgent(
         topic: options.topic,
         otherAgents: options.otherAgents,
         directed: options.directed,
+        mentionedByAgent: options.mentionedBy,
       },
       settings,
     );

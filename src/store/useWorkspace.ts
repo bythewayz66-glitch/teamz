@@ -14,6 +14,7 @@ import {
   type AgentTemplate,
 } from '../data/templates';
 import { parseMentions } from '../lib/mentions';
+import { runMentionChain } from '../lib/mentionFlow';
 import { sendToAgent } from '../api/agents';
 import { getSettings } from '../api/settings';
 
@@ -221,6 +222,12 @@ export function useWorkspace(): UseWorkspace {
    *   • A channel with no mention fans out to every member (the original
    *     behaviour) — that is the room's default.
    *   • A direct chat always goes to its single member, mention or not.
+   *   • An agent's reply that @-mentions another agent in the same channel
+   *     chains on to them: the reply is a state in the mention flow, and
+   *     scanning it for @-mentions routes to the next agent(s). The chain
+   *     is bounded (see `mentionFlow.ts`: depth cap, total-replies cap, a
+   *     per-chain visited set, no self-mentions) so it always terminates,
+   *     silently, with the replies already delivered left standing.
    *
    * Replies are interleaved sequentially so a multi-agent room reads in order
    * rather than landing at random.
@@ -258,7 +265,16 @@ export function useWorkspace(): UseWorkspace {
       const history: Message[] = [...activeMessages, userMessage];
       const others = members.map((a) => ({ id: a.id, name: a.name }));
 
-      for (const agent of targets) {
+      /**
+       * Ask one agent for a reply and deliver it into the thread. Returns
+       * the reply text, or null when no reply was delivered (error, abort)
+       * — a null reply routes the chain nowhere.
+       */
+      const sendOne = async (
+        agent: Agent,
+        isDirected: boolean,
+        mentionedBy?: Agent,
+      ): Promise<string | null> => {
         const controller = new AbortController();
         aborters.current.set(`${conv.id}:${agent.id}`, controller);
 
@@ -285,7 +301,8 @@ export function useWorkspace(): UseWorkspace {
             conversationKind: conv.kind,
             topic: conv.topic,
             otherAgents: others.filter((o) => o.id !== agent.id),
-            directed,
+            directed: isDirected,
+            mentionedBy: mentionedBy?.name,
             signal: controller.signal,
             // Stream tokens into the placeholder bubble as they arrive.
             onDelta: (partial) => patchMessage(conv.id, placeholderId, { text: partial }),
@@ -305,6 +322,7 @@ export function useWorkspace(): UseWorkspace {
             createdAt,
             status: 'sent',
           });
+          return reply;
         } catch (err) {
           if (err instanceof DOMException && err.name === 'AbortError') {
             patchMessage(conv.id, placeholderId, {
@@ -324,6 +342,7 @@ export function useWorkspace(): UseWorkspace {
               createdAt: Date.now(),
             });
           }
+          return null;
         } finally {
           aborters.current.delete(`${conv.id}:${agent.id}`);
           setTyping((t) => ({
@@ -331,7 +350,16 @@ export function useWorkspace(): UseWorkspace {
             [conv.id]: (t[conv.id] ?? []).filter((id) => id !== agent.id),
           }));
         }
-      }
+      };
+
+      // The mention flow drives the fan-out: the initial targets first, then
+      // any agent a reply @-mentions, bounded by the chain's safety caps.
+      await runMentionChain({
+        members,
+        initialTargets: targets,
+        initialDirected: directed,
+        send: sendOne,
+      });
     },
     [activeConversation, activeMessages, agentsById, appendMessage, patchMessage],
   );

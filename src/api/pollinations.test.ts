@@ -6,6 +6,7 @@ import {
   POLLINATIONS_ANON_URL,
   POLLINATIONS_KEYED_URL,
   buildPollinationsRequest,
+  buildSystemPrompt,
   createSseParser,
 } from './pollinations';
 import { DEFAULT_SETTINGS, normaliseSettings, type LlmSettings } from './settings';
@@ -111,6 +112,38 @@ describe('buildPollinationsRequest', () => {
     ).body;
     expect(messages[1]).toEqual({ role: 'user', content: 'hi' });
     expect(messages[0].content).toContain('one-to-one');
+  });
+});
+
+describe('buildSystemPrompt — mention chaining', () => {
+  const channel = {
+    conversationKind: 'channel' as const,
+    conversationName: 'Build Room',
+    otherAgents: [{ id: 'p', name: 'Pixel' }],
+  };
+
+  it('tells channel agents they can hand off by @-mentioning another agent', () => {
+    const prompt = buildSystemPrompt(atlas, channel);
+    expect(prompt).toContain('@mention them by name in your reply');
+  });
+
+  it('names the mentioning agent when another agent did the mentioning', () => {
+    const prompt = buildSystemPrompt(atlas, { ...channel, directed: true, mentionedByAgent: 'Pixel' });
+    expect(prompt).toContain('Pixel @mentioned you in their reply');
+    expect(prompt).not.toContain('The user addressed you directly');
+  });
+
+  it('keeps the user wording for a direct user mention', () => {
+    const prompt = buildSystemPrompt(atlas, { ...channel, directed: true });
+    expect(prompt).toContain('The user addressed you directly with an @mention');
+  });
+
+  it('says nothing about handoffs in a 1:1 chat', () => {
+    const prompt = buildSystemPrompt(atlas, {
+      conversationKind: 'direct',
+      conversationName: 'Atlas',
+    });
+    expect(prompt).not.toContain('@mention them by name');
   });
 });
 

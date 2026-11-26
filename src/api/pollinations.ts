@@ -64,6 +64,8 @@ export interface PromptContext {
   otherAgents?: { id: string; name: string }[];
   /** True when the user @mentioned this agent. */
   directed?: boolean;
+  /** Name of the agent whose reply @-mentioned this one, if any. */
+  mentionedByAgent?: string;
 }
 
 export function hasKey(settings: Pick<LlmSettings, 'apiKey'>): boolean {
@@ -108,7 +110,16 @@ export function buildSystemPrompt(agent: Agent, ctx: PromptContext): string {
         'Reply only as yourself, with no name prefix. Build on what others already said instead of repeating it.',
     );
     if (ctx.directed) {
-      facts.push('The user addressed you directly with an @mention, so answer their latest message.');
+      facts.push(
+        ctx.mentionedByAgent
+          ? `${ctx.mentionedByAgent} @mentioned you in their reply, so answer what they asked of you.`
+          : 'The user addressed you directly with an @mention, so answer their latest message.',
+      );
+    }
+    if (others.length) {
+      facts.push(
+        'If you need another agent in this channel to take the next step, @mention them by name in your reply — they will then be asked to respond.',
+      );
     }
   } else {
     facts.push('You are in a private one-to-one chat with the user.');
