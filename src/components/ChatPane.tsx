@@ -310,7 +310,7 @@ export function ChatPane({
           </button>
 
           {isChannel && (
-            <button className="icon-btn ghost" onClick={onManageMembers} title="Manage members">
+            <button className="icon-btn ghost chat-head-manage" onClick={onManageMembers} title="Manage members">
               <UsersIcon size={16} />
             </button>
           )}

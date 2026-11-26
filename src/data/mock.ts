@@ -131,7 +131,7 @@ const msg = (
 
 export const seedMessages: Record<string, Message[]> = {
   [CHANNEL_ID]: [
-    msg(CHANNEL_ID, 'user', 'Kickoff: we need a front-end that feels like Teamily but talks to our own agents.', mins(180)),
+    msg(CHANNEL_ID, 'user', 'Kickoff: we need a front-end that feels like a team chat but talks to our own agents.', mins(180)),
     msg(
       CHANNEL_ID,
       'agent',
