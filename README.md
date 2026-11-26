@@ -135,6 +135,104 @@ The browser calls your endpoint directly, so your server must allow the origin t
 is served from (`http://localhost:5173` in dev). Either send
 `Access-Control-Allow-Origin: *` for local work, or put a small proxy in front of it.
 
+## Autonomy: jobs, scheduler & governance
+
+Teamz can run itself while Jesse only makes master decisions. A **job** is a
+chain of stages that walks the product lifecycle — design → build → implement
+→ upgrade → release → document → advertise → sell — where each stage is one
+scheduled agent run whose reply becomes that stage's recorded output. The
+first product the loop operates is the mem20 repo, which Jesse has handed
+over to Teamz to run start to finish.
+
+Two runners share one core (`src/lib/scheduler.ts`, `src/lib/jobs.ts`,
+`src/lib/governance.ts` — all DOM-free, no mem20 dependency):
+
+| Runner | Where it runs | What it does |
+| --- | --- | --- |
+| In-tab runner | This browser tab (`Jobs & Scheduler` button, top right) | Dev/preview mode. Checks every 30s, fires due work through the chat's own send path. **Only while the tab is open.** |
+| Server runner | jnet1, as a systemd service (`scripts/runner.ts`) | The real 24/7 runner. Same schedules, same gates; prompt stages go to agent endpoints over HTTP, command stages execute in a repo working directory. |
+
+### The hard rule
+
+The runner **never** spends money, publishes something public, or releases
+anything without Jesse's approval. `release`, `advertise`, and `sell` — and
+any stage flagged as spending money or publishing publicly — cannot execute
+without an approval record for that job + stage. The gate is enforced in
+code (`canExecuteStage` inside `startStage`), not just in the UI: a gated
+stage with no live approval is blocked, an approval request is filed, and
+the job parks in `awaiting_approval` until Jesse approves or denies it in
+the approvals queue. Routine stages (design, build, implement, upgrade,
+drafting docs) proceed autonomously.
+
+### Jobs
+
+- A job names a channel, a manager agent, and one agent per stage. The
+  manager distributes stages to their owner agents (the mem20crewz Crew
+  pattern: a manager agent delegates, each stage's output feeds the next
+  stage's context, every run records its provenance — which run produced
+  which output, when, in which channel, under which approval).
+- Templates (real data, instantiated with your agents — **Jobs &
+  Scheduler → New job from a template**): **Ship a release** (the full
+  eight-stage loop), **Publish docs** (design → document, gated on publish),
+  **Nightly repo check** (design → command → document; the command stage
+  runs `git status --short` in the repo working directory).
+- **Command stages** do real work on a checked-out repo. A command runs
+  only when its exact argv is on the job's explicit allowlist, only via
+  `spawn` with no shell (metacharacters are data, never a second command),
+  with a timeout, and with captured output recorded as the stage's output.
+  Commands never come from an LLM reply. The in-tab runner never executes
+  commands — it leaves them for the server runner.
+- Schedules: cron jobs (`0 7 * * 1-5` — same 5-field parser as mem20agentz),
+  interval triggers (every N minutes), and per-job schedules (manual /
+  interval / cron). State persists in `localStorage` (`teamz:autonomy:v1`).
+
+### Deploy the 24/7 runner on jnet1
+
+The runner lives on Jesse's server **jnet1** (in his Tailscale tailnet;
+behind NAT, no public IP — the runner needs no public ingress, it calls
+out to agent endpoints). Everything the runner serves (logs, health, any
+future status page) is tailnet-only: no public IP, no open ports, no
+firewall change. If public ingress is ever needed, that is a Tailscale
+serve/funnel decision and needs Jesse's say-so first. Do not install it
+until Jesse approves the install — the package and the steps are ready here.
+
+```bash
+npm run build:runner   # bundles scripts/runner.ts → dist/runner.mjs
+# copy the repo (or at least dist/, scripts/, deploy/) to jnet1, then:
+sudo ./deploy/install.sh
+# edit /var/lib/teamz-runner/state.json — real agent endpoints, real job
+# workdirs (the mem20 checkout on jnet1 is /opt/mem20), and the jobs to run
+sudo systemctl start teamz-runner
+journalctl -u teamz-runner -f   # or tail /var/log/teamz-runner/runner.log
+```
+
+- The service runs as a `teamz` system user, restarts automatically, and
+  survives reboots (`deploy/teamz-runner.service`).
+- The state file (`/var/lib/teamz-runner/state.json`, seeded from
+  `scripts/runner-state.example.json`) is the runner's whole world: agents,
+  jobs, triggers, cron jobs, approvals. The service reloads it before every
+  tick and saves it after, so approvals added to the file take effect on
+  the next tick. A reinstall never overwrites an existing state file.
+- The runner needs agent endpoints it can reach — either agent servers on
+  jnet1 or reachable over the tailnet. It cannot use the browser's
+  Pollinations default; point agents at real endpoints in the state file.
+- The runner listens on no ports: it only makes outbound HTTP calls to
+  agent endpoints and reads/writes its state file and log. There is
+  nothing to expose publicly and nothing to firewall — tailnet-only by
+  construction, not by configuration.
+- The runner works with whatever mem20 checkout is present (on jnet1 it is
+  `/opt/mem20`) and **never syncs it**: it has no pull/fetch/update step,
+  and it must never push to the mem20 repo from jnet1. Syncing that
+  checkout to current main is **blocked pending Jesse's plain-words
+  go-ahead** (the copy there is behind main and has uncommitted local
+  modifications) — flag it as pending, do not work around it. Point job
+  workdirs at the checkout as it stands.
+- **Open items (Jesse's call):** how the runner authenticates to GitHub
+  for mem20 work (a token or `gh` login on jnet1 — not set up here, and no
+  credentials are stored anywhere in this repo), and how Jesse sees and
+  approves pending approvals when he is not in the tab (a small status
+  page over the state file, or a notification route — proposed, not built).
+
 ## Project layout
 
 ```
@@ -156,8 +254,20 @@ src/
     Icons.tsx              inline SVG icon set (no icon dependency)
     Modal.tsx              shared modal primitive
   lib/format.ts            time + label formatting helpers
+  lib/scheduler.ts         cron parser, interval triggers, tick() (DOM-free)
+  lib/jobs.ts              product-loop jobs, stage lifecycle, templates
+  lib/governance.ts        approval gates (release/advertise/sell/spend/publish)
+  store/useAutonomy.ts     autonomy state + in-tab runner tick (30s)
+  components/JobsPanel.tsx jobs, schedules, triggers, approvals queue
   data/mock.ts             seed agents, channels and messages
   styles.css               the whole theme
+scripts/
+  runner.ts                24/7 headless runner (jnet1 service entry)
+  runner-lib.ts            state file, agent dispatch, command executor, tick
+  runner-state.example.json
+deploy/
+  teamz-runner.service     systemd unit (auto-restart, survives reboots)
+  install.sh               install on jnet1 (root, after Jesse's approval)
 ```
 
 Dependencies: React 18 and Vite 5. That's it — no UI kit, no icon package, no markdown

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Seniority } from './types';
 import { useWorkspace } from './store/useWorkspace';
+import { useAutonomy } from './store/useAutonomy';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
+import { JobsPanel } from './components/JobsPanel';
 import { AgentSettings } from './components/AgentSettings';
 import { NewAgentDialog } from './components/NewAgentDialog';
 import { ChannelDialog } from './components/ChannelDialog';
@@ -13,6 +15,7 @@ import { MenuIcon } from './components/Icons';
 
 export default function App() {
   const ws = useWorkspace();
+  const autonomy = useAutonomy(ws);
   const [llm] = useLlmSettings();
   const modeLabel =
     llm.provider === 'pollinations'
@@ -25,6 +28,7 @@ export default function App() {
   const [showNewChannel, setShowNewChannel] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [showJobs, setShowJobs] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -123,6 +127,16 @@ export default function App() {
           <MenuIcon size={18} />
         </button>
 
+        {/* Autonomy nav (additive): opens the Jobs & Scheduler panel. */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 14px 0' }}>
+          <button className="btn ghost sm" onClick={() => setShowJobs(true)}>
+            Jobs &amp; Scheduler
+            {autonomy.pendingApprovalCount > 0
+              ? ` (${autonomy.pendingApprovalCount} approval${autonomy.pendingApprovalCount === 1 ? '' : 's'} waiting)`
+              : ''}
+          </button>
+        </div>
+
         <ChatPane
           conversation={ws.activeConversation}
           messages={ws.activeMessages}
@@ -203,6 +217,15 @@ export default function App() {
         onReset={ws.resetWorkspace}
         agentCount={ws.state.agents.length}
         conversationCount={ws.state.conversations.length}
+      />
+
+      <JobsPanel
+        open={showJobs}
+        onClose={() => setShowJobs(false)}
+        autonomy={autonomy}
+        agents={ws.state.agents}
+        conversations={ws.state.conversations}
+        onOpenConversation={(id) => ws.setActiveConversation(id)}
       />
     </div>
   );

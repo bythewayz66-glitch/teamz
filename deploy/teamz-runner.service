@@ -1,0 +1,25 @@
+[Unit]
+Description=Teamz 24/7 autonomy runner
+Documentation=https://github.com/bythewayz66-glitch/teamz
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=teamz
+Group=teamz
+WorkingDirectory=/opt/teamz-runner
+# The runner is a single bundled file (dist/runner.mjs built by
+# `npm run build:runner`). No secrets belong in this unit file: agent
+# endpoints that need keys are configured in the state file, which is
+# owned by the service user and not world-readable.
+ExecStart=/usr/bin/node /opt/teamz-runner/runner.mjs --state /var/lib/teamz-runner/state.json --log /var/log/teamz-runner/runner.log --interval 30
+Restart=always
+RestartSec=10
+# Keep the service from hammering a broken state file forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
