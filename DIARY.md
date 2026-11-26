@@ -210,7 +210,10 @@ Final deployed state (verified live, all three services active):
 
 ### Commit (pushed Nov 26, 2026)
 
-[commit hash + message filled in at push time]
+`974145c` — "Teamz autonomy: 31 agents, hourly automations, Reviewer,
+Orchestrator, Provider Researcher, Keymaster" (`1440b10..974145c`,
+`main`, 28 files, +5926/−29). `deploy/__pycache__/` intentionally
+not committed.
 
 - Pushed to `bythewayz66-glitch/teamz` (main) — Jesse explicitly
   authorized this push; no workflow files touched.
