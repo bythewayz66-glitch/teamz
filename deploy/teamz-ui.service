@@ -1,0 +1,23 @@
+[Unit]
+Description=Teamz web UI (static production build)
+Documentation=https://github.com/bythewayz66-glitch/teamz
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=teamz
+Group=teamz
+WorkingDirectory=/opt/teamz-ui
+# Stdlib-only static server (serve_teamz.py): maps /teamz/* onto dist/
+# (the Vite build uses base '/teamz/') and redirects / to /teamz/.
+# No Node needed on the server. No secrets belong in this unit file.
+ExecStart=/usr/bin/python3 /opt/teamz-ui/serve_teamz.py
+Restart=always
+RestartSec=5
+Environment=TEAMZ_DIST=/opt/teamz-ui/dist TEAMZ_HOST=0.0.0.0 TEAMZ_PORT=8895
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

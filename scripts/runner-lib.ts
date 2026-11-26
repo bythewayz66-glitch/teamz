@@ -44,10 +44,15 @@ import {
 } from '../src/lib/jobs';
 import {
   findPendingApproval,
+  decideApprovalByReviewer,
+  isCarveOut,
   requestApproval,
   type ApprovalRequest,
 } from '../src/lib/governance';
+import { handleFor, parseMentions } from '../src/lib/mentions';
+import type { Agent } from '../src/types';
 import {
+  createCronJob,
   recordCronRun,
   Schedule,
   tick as schedulerTick,
@@ -66,7 +71,64 @@ export interface RunnerAgent {
   /** Agent HTTP endpoint, e.g. http://127.0.0.1:8001/chat. */
   endpointUrl: string;
   model?: string;
+  /**
+   * Keyless provider id from the provider registry (e.g. 'pollinations').
+   * Absent means the endpoint's default provider. Set only by the
+   * Provider Researcher write path, and only to validated keyless
+   * providers — see docs/PROVIDER_RESEARCHER.md.
+   */
+  provider?: string;
   systemPrompt?: string;
+}
+
+/**
+ * One message delivered to a channel by the runner — the Build Room's
+ * record of what the headless agents actually said. Cron replies,
+ * Orchestrator assignments, mention dispatches and resends are recorded
+ * here so they are visible in the UI via /runner-state, not just in logs.
+ */
+export interface ChannelMessage {
+  id: string;
+  channelId: string;
+  agentId: string;
+  agentName: string;
+  /** 'cron' | 'orchestrator' | 'mention' | 'researcher' | 'resend' */
+  kind: string;
+  text: string;
+  ts: number;
+}
+
+/**
+ * A rate-limit event the agent endpoint recorded when an upstream call
+ * was refused (402/429). The retained `prompt` is the original request
+ * that failed, so the runner can resend it instead of losing it.
+ */
+export interface RateLimitEvent {
+  id: string;
+  ts: number;
+  agentId: string;
+  agentName: string;
+  channelId: string;
+  /** The original user prompt that hit the rate limit, retained verbatim. */
+  prompt: string;
+  provider: string;
+  error: string;
+}
+
+/** The record of one rate-limit rescue: what woke, what moved, what resent. */
+export interface RateLimitRescue {
+  eventId: string;
+  ts: number;
+  agentId: string;
+  fromProvider: string;
+  /** Provider the agent is on after the rescue (may be unchanged). */
+  toProvider: string;
+  /** The original request was resent on the (new) provider. */
+  resent: boolean;
+  /** The resend returned a real reply. */
+  resendCompleted: boolean;
+  researcherReply: string;
+  attempts: number;
 }
 
 /**
@@ -82,10 +144,14 @@ export interface RunnerState {
   triggers: IntervalTrigger[];
   approvals: ApprovalRequest[];
   cronJobs: CronJob[];
+  /** Build Room record of runner-delivered agent replies (newest kept). */
+  channelMessages: ChannelMessage[];
+  /** Rate-limit rescues, append-only (one record per event id). */
+  rateLimitRescues: RateLimitRescue[];
 }
 
 export function emptyRunnerState(): RunnerState {
-  return { version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [] };
+  return { version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [], channelMessages: [], rateLimitRescues: [] };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -120,6 +186,7 @@ export function loadRunnerState(path: string): LoadResult {
         name: a.name,
         endpointUrl: a.endpointUrl,
         model: typeof a.model === 'string' ? a.model : undefined,
+        provider: typeof a.provider === 'string' ? a.provider : undefined,
         systemPrompt: typeof a.systemPrompt === 'string' ? a.systemPrompt : undefined,
       });
     } else {
@@ -167,6 +234,26 @@ export function loadRunnerState(path: string): LoadResult {
       warnings.push('dropped an approval entry with missing fields');
     }
   }
+  for (const m of Array.isArray(parsed.channelMessages) ? parsed.channelMessages : []) {
+    if (
+      isRecord(m) && typeof m.id === 'string' && typeof m.channelId === 'string' &&
+      typeof m.agentId === 'string' && typeof m.text === 'string' && typeof m.ts === 'number'
+    ) {
+      state.channelMessages.push(m as unknown as ChannelMessage);
+    } else {
+      warnings.push('dropped a channel message entry with missing fields');
+    }
+  }
+  for (const r of Array.isArray(parsed.rateLimitRescues) ? parsed.rateLimitRescues : []) {
+    if (
+      isRecord(r) && typeof r.eventId === 'string' && typeof r.agentId === 'string' &&
+      typeof r.ts === 'number'
+    ) {
+      state.rateLimitRescues.push(r as unknown as RateLimitRescue);
+    } else {
+      warnings.push('dropped a rate-limit rescue entry with missing fields');
+    }
+  }
   return { state, warnings };
 }
 
@@ -192,6 +279,7 @@ export function buildAgentRequest(agent: RunnerAgent, prompt: string, channelId:
       id: agent.id,
       name: agent.name,
       model: agent.model ?? '',
+      provider: agent.provider ?? '',
       systemPrompt: agent.systemPrompt ?? '',
     },
     messages: [{ role: 'user', content: prompt }],
@@ -266,6 +354,149 @@ export async function dispatchPromptToAgent(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Channel messages, Orchestrator mentions, Reviewer replies, automations
+ * ------------------------------------------------------------------------- */
+
+/** Append a runner-delivered reply to the channel record (newest 200 kept). */
+export function recordChannelMessage(
+  state: RunnerState,
+  message: Omit<ChannelMessage, 'id' | 'ts'> & { ts?: number },
+): ChannelMessage {
+  const full: ChannelMessage = {
+    id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    ts: message.ts ?? Date.now(),
+    ...message,
+    text: message.text.slice(0, 4000),
+  };
+  state.channelMessages = [...state.channelMessages, full].slice(-200);
+  return full;
+}
+
+/** Max @-mention dispatches the Orchestrator may fan out in one run. */
+export const MAX_ORCHESTRATOR_MENTIONS = 8;
+
+/**
+ * Who an Orchestrator reply @-mentions, resolved to runner agents.
+ * Same parser as the UI (`src/lib/mentions.ts`: longest name wins, order
+ * of first appearance), PLUS the id form (`@agent-qa-tester`): the
+ * Orchestrator sees agents by id in the runner context and writes the
+ * id as often as the display name, so both must resolve. Self-mentions
+ * are dropped, unknown names never resolve, and the list is capped —
+ * one level, no chaining.
+ */
+export function resolveMentionedAgents(
+  reply: string,
+  agents: RunnerAgent[],
+  excludeId?: string,
+): RunnerAgent[] {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hits: Array<{ agent: RunnerAgent; pos: number }> = [];
+  // Id form: @agent-qa-tester.
+  for (const m of reply.matchAll(/@([A-Za-z][A-Za-z0-9_-]*)/g)) {
+    const agent = byId.get(m[1]);
+    if (agent && agent.id !== excludeId) hits.push({ agent, pos: m.index ?? 0 });
+  }
+  // Name / handle form, via the UI parser.
+  const parsed = parseMentions(reply, agents as unknown as Agent[]);
+  for (const hit of parsed) {
+    const agent = byId.get(hit.id);
+    if (!agent || agent.id === excludeId) continue;
+    const re = new RegExp(`@(?:${escapeRe(agent.name)}|${escapeRe(handleFor(agent.name))})`, 'i');
+    const mm = re.exec(reply);
+    hits.push({ agent, pos: mm?.index ?? 0 });
+  }
+  hits.sort((a, b) => a.pos - b.pos);
+  const seen = new Set<string>();
+  const out: RunnerAgent[] = [];
+  for (const hit of hits) {
+    if (seen.has(hit.agent.id)) continue;
+    seen.add(hit.agent.id);
+    out.push(hit.agent);
+    if (out.length >= MAX_ORCHESTRATOR_MENTIONS) break;
+  }
+  return out;
+}
+
+/** The Reviewer's verdict, from a one-line `APPROVE: <reason>` / `DENY: <reason>` reply. */
+export function parseReviewerReply(
+  reply: string,
+): { decision: 'approve' | 'deny'; reason: string } | null {
+  const approve = /^APPROVE[D]?:\s*(.+)$/im.exec(reply);
+  if (approve) return { decision: 'approve', reason: approve[1].trim().slice(0, 500) };
+  const deny = /^DEN(?:Y|IED):\s*(.+)$/im.exec(reply);
+  if (deny) return { decision: 'deny', reason: deny[1].trim().slice(0, 500) };
+  const denyBare = /^\s*DENY\b/im.exec(reply);
+  if (denyBare) return { decision: 'deny', reason: reply.trim().slice(0, 500) };
+  return null;
+}
+
+/** A proposed automation, as the Orchestrator (or the endpoint) submits it. */
+export interface AutomationProposal {
+  name: string;
+  schedule: string;
+  agentId: string;
+  channelId: string;
+  target: string;
+}
+
+/** Words that mark a proposal as spending, publishing, or destructive. */
+const CARVE_OUT_WORDS =
+  /\b(spend|spending|pay|payment|purchase|buy|charge|publish|public|release|deploy|delete|destroy|remove|wipe|drop)\b/i;
+
+/**
+ * Validate a proposed automation the way POST /automations does (the
+ * endpoint duplicates these rules in plain JS — keep them in sync).
+ * Returns the refusal reason; `carveOut` means "route to Jesse", never
+ * to the Reviewer and never auto-approved.
+ */
+export function validateAutomationProposal(
+  input: AutomationProposal,
+  agents: RunnerAgent[],
+): { ok: true } | { ok: false; reason: string; carveOut: boolean } {
+  const name = (input.name ?? '').trim();
+  if (!name) return { ok: false, reason: 'an automation needs a name', carveOut: false };
+  try {
+    new Schedule(input.schedule ?? '');
+  } catch {
+    return { ok: false, reason: `invalid cron schedule: ${JSON.stringify(input.schedule)}`, carveOut: false };
+  }
+  if (!agents.some((a) => a.id === input.agentId)) {
+    return { ok: false, reason: `unknown agent ${input.agentId}`, carveOut: false };
+  }
+  if (input.channelId !== 'conv-build-room') {
+    return { ok: false, reason: 'automations run only in conv-build-room', carveOut: false };
+  }
+  const target = (input.target ?? '').trim();
+  if (!target) return { ok: false, reason: 'an automation needs a target prompt', carveOut: false };
+  if (target.length > 2000) {
+    return { ok: false, reason: 'target prompt is too long (max 2000 chars)', carveOut: false };
+  }
+  if (CARVE_OUT_WORDS.test(`${name} ${target}`)) {
+    return {
+      ok: false,
+      reason: 'refused: the proposal spends money, publishes publicly, releases, or deletes — that needs Jesse, not an automation',
+      carveOut: true,
+    };
+  }
+  return { ok: true };
+}
+
+/** Build the CronJob for a validated proposal (throws when invalid). */
+export function createAutomationFromProposal(input: AutomationProposal, agents: RunnerAgent[]): CronJob {
+  const check = validateAutomationProposal(input, agents);
+  if (!check.ok) throw new Error(`invalid automation proposal: ${check.reason}`);
+  return createCronJob({
+    name: input.name.trim(),
+    schedule: input.schedule.trim(),
+    type: 'prompt',
+    target: input.target.trim(),
+    agentId: input.agentId,
+    channelId: input.channelId,
+  });
 }
 
 /* ---------------------------------------------------------------------------
@@ -396,6 +627,33 @@ export interface RunnerDeps {
   dispatchPrompt: (agent: RunnerAgent, prompt: string, channelId: string) => Promise<string>;
   executeCommand: (job: ProductJob, argv: string[]) => Promise<CommandResult>;
   log: (message: string) => void;
+  /**
+   * Unhandled rate-limit events the agent endpoint recorded (the runner
+   * polls this on its own tick — never a tight loop). Empty when the
+   * caller has none; the rescue runs on the tick that sees the event.
+   */
+  rateLimitEvents?: () => Promise<RateLimitEvent[]>;
+  /** Mark events handled after a rescue attempt (success or exhausted). */
+  acknowledgeRateLimitEvents?: (ids: string[]) => Promise<void>;
+  /**
+   * Re-read the agent address book from disk — the Provider
+   * Researcher's tools may have reassigned an agent in state.json while
+   * this tick was running, and a resend must use the NEW assignment.
+   */
+  reloadAgents?: () => Promise<RunnerAgent[]>;
+  /**
+   * Minimum milliseconds between the END of one dispatch and the START
+   * of the next (default 0 — tests). The live runner passes 50_000:
+   * the endpoint enforces a 50s gap between upstream calls inside
+   * each dispatch's 60s budget, so a second dispatch in the same tick
+   * would burn ~50s of its budget waiting and then fail with "did not
+   * respond in the time left" (observed live Nov 26, 2026). Waiting
+   * BETWEEN dispatches — outside any dispatch's budget — keeps every
+   * dispatch's model call inside its 60s. The tick gets longer (the
+   * hourly batch drains over ~22 min); the service skips ticks while
+   * one is still running (see scripts/runner.ts).
+   */
+  minDispatchGapMs?: number;
 }
 
 export interface ProcessDueResult {
@@ -425,6 +683,26 @@ export async function processDue(
   const fired: string[] = [];
   const agentById = new Map(state.agents.map((a) => [a.id, a]));
 
+  // Gap-spaced dispatch: every prompt in this tick goes through here,
+  // so the wait between dispatches happens OUTSIDE any dispatch's 60s
+  // budget (see RunnerDeps.minDispatchGapMs).
+  const minGapMs = deps.minDispatchGapMs ?? 0;
+  let lastDispatchEndedAt = 0;
+  const dispatch = async (agent: RunnerAgent, prompt: string, channelId: string): Promise<string> => {
+    if (minGapMs > 0) {
+      const wait = minGapMs - (Date.now() - lastDispatchEndedAt);
+      if (wait > 0) {
+        deps.log(`spacing: waiting ${Math.ceil(wait / 1000)}s before dispatch to ${agent.name}`);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+    }
+    try {
+      return await deps.dispatchPrompt(agent, prompt, channelId);
+    } finally {
+      lastDispatchEndedAt = Date.now();
+    }
+  };
+
   const { dueJobs, dueTriggers } = schedulerTick(now, state.cronJobs, state.triggers);
 
   for (const trigger of dueTriggers) {
@@ -437,7 +715,7 @@ export async function processDue(
       continue;
     }
     try {
-      const reply = await deps.dispatchPrompt(agent, trigger.prompt, trigger.channelId);
+      const reply = await dispatch(agent, trigger.prompt, trigger.channelId);
       fired.push(`trigger → ${agent.name} in ${trigger.channelId}: ${reply.slice(0, 120)}`);
     } catch (err) {
       fired.push(`trigger → ${agent.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
@@ -470,13 +748,50 @@ export async function processDue(
       continue;
     }
     try {
-      const reply = await deps.dispatchPrompt(agent, cron.target, cron.channelId);
+      const reply = await dispatch(agent, cron.target, cron.channelId);
       const updated = recordCronRun(
         { ...cron, lastRunAt: nowMs },
         { ts: nowMs, ok: true, detail: reply.slice(0, 200) },
       );
       state.cronJobs = state.cronJobs.map((j) => (j.id === cron.id ? updated : j));
+      recordChannelMessage(state, {
+        channelId: cron.channelId,
+        agentId: agent.id,
+        agentName: agent.name,
+        kind: cron.agentId === 'agent-orchestrator' ? 'orchestrator' : 'cron',
+        text: reply,
+      });
       fired.push(`cron ${cron.name} → ${agent.name}: ${reply.slice(0, 120)}`);
+      // Orchestrator mention flow: the Orchestrator assigns work by
+      // @mentioning agents in its reply. Dispatch each mentioned agent
+      // once, one level only (max 8) — the same bounds as the UI's
+      // mention flow (depth 4, max 8 replies) in runner form.
+      if (cron.agentId === 'agent-orchestrator') {
+        const mentioned = resolveMentionedAgents(reply, state.agents, agent.id);
+        for (const target of mentioned) {
+          const assignment =
+            `Assignment from @Orchestrator in the Build Room (conv-build-room):\n\n${reply}\n\n` +
+            `Do the part addressed to you (@${target.name}) and reply with the completed output. Keep it to one reply.`;
+          try {
+            const targetReply = await dispatch(target, assignment, cron.channelId);
+            recordChannelMessage(state, {
+              channelId: cron.channelId,
+              agentId: target.id,
+              agentName: target.name,
+              kind: 'mention',
+              text: targetReply,
+            });
+            fired.push(`orchestrator → @${target.name}: ${targetReply.slice(0, 120)}`);
+          } catch (err) {
+            fired.push(
+              `orchestrator → @${target.name}: FAILED ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        if (mentioned.length === 0) {
+          fired.push('orchestrator: no @mentions in reply — nothing assigned this run');
+        }
+      }
     } catch (err) {
       const updated = recordCronRun(
         { ...cron, lastRunAt: nowMs },
@@ -487,31 +802,203 @@ export async function processDue(
     }
   }
 
+  // Rate-limit rescue (event-driven, on the runner's own tick — never a
+  // tight loop). The endpoint records a 402/429 as an event with the
+  // failed request retained; the tick that sees it wakes the Provider
+  // Researcher, lets it provision/reassign via its tools, then resends
+  // the original request on the (possibly new) provider so the failed
+  // request is not lost. An event with a completed rescue, or 3 failed
+  // attempts, is not retried — the failure stays on the record.
+  if (deps.rateLimitEvents) {
+    let events: RateLimitEvent[] = [];
+    try {
+      events = await deps.rateLimitEvents();
+    } catch (err) {
+      fired.push(`rate-limit check FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    for (const event of events) {
+      const prior = state.rateLimitRescues.find((r) => r.eventId === event.id);
+      if (prior && (prior.resendCompleted || prior.attempts >= 3)) continue;
+      const researcher = agentById.get('agent-provider-researcher');
+      const failedAgent = agentById.get(event.agentId);
+      let researcherReply = 'no Provider Researcher agent configured';
+      if (researcher) {
+        const wakePrompt =
+          `RATE-LIMIT RESCUE — wake up. Agent @${event.agentName} hit a rate limit on provider ` +
+          `"${event.provider}" in channel ${event.channelId} (${event.error}). ` +
+          `Use your tools: search for a new keyless provider, validate it with a live test call, ` +
+          `provision it with add_provider, and reassign @${event.agentName} to it with reassign_agent ` +
+          `(record the change with the reason "rate limit"). If no new provider validates, say so ` +
+          `plainly — do not invent one. The runner will resend the agent's original request after you reply. ` +
+          `Then return to standby.`;
+        try {
+          researcherReply = await dispatch(researcher, wakePrompt, event.channelId);
+          recordChannelMessage(state, {
+            channelId: event.channelId,
+            agentId: researcher.id,
+            agentName: researcher.name,
+            kind: 'researcher',
+            text: researcherReply,
+          });
+        } catch (err) {
+          researcherReply = `Researcher dispatch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+      // The Researcher's tools may have reassigned the agent in
+      // state.json on disk; re-read so the resend uses the new provider.
+      let resendAgent = failedAgent;
+      if (deps.reloadAgents) {
+        try {
+          const fresh = await deps.reloadAgents();
+          const updated = fresh.find((a) => a.id === event.agentId);
+          if (updated) {
+            resendAgent = updated;
+            state.agents = state.agents.map((a) => (a.id === updated.id ? updated : a));
+            agentById.set(updated.id, updated);
+          }
+        } catch (err) {
+          fired.push(`rate-limit rescue: could not reload agents — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      let resent = false;
+      let resendCompleted = false;
+      if (resendAgent) {
+        try {
+          const resendReply = await dispatch(resendAgent, event.prompt, event.channelId);
+          resent = true;
+          resendCompleted = true;
+          recordChannelMessage(state, {
+            channelId: event.channelId,
+            agentId: resendAgent.id,
+            agentName: resendAgent.name,
+            kind: 'resend',
+            text: resendReply,
+          });
+          fired.push(`rate-limit rescue: resent @${resendAgent.name}'s request on ${resendAgent.provider ?? 'default provider'} — completed`);
+        } catch (err) {
+          resent = true;
+          fired.push(`rate-limit rescue: resend FAILED — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        fired.push(`rate-limit rescue: unknown agent ${event.agentId}, cannot resend`);
+      }
+      const rescue: RateLimitRescue = {
+        eventId: event.id,
+        ts: nowMs,
+        agentId: event.agentId,
+        fromProvider: event.provider,
+        toProvider: resendAgent?.provider ?? event.provider,
+        resent,
+        resendCompleted,
+        researcherReply: researcherReply.slice(0, 500),
+        attempts: (prior?.attempts ?? 0) + 1,
+      };
+      state.rateLimitRescues = [
+        ...state.rateLimitRescues.filter((r) => r.eventId !== event.id),
+        rescue,
+      ];
+      if (deps.acknowledgeRateLimitEvents && (resendCompleted || rescue.attempts >= 3)) {
+        try {
+          await deps.acknowledgeRateLimitEvents([event.id]);
+        } catch (err) {
+          fired.push(`rate-limit rescue: acknowledge FAILED — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+  }
+
   for (const job of state.jobs) {
     if (!isJobDue(job, now)) continue;
     if (job.runs.some((r) => r.status === 'dispatched')) continue;
     const plan = currentStage(job);
     if (!plan) continue;
-    const started = startStage(job, state.approvals, nowMs);
+    let started = startStage(job, state.approvals, nowMs);
     if (!started.ok) {
-      if (started.needsApproval && !findPendingApproval(state.approvals, job.id, plan.stage)) {
+      const blockedReason = started.reason;
+      if (!started.needsApproval) {
+        fired.push(`job ${job.name}: stage not started — ${blockedReason}`);
+        continue;
+      }
+      if (findPendingApproval(state.approvals, job.id, plan.stage)) {
+        state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
+        fired.push(`job ${job.name} / ${plan.stage}: still awaiting approval`);
+        continue;
+      }
+      // Carve-out FIRST: release / advertise / sell, or any stage that
+      // spends money, publishes publicly, or destroys something ALWAYS
+      // goes to Jesse. The Reviewer is never even asked.
+      const requestJesse = (note: string) => {
         const req = requestApproval(
           job.id,
           job.name,
           plan.stage,
-          `Stage "${plan.stage}" of "${job.name}" needs Jesse's approval: ${started.reason}`,
+          `Stage "${plan.stage}" of "${job.name}" needs Jesse's approval: ${blockedReason}. ${note}`,
           nowMs,
         );
         state.approvals = [...state.approvals, req];
         state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-        fired.push(`job ${job.name} / ${plan.stage}: approval requested (${req.id})`);
-      } else if (started.needsApproval) {
-        state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-        fired.push(`job ${job.name} / ${plan.stage}: still awaiting approval`);
-      } else {
-        fired.push(`job ${job.name}: stage not started — ${started.reason}`);
+        fired.push(`job ${job.name} / ${plan.stage}: approval requested from Jesse (${req.id})`);
+      };
+      if (isCarveOut(plan.stage, plan.flags)) {
+        requestJesse('Carve-out — the Reviewer may never approve this.');
+        continue;
       }
-      continue;
+      // Routine gated stage: ask the Reviewer. Approved in writing, with
+      // the decision recorded as decidedBy 'reviewer'; denied parks the
+      // job. If the Reviewer is unreachable or its reply is unreadable,
+      // fall back to a Jesse approval request — never silently approve.
+      const reviewer = agentById.get('agent-reviewer');
+      if (!reviewer) {
+        requestJesse('No Reviewer agent configured — routed to Jesse.');
+        continue;
+      }
+      try {
+        const reviewerPrompt =
+          `REVIEW REQUEST — decide this routine operational stage.\n` +
+          `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}\n` +
+          `Stage prompt: ${plan.prompt}\nExpected output: ${plan.expectedOutput}\n` +
+          `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". ` +
+          `You must NEVER approve spending money, public releases, or destructive or deletion ` +
+          `actions — if this request touches any of those, reply "DENY: carve-out — needs Jesse".`;
+        const reply = await dispatch(reviewer, reviewerPrompt, job.channelId);
+        const verdict = parseReviewerReply(reply);
+        if (!verdict) {
+          throw new Error(`unreadable Reviewer reply: ${reply.slice(0, 200)}`);
+        }
+        const req = requestApproval(
+          job.id,
+          job.name,
+          plan.stage,
+          `Stage "${plan.stage}" of "${job.name}" needs a decision: ${blockedReason}`,
+          nowMs,
+        );
+        if (verdict.decision === 'deny') {
+          state.approvals = [
+            ...state.approvals,
+            decideApprovalByReviewer(req, 'denied', verdict.reason, nowMs),
+          ];
+          state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
+          fired.push(`job ${job.name} / ${plan.stage}: DENIED by Reviewer — ${verdict.reason}`);
+          continue;
+        }
+        state.approvals = [
+          ...state.approvals,
+          decideApprovalByReviewer(req, 'approved', verdict.reason, nowMs),
+        ];
+        fired.push(`job ${job.name} / ${plan.stage}: APPROVED by Reviewer — ${verdict.reason}`);
+        const retry = startStage(job, state.approvals, nowMs);
+        if (!retry.ok) {
+          state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
+          fired.push(`job ${job.name} / ${plan.stage}: still blocked after Reviewer approval — ${retry.reason}`);
+          continue;
+        }
+        started = retry;
+      } catch (err) {
+        requestJesse(
+          `Reviewer unavailable or unreadable (${err instanceof Error ? err.message : String(err)}) — falling back to Jesse.`,
+        );
+        continue;
+      }
     }
     // Record the dispatched run first, so a crash mid-stage cannot lose it.
     state.jobs = state.jobs.map((j) => (j.id === job.id ? started.job : j));
@@ -564,7 +1051,7 @@ export async function processDue(
       continue;
     }
     try {
-      const reply = await deps.dispatchPrompt(agent, started.run.prompt, job.channelId);
+      const reply = await dispatch(agent, started.run.prompt, job.channelId);
       const { job: nextJob, approvals: nextApprovals } = completeStageRun(
         started.job,
         started.run.id,

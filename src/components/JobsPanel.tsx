@@ -17,11 +17,14 @@
  * the one that runs around the clock — see README → "Autonomy".
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Agent, Conversation } from '../types';
 import { Modal, Field } from './Modal';
 import { formatRelative, formatTime } from '../lib/format';
 import { nextRun } from '../lib/scheduler';
+import type { CronJob } from '../lib/scheduler';
+import { fetchRunnerState, runnerStateUrl } from '../api/runnerState';
+import type { RunnerStateSummary } from '../api/runnerState';
 import { pendingApprovals } from '../lib/governance';
 import type { JobStage } from '../lib/jobs';
 import type { UseAutonomy } from '../store/useAutonomy';
@@ -86,6 +89,28 @@ export function JobsPanel({
   const [cronChannelId, setCronChannelId] = useState('');
   const [cronTarget, setCronTarget] = useState('');
   const [cronError, setCronError] = useState<string | null>(null);
+
+  // Server runner (jnet1) — read-only. The in-tab runner above cannot see
+  // it, so the panel fetches the runner's own state when it opens.
+  const [runnerState, setRunnerState] = useState<RunnerStateSummary | null>(null);
+  const [runnerLoading, setRunnerLoading] = useState(false);
+  const [runnerError, setRunnerError] = useState<string | null>(null);
+
+  const loadRunnerState = () => {
+    setRunnerLoading(true);
+    setRunnerError(null);
+    fetchRunnerState()
+      .then((s) => setRunnerState(s))
+      .catch((err) =>
+        setRunnerError(err instanceof Error ? err.message : 'Could not reach the server runner.'),
+      )
+      .finally(() => setRunnerLoading(false));
+  };
+
+  useEffect(() => {
+    if (open) loadRunnerState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const pending = useMemo(() => pendingApprovals(autonomy.approvals), [autonomy.approvals]);
   const decided = useMemo(
@@ -179,6 +204,95 @@ export function JobsPanel({
           When a run fires, the panel switches to that job’s channel to deliver it — the run belongs
           in that channel’s history, which is its provenance record.
         </p>
+      </div>
+
+      <div className="info-block" style={{ marginBottom: 16 }}>
+        <h3>Runner automations — server (24/7)</h3>
+        <p className="muted">
+          These are the automations on the server runner on jnet1 — the one that runs around the
+          clock, even with this tab closed. Read-only here: the jobs further down are this
+          tab&apos;s own runner; the jobs below are the server&apos;s.
+        </p>
+        {runnerLoading && !runnerState && <p className="muted">Loading server runner…</p>}
+        {runnerError && (
+          <div>
+            <p className="field-error">Couldn&apos;t reach the server runner: {runnerError}</p>
+            <p className="muted">
+              Endpoint: <code>{runnerStateUrl()}</code>
+            </p>
+            <button className="btn ghost sm" onClick={loadRunnerState}>
+              Retry
+            </button>
+          </div>
+        )}
+        {runnerState && (
+          <div>
+            <p className="muted">
+              {runnerState.jobs.length} job{runnerState.jobs.length === 1 ? '' : 's'}
+              {runnerState.agents.length > 0 &&
+                ` · agent${runnerState.agents.length === 1 ? '' : 's'}: ${runnerState.agents
+                  .map((a) => `${a.name}${a.model ? ` (${a.model})` : ''}`)
+                  .join(', ')}`}
+              {' · '}updated {formatRelative(runnerState.fetchedAt)}
+              {' · '}
+              <button className="btn ghost sm" onClick={loadRunnerState} disabled={runnerLoading}>
+                Refresh
+              </button>
+            </p>
+            {runnerState.jobs.length === 0 && <p className="muted">The server runner has no jobs.</p>}
+            {runnerState.jobs.map((job) => {
+              const current = job.stages[job.currentStageIndex];
+              let next = '—';
+              if (job.schedule.kind === 'cron' && job.schedule.expr) {
+                try {
+                  next = formatRelative(
+                    nextRun({
+                      id: job.id,
+                      name: job.name,
+                      schedule: job.schedule.expr,
+                      type: 'command',
+                      target: '',
+                      enabled: job.enabled,
+                    } as CronJob).getTime(),
+                  );
+                } catch {
+                  next = 'invalid schedule';
+                }
+              }
+              return (
+                <div
+                  key={job.id}
+                  style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border, #242f40)' }}
+                >
+                  <p>
+                    <strong>{job.name}</strong>{' '}
+                    <span className="muted">
+                      · {job.status}
+                      {current
+                        ? ` · stage ${job.currentStageIndex + 1}/${job.stages.length}: ${current.stage}`
+                        : ' · done'}
+                      {job.schedule.kind === 'cron'
+                        ? ` · cron ${job.schedule.expr} · next ${next}`
+                        : ` · ${job.schedule.kind}`}
+                      {job.enabled ? '' : ' · disabled'}
+                    </span>
+                  </p>
+                  {job.description && <p className="muted">{job.description}</p>}
+                  <p className="muted">
+                    {job.workdir ? `workdir: ${job.workdir} · ` : ''}
+                    last run {job.lastRunAt == null ? 'never' : formatRelative(job.lastRunAt)}
+                    {job.runs.length > 0
+                      ? ` · ${job.runs.length} run${job.runs.length === 1 ? '' : 's'} recorded`
+                      : ''}
+                  </p>
+                  <p className="muted" style={{ marginTop: 6 }}>
+                    Stages: {job.stages.map((s) => s.stage).join(' → ')}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="info-block" style={{ marginBottom: 16 }}>

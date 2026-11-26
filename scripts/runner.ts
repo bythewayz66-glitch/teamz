@@ -24,7 +24,7 @@
  * never runs a command that is not on a job's explicit allowlist.
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   dispatchPromptToAgent,
@@ -32,6 +32,7 @@ import {
   loadRunnerState,
   processDue,
   saveRunnerState,
+  type RateLimitEvent,
   type RunnerState,
 } from './runner-lib';
 
@@ -109,6 +110,21 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     dispatchPrompt: (agent, prompt, channelId) => dispatchPromptToAgent(agent, prompt, channelId),
     executeCommand: (job, argv) => executeAllowedCommand(job, argv),
     log: (message) => log(`  ${message}`),
+    rateLimitEvents: async () => readRateLimitEvents(),
+    acknowledgeRateLimitEvents: async (ids) => acknowledgeRateLimitEvents(ids),
+    reloadAgents: async () => {
+      try {
+        return loadRunnerState(statePath).state.agents;
+      } catch {
+        return loaded.state.agents;
+      }
+    },
+    // 50s between dispatches (see RunnerDeps.minDispatchGapMs): on the
+    // anonymous tier a second dispatch in the same tick would otherwise
+    // burn ~50s of its 60s budget waiting for the endpoint's rate
+    // window and then fail. The tick gets longer; the service skips
+    // ticks while one is still running (tick guard in main()).
+    minDispatchGapMs: 50_000,
   });
   if (fired.length > 0) {
     try {
@@ -119,6 +135,65 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     }
   }
   return state;
+}
+
+/* ---------------------------------------------------------------------------
+ * Rate-limit events — the endpoint appends one JSON line per refused
+ * upstream call (see scripts/agent-endpoint/agent.mjs). The runner reads
+ * them on its own tick (never a tight loop) and hands them to processDue,
+ * which wakes the Provider Researcher and resends the retained request.
+ * Handled ids live in a separate file so the event log stays append-only.
+ * ------------------------------------------------------------------------- */
+
+const RATE_LIMIT_EVENTS_PATH =
+  process.env.RATE_LIMIT_EVENTS_PATH ?? '/var/lib/teamz-agent/rate-limit-events.jsonl';
+const RATE_LIMIT_HANDLED_PATH =
+  process.env.RATE_LIMIT_HANDLED_PATH ?? '/var/lib/teamz-agent/rate-limit-handled.json';
+
+function readHandledEventIds(): Set<string> {
+  try {
+    if (!existsSync(RATE_LIMIT_HANDLED_PATH)) return new Set();
+    const parsed: unknown = JSON.parse(readFileSync(RATE_LIMIT_HANDLED_PATH, 'utf-8'));
+    return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function readRateLimitEvents(): RateLimitEvent[] {
+  try {
+    if (!existsSync(RATE_LIMIT_EVENTS_PATH)) return [];
+    const handled = readHandledEventIds();
+    const events: RateLimitEvent[] = [];
+    for (const line of readFileSync(RATE_LIMIT_EVENTS_PATH, 'utf-8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const e = JSON.parse(line) as Partial<RateLimitEvent>;
+        if (typeof e.id === 'string' && typeof e.agentId === 'string' && typeof e.prompt === 'string' && !handled.has(e.id)) {
+          events.push(e as RateLimitEvent);
+        }
+      } catch {
+        // A corrupt line is skipped, never fatal to the tick.
+      }
+    }
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+function acknowledgeRateLimitEvents(ids: string[]): void {
+  const handled = readHandledEventIds();
+  for (const id of ids) handled.add(id);
+  try {
+    mkdirSync(dirname(RATE_LIMIT_HANDLED_PATH), { recursive: true });
+    const tmp = `${RATE_LIMIT_HANDLED_PATH}.tmp`;
+    writeFileSync(tmp, JSON.stringify([...handled], null, 2) + '\n', 'utf-8');
+    renameSync(tmp, RATE_LIMIT_HANDLED_PATH);
+  } catch {
+    // A failed ack only means the event may be seen again; processDue
+    // de-dupes by its rescue records, so this is safe.
+  }
 }
 
 async function main(): Promise<number> {
@@ -155,10 +230,26 @@ async function main(): Promise<number> {
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 
+  // A tick can now run long: with the 50s inter-dispatch gap, the
+  // hourly batch drains over ~22 minutes. Ticks must never overlap —
+  // a second tick loading the same state file while the first is still
+  // dispatching could fire the same jobs twice — so a tick that finds
+  // one already running just skips and logs it. Cron dedupe (lastRunAt
+  // per minute) is the backstop, not the mechanism.
+  let tickInFlight = false;
   const timer = setInterval(() => {
-    void runOneTick(opts.statePath, log).catch((err) => {
-      log(`ERROR in tick: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    if (tickInFlight) {
+      log('tick still running, skipping this interval');
+      return;
+    }
+    tickInFlight = true;
+    void runOneTick(opts.statePath, log)
+      .catch((err) => {
+        log(`ERROR in tick: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        tickInFlight = false;
+      });
   }, opts.intervalMs);
   // The interval keeps the process alive; the signal handlers below resolve
   // the wait, which clears it and lets main() return.

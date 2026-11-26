@@ -34,13 +34,40 @@ export interface GateFlags {
   spendsMoney?: boolean;
   /** The stage's work would publish something where the public can see it. */
   publishesPublic?: boolean;
+  /** The stage's work would delete or destroy data, code, or infrastructure. */
+  destructive?: boolean;
+  /**
+   * The stage is routine (not a carve-out) but still needs a decision
+   * before it runs — the Reviewer decides these, Jesse never has to.
+   * See `isCarveOut`: a requiresReview stage that is also a carve-out
+   * always goes to Jesse, never to the Reviewer.
+   */
+  requiresReview?: boolean;
 }
 
 export function stageRequiresApproval(stage: JobStage, flags: GateFlags = {}): boolean {
   return (
     (GATED_STAGES as readonly JobStage[]).includes(stage) ||
     flags.spendsMoney === true ||
-    flags.publishesPublic === true
+    flags.publishesPublic === true ||
+    flags.destructive === true ||
+    flags.requiresReview === true
+  );
+}
+
+/**
+ * The carve-outs: stages that ALWAYS need Jesse himself, never the
+ * Reviewer. Checked first, before any Reviewer routing — see
+ * docs/REVIEWER_POLICY.md. A stage is a carve-out when it is a gated
+ * lifecycle stage (release / advertise / sell) or its flags say it would
+ * spend money, publish publicly, or destroy something.
+ */
+export function isCarveOut(stage: JobStage, flags: GateFlags = {}): boolean {
+  return (
+    (GATED_STAGES as readonly JobStage[]).includes(stage) ||
+    flags.spendsMoney === true ||
+    flags.publishesPublic === true ||
+    flags.destructive === true
   );
 }
 
@@ -63,6 +90,12 @@ export interface ApprovalRequest {
   decidedAt: number | null;
   /** Epoch ms the approved stage completed, if it has. */
   consumedAt: number | null;
+  /**
+   * Who decided this request: Jesse himself, or the Reviewer agent acting
+   * under the Reviewer policy (routine decisions only — carve-outs are
+   * never decided by the Reviewer). Absent on old records: Jesse.
+   */
+  decidedBy?: 'jesse' | 'reviewer';
 }
 
 /** The outcome of asking "may this stage execute right now?" */
@@ -178,7 +211,31 @@ export function decideApproval(
   if (request.status !== 'pending') {
     throw new Error(`approval ${request.id} is already ${request.status}`);
   }
-  return { ...request, status: decision, decidedAt: nowMs };
+  return { ...request, status: decision, decidedAt: nowMs, decidedBy: 'jesse' };
+}
+
+/**
+ * Record the Reviewer agent's decision on a request. Only for routine
+ * decisions — callers must have checked `isCarveOut` first and routed
+ * carve-outs to Jesse. The record says who decided it, so an audit can
+ * tell a Reviewer approval from a Jesse approval.
+ */
+export function decideApprovalByReviewer(
+  request: ApprovalRequest,
+  decision: 'approved' | 'denied',
+  reason: string,
+  nowMs: number = Date.now(),
+): ApprovalRequest {
+  if (request.status !== 'pending') {
+    throw new Error(`approval ${request.id} is already ${request.status}`);
+  }
+  return {
+    ...request,
+    status: decision,
+    decidedAt: nowMs,
+    decidedBy: 'reviewer',
+    reason: `${request.reason} — Reviewer ${decision}: ${reason}`,
+  };
 }
 
 /** Mark an approval consumed once the stage it covered completed. */

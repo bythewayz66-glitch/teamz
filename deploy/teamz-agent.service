@@ -1,0 +1,29 @@
+[Unit]
+Description=Teamz real agent endpoint (Pollinations-backed, for the 24/7 runner)
+Documentation=https://github.com/bythewayz66-glitch/teamz
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=teamz
+Group=teamz
+WorkingDirectory=/opt/teamz-agent
+# No secrets in this unit: the anonymous Pollinations tier needs no key.
+# If Jesse adds a Pollinations API key later, set it as an environment
+# variable (Environment=POLLINATIONS_API_KEY=<key>) and the service
+# switches to the keyed endpoint (gen.pollinations.ai) with no per-IP
+# spacing, unlocking the full tool loop. Never commit the key.
+ExecStart=/usr/bin/node /opt/teamz-agent/agent.mjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=8897
+# 0.0.0.0: the Teamz UI on Jesse's phone fetches GET /runner-state on the
+# tailnet address (jnet1 has no public IP). The runner still calls
+# 127.0.0.1:8897/chat from the same host.
+Environment=HOST=0.0.0.0
+Environment=LOG_PATH=/var/log/teamz-agent/agent.log
+
+[Install]
+WantedBy=multi-user.target

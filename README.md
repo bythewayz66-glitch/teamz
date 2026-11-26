@@ -156,13 +156,42 @@ Two runners share one core (`src/lib/scheduler.ts`, `src/lib/jobs.ts`,
 
 The runner **never** spends money, publishes something public, or releases
 anything without Jesse's approval. `release`, `advertise`, and `sell` — and
-any stage flagged as spending money or publishing publicly — cannot execute
-without an approval record for that job + stage. The gate is enforced in
-code (`canExecuteStage` inside `startStage`), not just in the UI: a gated
-stage with no live approval is blocked, an approval request is filed, and
-the job parks in `awaiting_approval` until Jesse approves or denies it in
-the approvals queue. Routine stages (design, build, implement, upgrade,
-drafting docs) proceed autonomously.
+any stage flagged as spending money, publishing publicly, or destroying
+something — cannot execute without an approval record for that job + stage.
+The gate is enforced in code (`canExecuteStage` inside `startStage`), not
+just in the UI: a gated stage with no live approval is blocked, an approval
+request is filed, and the job parks in `awaiting_approval` until Jesse
+approves or denies it in the approvals queue. Routine stages (design,
+build, implement, upgrade, drafting docs) proceed autonomously. Routine
+stages that still need a decision (`requiresReview`) go to the **Reviewer**
+agent instead of Jesse — carve-outs (spending, public releases,
+destructive actions) always go to Jesse, never the Reviewer. See
+[`docs/REVIEWER_POLICY.md`](docs/REVIEWER_POLICY.md).
+
+### The roster and the automations
+
+The runner drives **31 agents** (`runner-agents.json`, the single source
+of truth — the same prompts live in the UI seed, `src/data/mock.ts`): the
+26 Teamily agents, plus Reviewer, Orchestrator, Provider Researcher,
+Keymaster, and Atlas. All 34 seed agents (including the 4 originals) are
+members of the **Build Room** (`conv-build-room`), where the Orchestrator
+assigns work by @mention and the runner records the agents' replies.
+
+**29 scheduled automations** run in the Build Room (built by
+`scripts/build-runner-state.mjs`, never hand-edited into the state file):
+one hourly prompt job per Teamily agent (`0 * * * *`, each a concrete
+task finishable in one dispatch), the Orchestrator every 15 minutes
+(`*/15 * * * *`), the Provider Researcher every 6 hours
+(`0 */6 * * *`), and the Keymaster's daily credential audit
+(`0 8 * * *`) — plus the Nightly repo check product job
+(`0 7 * * *`, Atlas). The Orchestrator's standing orders — *Teamz owns
+mem20 and operates without a human in the loop, autonomously 24 hours a
+day, driving mem20 to success and completion* — are in its system prompt
+and posted in the Build Room. Full detail:
+[`docs/TEAMZ_AUTONOMY.md`](docs/TEAMZ_AUTONOMY.md),
+[`docs/ORCHESTRATOR.md`](docs/ORCHESTRATOR.md),
+[`docs/PROVIDER_RESEARCHER.md`](docs/PROVIDER_RESEARCHER.md),
+[`docs/KEYMASTER.md`](docs/KEYMASTER.md).
 
 ### Jobs
 
