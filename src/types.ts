@@ -56,6 +56,12 @@ export interface Agent {
   systemPrompt: string;
   /** Skills derived from the template this agent came from. */
   skills: AgentSkill[];
+  /**
+   * Tool ids this agent may use, e.g. `['wikipedia', 'weather']` (see
+   * `src/lib/tools.ts`). Absent or empty means no tools: the agent answers
+   * from the model alone, exactly as before.
+   */
+  enabledTools?: string[];
   /** Provenance — absent for hand-made agents. */
   origin?: AgentOrigin;
   /** Last reachability check result (persisted). */

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "A Teamily-style chat front-end for managing multiple AI agents running on your own server.",
+  "description": "A chat front-end for managing multiple AI agents running on your own server.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
