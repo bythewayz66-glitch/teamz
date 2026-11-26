@@ -277,7 +277,7 @@ const MOCK_REPLIES: Record<string, string[]> = {
     'Add the empty state before the happy path. A channel with no members is the most common first-run screen and right now it’s just… blank.',
   ],
   Sage: [
-    'Tightened it. Cut 30% of the words, kept every claim:\n\n> A Teamily-style workspace for agents you host yourself. Sidebar for the roster, one pane for the thread, settings inline. Runs with mock data on first launch; point it at your servers when you’re ready.',
+    'Tightened it. Cut 30% of the words, kept every claim:\n\n> A chat workspace for agents you host yourself. Sidebar for the roster, one pane for the thread, settings inline. Runs with mock data on first launch; point it at your servers when you’re ready.',
     'One idea per paragraph and lead with the verb. “Configure the endpoint” beats “The endpoint can be configured”.',
   ],
   _default: [
