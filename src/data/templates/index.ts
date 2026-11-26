@@ -69,7 +69,26 @@ export {
   seniorityOf,
 } from './seniority';
 export type { Seniority } from './seniority';
-export { SKILLS, getSkill, getSkillsForCategory } from './skills';
+export {
+  SKILLS,
+  getAllSkills,
+  getSkill,
+  getSkillByKey,
+  getSkillsForCategory,
+  searchSkills,
+} from './skills';
+export {
+  SKILL_BUNDLES,
+  agentSkillsForKeys,
+  bundleIsFullySelected,
+  bundleIsPartiallySelected,
+  bundlesForCategory,
+  expandBundle,
+  expandSkillKeys,
+  getBundle,
+  getBundles,
+  toggleBundle,
+} from './bundles';
 
 /** Every template, in category-tab order. Built once at module load. */
 const ALL: AgentTemplate[] = [

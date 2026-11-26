@@ -131,7 +131,7 @@ const msg = (
 
 export const seedMessages: Record<string, Message[]> = {
   [CHANNEL_ID]: [
-    msg(CHANNEL_ID, 'user', 'Kickoff: we need a front-end for chatting with our own agents, several at once.', mins(180)),
+    msg(CHANNEL_ID, 'user', 'Kickoff: we need a chat front-end for our own agents — one workspace where the whole team can talk.', mins(180)),
     msg(
       CHANNEL_ID,
       'agent',

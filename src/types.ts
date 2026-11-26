@@ -64,6 +64,26 @@ export interface Agent {
   enabledTools?: string[];
   /** Provenance — absent for hand-made agents. */
   origin?: AgentOrigin;
+  /**
+   * Self-model, in the mem20crewz Agent shape (role → goal → backstory →
+   * capabilities → values). Stored so the system prompt can be re-composed
+   * from the identity instead of only ever edited as raw text. Absent on
+   * agents made before the guided creation flow existed.
+   */
+  role?: string;
+  goal?: string;
+  backstory?: string;
+  /** Free-form capability lines, e.g. "review pull requests for blast radius". */
+  capabilities?: string[];
+  /** Working principles, e.g. "cite the source, never the summary". */
+  values?: string[];
+  /**
+   * Per-agent execution budgets, same knobs as mem20crewz Agent
+   * (`max_iter` / `max_execution_time`). Absent means the workspace default.
+   */
+  maxIterations?: number;
+  /** Hard deadline in seconds; absent (or 0) means unlimited. */
+  maxExecutionTimeSeconds?: number;
   /** Last reachability check result (persisted). */
   lastPingAt?: number;
   lastPingOk?: boolean;
@@ -173,4 +193,23 @@ export interface CatalogSkill {
   category: TemplateCategory;
   /** Extra search terms, not shown in the UI. */
   tags?: string[];
+}
+
+/**
+ * A skill bundle — a named group of skills picked in one click, in the
+ * mem20agentz SkillsStore bundle shape (a bundle names skills; expanding it
+ * resolves them against the live skill registry).
+ *
+ * `skillKeys` are registry keys of the form `category.id`, e.g.
+ * `engineering.code-review`, so a bundle can mix categories.
+ */
+export interface SkillBundle {
+  /** Stable machine key, e.g. `code-review`. */
+  id: string;
+  /** Human label shown in the picker, e.g. "Code Review". */
+  name: string;
+  /** One line shown under the name in the picker. */
+  description: string;
+  /** Registry keys of the member skills, in the order they are applied. */
+  skillKeys: string[];
 }
