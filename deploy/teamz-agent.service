@@ -9,9 +9,10 @@ Type=simple
 User=teamz
 Group=teamz
 WorkingDirectory=/opt/teamz-agent
-# No secrets in this unit: the anonymous Pollinations tier needs no key.
-# If Jesse adds a Pollinations API key later, set it as an environment
-# variable (Environment=POLLINATIONS_API_KEY=<key>) and the service
+# No secrets in this unit or the repo: the Pollinations API key lives in
+# /etc/teamz-agent.env (root:root, 0600) on jnet1, loaded via the drop-in
+# override /etc/systemd/system/teamz-agent.service.d/pollinations.conf
+# (EnvironmentFile=/etc/teamz-agent.env). With the key set, the service
 # switches to the keyed endpoint (gen.pollinations.ai) with no per-IP
 # spacing, unlocking the full tool loop. Never commit the key.
 ExecStart=/usr/bin/node /opt/teamz-agent/agent.mjs
