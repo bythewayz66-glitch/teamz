@@ -1,10 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Agent, Conversation } from '../types';
 import { AgentAvatar, AvatarStack, StatusDot } from './Avatar';
-import { ChatIcon, HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
+import { ChatIcon, CloseIcon, HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
 import { formatRelative } from '../lib/format';
 
 interface SidebarProps {
+  /** True while the sidebar is an open overlay drawer (small screens). */
+  open: boolean;
+  /** Close the drawer — wired to the in-drawer close button. */
+  onClose: () => void;
   agents: Agent[];
   conversations: Conversation[];
   agentsById: Map<string, Agent>;
@@ -20,6 +24,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  open,
+  onClose,
   agents,
   conversations,
   agentsById,
@@ -34,6 +40,19 @@ export function Sidebar({
   onOpenWorkspaceInfo,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  // When the drawer opens on a small screen, put focus inside it so keyboard
+  // and screen-reader users land in the navigation, not behind the scrim.
+  // (Desktop: the sidebar is always visible, so this never fires there.)
+  // The drawer slides in over 0.22s and the close button is not focusable
+  // until the slide — and its visibility transition — finishes, so the
+  // focus waits the transition out instead of firing into the void.
+  useEffect(() => {
+    if (!open || !window.matchMedia('(max-width: 860px)').matches) return;
+    const t = window.setTimeout(() => closeBtnRef.current?.focus(), 250);
+    return () => window.clearTimeout(t);
+  }, [open ]);
 
   const q = query.trim().toLowerCase();
   const visibleAgents = q
@@ -52,7 +71,7 @@ export function Sidebar({
   const onlineCount = agents.filter((a) => a.status !== 'offline').length;
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" id="teamz-sidebar" aria-label="Agents and conversations">
       <header className="sidebar-brand">
         <div className="brand-mark" aria-hidden="true">
           <SparkIcon size={17} />
@@ -61,6 +80,14 @@ export function Sidebar({
           <strong>teamz</strong>
           <span>{agents.length} agents · {onlineCount} live</span>
         </div>
+        <button
+          ref={closeBtnRef}
+          className="icon-btn ghost sidebar-close"
+          onClick={onClose}
+          aria-label="Close navigation menu"
+        >
+          <CloseIcon size={16} />
+        </button>
         <button className="icon-btn ghost" onClick={onOpenWorkspaceInfo} title="Workspace & API settings">
           <SettingsIcon size={16} />
         </button>

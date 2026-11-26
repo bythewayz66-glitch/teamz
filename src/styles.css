@@ -46,6 +46,8 @@
 
 html, body, #root { height: 100%; }
 
+html, body { overflow-x: hidden; overflow-x: clip; }
+
 body {
   margin: 0;
   font-family: var(--font);
@@ -64,6 +66,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 code, kbd, pre, .mono { font-family: var(--mono); }
 
 ::selection { background: rgba(124, 156, 255, 0.28); }
+
+/* Visible keyboard focus everywhere; mouse users never see it. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* scrollbars */
 * { scrollbar-width: thin; scrollbar-color: #263041 transparent; }
@@ -95,6 +100,10 @@ code, kbd, pre, .mono { font-family: var(--mono); }
 }
 
 .sidebar-scrim { display: none; }
+
+/* In-drawer close button: only exists on small screens, where the sidebar
+   is an overlay drawer. Hidden on desktop, where the rail is always open. */
+.sidebar-close { display: none; }
 
 .mobile-menu {
   display: none;
@@ -1088,6 +1097,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
 .confirm-inline {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
   color: #f3b3b3;
@@ -1188,33 +1198,154 @@ code, kbd, pre, .mono { font-family: var(--mono); }
    Responsive
    ========================================================================== */
 @media (max-width: 860px) {
-  .mobile-menu { display: flex; }
+  /* --- Sidebar becomes an overlay drawer --- */
+  .mobile-menu {
+    display: flex;
+    top: calc(14px + env(safe-area-inset-top, 0px));
+    left: calc(14px + env(safe-area-inset-left, 0px));
+    width: 44px;
+    height: 44px;
+  }
+  /* The hamburger sits above the chat head; hide it while the drawer it
+     opens is covering that corner. */
+  .app-shell.sidebar-open .mobile-menu { display: none; }
 
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    transform: translateX(-100%);
-    transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
+    width: min(var(--rail-w), 86vw);
+    transform: translateX(-105%);
+    /* visibility hides the closed drawer from keyboard tab order and
+       screen readers; the delay keeps it visible until the slide finishes. */
+    visibility: hidden;
+    transition:
+      transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1),
+      visibility 0s linear 0.22s;
     box-shadow: var(--shadow-3);
   }
-  .app-shell.sidebar-open .sidebar { transform: none; }
+  .app-shell.sidebar-open .sidebar {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+  .sidebar-close { display: grid; }
+  .sidebar-brand { padding-top: calc(16px + env(safe-area-inset-top, 0px)); }
+  .sidebar-foot { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   .app-shell.sidebar-open .sidebar-scrim {
     display: block;
     position: fixed;
     inset: 0;
     z-index: 15;
+    padding: 0;
+    cursor: pointer;
     background: rgba(3, 5, 9, 0.6);
     backdrop-filter: blur(2px);
   }
 
-  .chat-head { padding-left: 58px; }
+  /* --- Chat pane goes full-width --- */
+  .chat-head {
+    padding-top: calc(13px + env(safe-area-inset-top, 0px));
+    padding-left: 64px;
+  }
   .message-list { padding: 16px 14px 8px; }
-  .composer-wrap { padding: 8px 12px 12px; }
+  .composer-wrap {
+    padding: 8px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
   .msg-body { max-width: 88%; }
+
+  /* Popovers anchored to the chat head must fit narrow viewports. */
+  .members-pop { width: min(270px, calc(100vw - 24px)); }
+  .invite-pop { width: min(300px, calc(100vw - 24px)); }
+  .members-pop,
+  .invite-pop {
+    top: calc(60px + env(safe-area-inset-top, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+  }
+
+  /* --- Touch targets: ~40px minimum --- */
+  .icon-btn { width: 40px; height: 40px; }
+  /* Agent names in message heads are buttons (they open settings). Their
+     hit area grows to ~40px tall via padding; the negative margin keeps the
+     message layout exactly where it was. */
+  .msg-author { padding: 11px 4px; margin: -11px -4px; }
+  .send-btn { width: 40px; height: 40px; flex-basis: 40px; }
+  .member-stack-btn { min-height: 40px; }
+  .mini-btn { min-height: 40px; padding: 8px 12px; }
+  .btn.sm { min-height: 40px; padding: 8px 14px; }
+  .filter-chip { min-height: 40px; display: inline-flex; align-items: center; }
+  .suggestion { min-height: 40px; display: inline-flex; align-items: center; }
+  .seg button { min-height: 40px; }
+  .tab { min-height: 40px; }
+  .tpl-tab, .tpl-level { min-height: 40px; }
+  .mention-row { min-height: 40px; }
+  .ghost-wide { min-height: 40px; }
+  .mode-pill { min-height: 40px; display: inline-flex; align-items: center; }
+  .addressed-chip { min-height: 40px; }
+  .msg-mention-chip { min-height: 40px; display: inline-flex; align-items: center; }
+  .tpl-level-pill { min-height: 40px; }
+  .tpl-clear { min-width: 40px; min-height: 40px; }
+  .conv-row { padding-top: 9px; padding-bottom: 9px; }
+  .emoji-opt { width: 40px; height: 40px; }
+  /* 40px hit area, same 22px colour dot: the background is clipped to the
+     content box so the padding reads as spacing, not a bigger swatch. */
+  .accent-opt { width: 40px; height: 40px; padding: 9px; background-clip: content-box; }
+  /* Hover-reveal row actions don't exist on touch screens — always show them. */
+  .agent-row-action { width: 40px; height: 40px; opacity: 1; }
+
+  /* --- No iOS auto-zoom on focus: text inputs stay at 16px --- */
+  .composer textarea,
+  .field input,
+  .field textarea,
+  .sidebar-search input,
+  .tpl-search input { font-size: 16px; }
+
+  /* --- Dialogs / drawers fit the viewport --- */
   .field-grid { grid-template-columns: 1fr; }
-  .modal-backdrop { padding: 10px; }
-  .modal { max-height: 92vh; }
+  .modal-backdrop {
+    padding:
+      max(10px, env(safe-area-inset-top, 0px))
+      max(10px, env(safe-area-inset-right, 0px))
+      max(10px, env(safe-area-inset-bottom, 0px))
+      max(10px, env(safe-area-inset-left, 0px));
+  }
+  .modal { max-height: 92vh; max-height: 92dvh; }
+  .modal-head { padding: 16px 14px 12px 18px; }
+  .modal-body { padding: 16px 18px; }
+  .modal-foot {
+    flex-wrap: wrap;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  .tabs { flex-wrap: wrap; }
+  .settings-preview > div { min-width: 0; }
+  .settings-preview span { overflow-wrap: anywhere; }
+
   .composer-foot span:first-child { display: none; }
+}
+
+/* Tightest phones (390px and under): trim chrome, stack modal footers. */
+@media (max-width: 480px) {
+  .chat-head {
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px 64px;
+    gap: 8px;
+  }
+  .chat-head-badge { width: 32px; height: 32px; }
+  /* The header's Manage-members button is redundant here: the members
+     popover already has a "Manage members" action. Hiding it gives the
+     conversation title room to breathe on a narrow phone. */
+  .chat-head-manage { display: none; }
+  .message-list { padding: 14px 12px 8px; }
+  .composer-wrap { padding: 8px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .bubble { padding: 9px 12px; }
+  .filter-bar { padding: 7px 10px; }
+  .thread-intro p { max-width: none; }
+  .info-stats { gap: 6px; }
+  .info-stats > div { padding: 10px 6px; }
+  .modal-head p { max-width: none; }
+
+  .modal-foot { flex-direction: column; align-items: stretch; }
+  .foot-left, .foot-right { width: 100%; }
+  .foot-right { flex-wrap: wrap; }
+  .foot-right .btn { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1462,6 +1593,7 @@ code, kbd, pre, .mono { font-family: var(--mono); }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .tpl-id { font-size: 9.5px; color: #46505f; font-family: var(--mono); }

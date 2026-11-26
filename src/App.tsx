@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Seniority } from './types';
 import { useWorkspace } from './store/useWorkspace';
 import { Sidebar } from './components/Sidebar';
@@ -26,6 +26,26 @@ export default function App() {
   const [showMembers, setShowMembers] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+
+  /* Mobile drawer: Esc closes it, and focus returns to the hamburger when it
+     closes while focus was inside the drawer. */
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    if (sidebarOpen) return;
+    const sidebar = document.getElementById('teamz-sidebar');
+    if (sidebar && sidebar.contains(document.activeElement)) {
+      menuBtnRef.current?.focus();
+    }
+  }, [sidebarOpen]);
 
   const settingsAgent = settingsAgentId ? ws.agentsById.get(settingsAgentId) ?? null : null;
 
@@ -60,13 +80,17 @@ export default function App() {
 
   return (
     <div className={`app-shell${sidebarOpen ? ' sidebar-open' : ''}`}>
-      <div
+      <button
+        type="button"
         className="sidebar-scrim"
         onClick={() => setSidebarOpen(false)}
-        aria-hidden="true"
+        aria-label="Close navigation menu"
+        tabIndex={-1}
       />
 
       <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
         agents={ws.state.agents}
         conversations={ws.state.conversations}
         agentsById={ws.agentsById}
@@ -88,7 +112,14 @@ export default function App() {
       />
 
       <div className="main-column">
-        <button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Show agents">
+        <button
+          ref={menuBtnRef}
+          className="mobile-menu"
+          onClick={() => setSidebarOpen(true)}
+          aria-label="Show agents"
+          aria-expanded={sidebarOpen}
+          aria-controls="teamz-sidebar"
+        >
           <MenuIcon size={18} />
         </button>
 
