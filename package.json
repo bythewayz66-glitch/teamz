@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:runner": "esbuild scripts/runner.ts --bundle --platform=node --format=esm --outfile=dist/runner.mjs --log-level=warning"
+    "build:runner": "esbuild scripts/runner.ts --bundle --platform=node --format=esm --outfile=dist/runner.mjs --log-level=warning",
+    "build:slack-test": "esbuild scripts/slack-test.ts --bundle --platform=node --format=esm --outfile=dist/slack-test.mjs --log-level=warning"
   },
   "dependencies": {
     "react": "^18.3.1",

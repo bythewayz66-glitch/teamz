@@ -35,6 +35,7 @@ import {
   type RateLimitEvent,
   type RunnerState,
 } from './runner-lib';
+import { postTickUpdates } from './slack-poster';
 
 interface CliOptions {
   statePath: string;
@@ -141,6 +142,9 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
       return state;
     }
   }
+  // Best-effort Slack post of this tick's completed-job updates.
+  // postTickUpdates never throws and a failed post never breaks the tick.
+  await postTickUpdates(fired, log);
   return state;
 }
 
