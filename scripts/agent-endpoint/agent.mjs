@@ -1013,12 +1013,20 @@ async function runWeather(args) {
   return lines.join('\n');
 }
 
-/* --- Web search: keyless Bing first, DuckDuckGo as the fallback,
- * DDG instant answers last. Real results, never faked: the endpoints
- * return plain HTML with result links; the parser pulls the top results
- * out and the tool reports exactly what came back (or that nothing
- * came back). This is what the Provider Researcher uses to find
- * candidate providers.
+/* --- Web search: Linkup first, Bing then DuckDuckGo as the fallback,
+ * DDG instant answers last. Real results, never faked: Linkup returns
+ * ranked sources with content snippets; the scrapers return plain HTML
+ * with result links. The parser pulls the top results out and the tool
+ * reports exactly what came back (or that nothing came back). This is
+ * what the Provider Researcher uses to find candidate providers.
+ *
+ * Linkup (Jesse, Nov 26, 2026): POST https://api.linkup.so/v1/search
+ * with Authorization: Bearer <LINKUP_API_KEY>, body {q, depth: "fast",
+ * outputType: "searchResults", maxResults: 5}. "fast" is Linkup's
+ * recommended default for agentic use (~1s, $0.005/call on the $20
+ * starting credit). If the key is unset, or Linkup fails / returns
+ * nothing / is out of credits (429), fall back to the scrapers —
+ * never crash, never log the key.
  *
  * Honest limits, found live Nov 26, 2026:
  *  - DDG Lite uses SINGLE-quoted attributes (class='result-link');
@@ -1027,12 +1035,13 @@ async function runWeather(args) {
  *  - DDG serves results only intermittently from this server IP: it
  *    answered once, then returned zero result links on 8 consecutive
  *    tries (Lite and HTML alike). Bing answered 17-19 results on every
- *    probe from the same IP, so Bing is the primary (Jesse, Nov 26,
- *    2026: "make Bing first") and DDG is the fallback. Bing's title
- *    links are bing.com/ck/a redirects; they still land on the
- *    destination when followed, so they are returned as-is.
- *  - No Exa key exists (EXA_API_KEY is not set), so Exa is not wired;
- *    if one is ever added it can become the primary ahead of Bing. --- */
+ *    probe from the same IP, so Bing is the scraping primary and DDG
+ *    the fallback. Bing's title links are bing.com/ck/a redirects;
+ *    they still land on the destination when followed, so they are
+ *    returned as-is.
+ *  - No Exa key exists (EXA_API_KEY is not set), so Exa is not wired. --- */
+
+const LINKUP_SEARCH = 'https://api.linkup.so/v1/search';
 
 const DDG_LITE = 'https://lite.duckduckgo.com/lite/?q=';
 const DDG_HTML = 'https://html.duckduckgo.com/html/?q=';
@@ -1129,15 +1138,71 @@ function parseDdgJson(data) {
   return results;
 }
 
+function parseLinkup(data) {
+  // Linkup searchResults: { results: [{ name, url, content, type }] }.
+  // Text results carry a content snippet; image results have no content
+  // and are skipped. Keep at most 5, same as the scrapers.
+  const results = [];
+  for (const r of data?.results ?? []) {
+    if (results.length >= 5) break;
+    if (!r || r.type === 'image') continue;
+    if (!r.url || !r.name) continue;
+    if (!/^https?:\/\//.test(r.url)) continue;
+    const snippet = typeof r.content === 'string' ? r.content.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+    results.push({ title: r.name, href: r.url, snippet });
+  }
+  return results;
+}
+
+async function searchLinkup(query) {
+  // Returns the parsed results, or null when Linkup is unavailable for
+  // any reason (no key, HTTP error, empty results, out of credits) so
+  // the caller falls through to the scrapers. Never throws, never logs
+  // the key. The key is read here, not at load, so a restart picks up
+  // a newly added key and tests can toggle it.
+  const key = (process.env.LINKUP_API_KEY ?? '').trim();
+  if (!key) return null;
+  try {
+    const res = await fetchWithTimeout(LINKUP_SEARCH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ q: query, depth: 'fast', outputType: 'searchResults', maxResults: 5 }),
+    });
+    if (!res.ok) {
+      log(`web_search (linkup): HTTP ${res.status}, trying next source`);
+      return null;
+    }
+    return parseLinkup(await res.json());
+  } catch (err) {
+    log(`web_search (linkup) failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+function formatSearchResults(results) {
+  // One numbered line per result: title, URL, and — when the source
+  // provides one (Linkup) — a short content snippet. Scraped results
+  // have no snippet, so they keep the old two-line shape.
+  return results
+    .map((r, i) => {
+      const line = `${i + 1}. ${r.title}\n   ${r.href}`;
+      return r.snippet ? `${line}\n   ${r.snippet}` : line;
+    })
+    .join('\n');
+}
+
 async function runWebSearch(args) {
   const query = args.trim();
   if (!query) throw new Error('web_search needs a query, e.g. "keyless free LLM API no api key"');
+  // Linkup first (real search API, sourced results) when a key is set.
+  const linkup = await searchLinkup(query);
+  if (linkup && linkup.length > 0) return formatSearchResults(linkup);
   const ddgHeaders = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) teamz-agent/1.0' };
   const bingHeaders = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0' };
-  // Bing first (it answers reliably from this server IP), DuckDuckGo
-  // Lite and HTML as the fallback, DDG instant answers last.
-  // DDG Lite is retried once: it serves results intermittently from this
-  // IP and a second attempt often lands in a good phase.
+  // Bing first among the scrapers (it answers reliably from this server
+  // IP), DuckDuckGo Lite and HTML as the fallback, DDG instant answers
+  // last. DDG Lite is retried once: it serves results intermittently
+  // from this IP and a second attempt often lands in a good phase.
   const sources = [
     ['bing', `${BING}${encodeURIComponent(query)}`, parseBing, bingHeaders, false],
     ['lite', `${DDG_LITE}${encodeURIComponent(query)}`, parseDdgLite, ddgHeaders, true],
@@ -1153,7 +1218,7 @@ async function runWebSearch(args) {
         }
         const results = parse(await res.text());
         if (results.length > 0) {
-          return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}`).join('\n');
+          return formatSearchResults(results);
         }
         log(`web_search (${label}): no results parsed, trying next source`);
         if (attempt === 0 && retry) await new Promise((r) => setTimeout(r, 1500));
@@ -1171,7 +1236,7 @@ async function runWebSearch(args) {
     if (res.ok) {
       const results = parseDdgJson(await res.json());
       if (results.length > 0) {
-        return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}`).join('\n');
+        return formatSearchResults(results);
       }
     }
   } catch (err) {
@@ -1203,7 +1268,7 @@ const TOOL_DEFS = [
   },
   {
     name: 'web_search',
-    description: 'Search the web (Bing first, DuckDuckGo fallback) and return real result titles and links.',
+    description: 'Search the web (Linkup first, Bing/DuckDuckGo fallback) and return real result titles and links.',
     usage: 'a search query, e.g. "keyless free LLM API no api key"',
     run: runWebSearch,
   },
@@ -1708,7 +1773,7 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Search the web (Bing first, DuckDuckGo fallback) and return real result titles and links.',
+      description: 'Search the web (Linkup first, Bing/DuckDuckGo fallback) and return real result titles and links.',
       parameters: {
         type: 'object',
         properties: {

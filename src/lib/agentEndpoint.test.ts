@@ -227,6 +227,7 @@ describe('dispatch deadline', () => {
 describe('web_search', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    delete process.env.LINKUP_API_KEY;
   });
 
   const ddgLiteHtml =
@@ -239,29 +240,85 @@ describe('web_search', () => {
     `<li class="b_algo" data-id iid=SERP.1><h2><a target="_blank" href="https://www.bing.com/ck/a?!&amp;&amp;p=abc">Bing result title</a></h2></li>` +
     `</ol></body></html>`;
   const emptyHtml = '<html><body><p>nothing here</p></body></html>';
+  const linkupJson = JSON.stringify({
+    results: [
+      { name: 'Linkup result title', url: 'https://example.com/linkup', content: 'Linkup sourced snippet about mem20.', type: 'text', favicon: 'https://example.com/favicon.ico' },
+      { name: 'Second linkup result', url: 'https://github.com/bythewayz66-glitch/mem20', content: 'More context.', type: 'text', favicon: '' },
+      { name: 'An image', url: 'https://example.com/img.png', type: 'image' },
+    ],
+  });
+  const linkupEmptyJson = JSON.stringify({ results: [] });
 
-  function mockFetchFor(pages: Record<string, string>) {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        for (const [key, body] of Object.entries(pages)) {
-          if (url.includes(key)) {
-            return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
-          }
+  // Values are a plain body (HTTP 200) or { body, ok, status }.
+  function mockFetchFor(pages: Record<string, string | { body: string; ok?: boolean; status?: number }>) {
+    const fetchMock = vi.fn(async (url: string) => {
+      for (const [key, value] of Object.entries(pages)) {
+        if (url.includes(key)) {
+          const body = typeof value === 'string' ? value : value.body;
+          const ok = typeof value === 'string' ? true : (value.ok ?? true);
+          const status = typeof value === 'string' ? 200 : (value.status ?? 200);
+          return { ok, status, text: async () => body, json: async () => JSON.parse(body) };
         }
-        return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
-      }),
-    );
+      }
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
   }
 
-  it('returns Bing results first (Bing is the primary, Jesse Nov 26, 2026)', async () => {
-    // Both sources have results; Bing must win because it is tried first.
+  it('returns Linkup results first (Linkup is the primary, Jesse Nov 26, 2026)', async () => {
+    // Both Linkup and Bing have results; Linkup must win because it is tried first.
+    process.env.LINKUP_API_KEY = 'test-key-not-real';
+    const fetchMock = mockFetchFor({ 'api.linkup.so': linkupJson, 'www.bing.com': bingHtml, 'lite.duckduckgo.com': ddgLiteHtml });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Linkup result title');
+    expect(res.output).toContain('https://example.com/linkup');
+    expect(res.output).toContain('Linkup sourced snippet about mem20.');
+    expect(res.output).not.toContain('Bing result title');
+    expect(res.output).not.toContain('Mem20 docs');
+    expect(res.output).not.toContain('No web results found');
+    // The Linkup call is a POST with the documented body shape.
+    const calls = fetchMock.mock.calls as unknown as Array<[string, { method?: string; headers?: Record<string, string>; body?: string }]>;
+    const linkupCall = calls.find(([url]) => url.includes('api.linkup.so'));
+    expect(linkupCall).toBeDefined();
+    const [, options] = linkupCall!;
+    expect(options?.method).toBe('POST');
+    const body = JSON.parse(String(options?.body));
+    expect(body.q).toBe('mem20 0.0.0.0 HTTP transport');
+    expect(body.depth).toBe('fast');
+    expect(body.outputType).toBe('searchResults');
+    expect(body.maxResults).toBe(5);
+    expect(options?.headers?.Authorization).toBe('Bearer test-key-not-real');
+  });
+
+  it('falls back to Bing when no Linkup key is set', async () => {
+    // No LINKUP_API_KEY in the environment: Linkup is skipped silently.
+    delete process.env.LINKUP_API_KEY;
     mockFetchFor({ 'www.bing.com': bingHtml, 'lite.duckduckgo.com': ddgLiteHtml });
     const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
     expect(res.ok).toBe(true);
     expect(res.output).toContain('Bing result title');
     expect(res.output).toContain('bing.com/ck/a');
     expect(res.output).not.toContain('Mem20 docs');
+    expect(res.output).not.toContain('No web results found');
+  });
+
+  it('falls through to Bing when Linkup returns nothing', async () => {
+    process.env.LINKUP_API_KEY = 'test-key-not-real';
+    mockFetchFor({ 'api.linkup.so': linkupEmptyJson, 'www.bing.com': bingHtml });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Bing result title');
+    expect(res.output).not.toContain('No web results found');
+  });
+
+  it('falls through to Bing when Linkup errors (e.g. out of credits, 429)', async () => {
+    process.env.LINKUP_API_KEY = 'test-key-not-real';
+    mockFetchFor({ 'api.linkup.so': { body: '{}', ok: false, status: 429 }, 'www.bing.com': bingHtml });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Bing result title');
     expect(res.output).not.toContain('No web results found');
   });
 
