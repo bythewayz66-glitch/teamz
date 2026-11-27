@@ -129,7 +129,7 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     },
     // 50s between dispatches (see RunnerDeps.minDispatchGapMs): on the
     // anonymous tier a second dispatch in the same tick would otherwise
-    // burn ~50s of its 60s budget waiting for the endpoint's rate
+    // burn ~50s of its 330s budget waiting for the endpoint's rate
     // window and then fail. The tick gets longer; the service skips
     // ticks while one is still running (tick guard in main()).
     minDispatchGapMs: 50_000,

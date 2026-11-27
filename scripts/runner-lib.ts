@@ -338,9 +338,12 @@ export function parseAgentReply(payload: unknown): string {
 }
 
 export interface DispatchOptions {
-  /** Per-request timeout in milliseconds (default 60s). */
+  /** Per-request timeout in milliseconds (default 330s). */
   timeoutMs?: number;
 }
+
+/** Default per-dispatch timeout: the agent loop runs up to 320s, plus margin. */
+export const DISPATCH_TIMEOUT_MS = 330_000;
 
 /**
  * Send one prompt to one agent over HTTP and return its reply text.
@@ -353,7 +356,7 @@ export async function dispatchPromptToAgent(
   channelId: string,
   options: DispatchOptions = {},
 ): Promise<string> {
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  const timeoutMs = options.timeoutMs ?? DISPATCH_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -713,11 +716,11 @@ export interface RunnerDeps {
    * Minimum milliseconds between the END of one dispatch and the START
    * of the next (default 0 — tests). The live runner passes 50_000:
    * the endpoint enforces a 50s gap between upstream calls inside
-   * each dispatch's 60s budget, so a second dispatch in the same tick
+   * each dispatch's 330s budget, so a second dispatch in the same tick
    * would burn ~50s of its budget waiting and then fail with "did not
    * respond in the time left" (observed live Nov 26, 2026). Waiting
    * BETWEEN dispatches — outside any dispatch's budget — keeps every
-   * dispatch's model call inside its 60s. The tick gets longer (the
+   * dispatch's model call inside its 330s. The tick gets longer (the
    * hourly batch drains over ~22 min); the service skips ticks while
    * one is still running (see scripts/runner.ts).
    */
@@ -791,7 +794,7 @@ export async function processDue(
   const agentById = new Map(state.agents.map((a) => [a.id, a]));
 
   // Gap-spaced dispatch: every prompt in this tick goes through here,
-  // so the wait between dispatches happens OUTSIDE any dispatch's 60s
+  // so the wait between dispatches happens OUTSIDE any dispatch's 330s
   // budget (see RunnerDeps.minDispatchGapMs).
   const minGapMs = deps.minDispatchGapMs ?? 0;
   let lastDispatchEndedAt = 0;

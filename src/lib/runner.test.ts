@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import {
+  DISPATCH_TIMEOUT_MS,
   dispatchPromptToAgent,
   emptyRunnerState,
   executeAllowedCommand,
@@ -107,6 +108,10 @@ describe('executeAllowedCommand — the real executor', () => {
 });
 
 describe('dispatchPromptToAgent — the HTTP transport', () => {
+  it('defaults the dispatch timeout to 330s (the agent loop runs 320s)', () => {
+    expect(DISPATCH_TIMEOUT_MS).toBe(330_000);
+  });
+
   it('parses every reply shape the browser accepts', () => {
     expect(parseAgentReply('plain')).toBe('plain');
     expect(parseAgentReply({ reply: 'r' })).toBe('r');

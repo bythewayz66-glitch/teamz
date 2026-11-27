@@ -81,7 +81,7 @@
  *     openai-fast (GPT-OSS 20B). Anonymous tier allows ~1 reply per 45s
  *     per IP, so this service serialises upstream calls and enforces a
  *     50s gap between them (MIN_GAP_MS). The runner aborts a dispatch
- *     after 60s, so the loop has a hard deadline of 57s from the
+ *     after 330s, so the loop has a hard deadline of 320s from the
  *     request's arrival (DISPATCH_DEADLINE_MS) and every upstream call
  *     is capped by the time left to that deadline.
  *
@@ -102,7 +102,7 @@
  *     POLLINATIONS_MODEL), and drops the 50s gap entirely — keyed
  *     requests are billed to the key's Pollen balance, not subject to
  *     the anonymous per-IP window. The full loop (up to 25 tool
- *     iterations + final) then fits comfortably inside the 57s
+ *     iterations + final) then fits comfortably inside the 320s
  *     deadline. No key is stored in this file or in the repo; it
  *     arrives only as an environment variable on the service unit.
  *
@@ -204,9 +204,9 @@ const MODEL =
 // Anonymous tier: ~1 reply / 45s per IP. Keep a safety margin. Keyed
 // requests are billed, not subject to the anonymous per-IP window.
 const MIN_GAP_MS = KEYED ? 0 : 50_000;
-// The runner aborts a dispatch after 60s; the loop must be done and the
-// HTTP response flushed before that. 57s leaves ~3s of margin.
-const DISPATCH_DEADLINE_MS = 57_000;
+// The runner aborts a dispatch after 330s; the loop must be done and the
+// HTTP response flushed before that. 320s leaves ~10s of margin.
+export const DISPATCH_DEADLINE_MS = 320_000;
 // Cap on any single upstream call. The loop tightens this per call to
 // whatever time is left to the deadline.
 const UPSTREAM_TIMEOUT_MS = 45_000;
@@ -1013,23 +1013,31 @@ async function runWeather(args) {
   return lines.join('\n');
 }
 
-/* --- Web search: keyless DuckDuckGo Lite, with the HTML endpoint as a
- * fallback. Real results, never faked: the endpoints return plain HTML
- * with result links; the parser pulls the top results out and the tool
- * reports exactly what came back (or that nothing came back). This is
- * what the Provider Researcher uses to find candidate providers.
+/* --- Web search: keyless DuckDuckGo first, Bing as the fallback that
+ * actually answers from this server IP, DDG instant answers last. Real
+ * results, never faked: the endpoints return plain HTML with result
+ * links; the parser pulls the top results out and the tool reports
+ * exactly what came back (or that nothing came back). This is what the
+ * Provider Researcher uses to find candidate providers.
  *
- * Two honest limits, found live Nov 26, 2026:
+ * Honest limits, found live Nov 26, 2026:
  *  - DDG Lite uses SINGLE-quoted attributes (class='result-link');
  *    the first version of this parser only matched double quotes and
  *    returned nothing. Fixed.
- *  - DDG serves results only intermittently from this server IP: some
- *    requests come back HTTP 202 (a challenge page, no results) instead
- *    of results. The tool retries the HTML endpoint once and then says
- *    plainly that nothing came back — it never invents results. ------- */
+ *  - DDG serves results only intermittently from this server IP: it
+ *    answered once, then returned zero result links on 8 consecutive
+ *    tries (Lite and HTML alike). The tool retries Lite once, then
+ *    falls through to Bing, which answered 17-19 results on every
+ *    probe from the same IP. Bing's title links are bing.com/ck/a
+ *    redirects; they still land on the destination when followed, so
+ *    they are returned as-is.
+ *  - No Exa key exists (EXA_API_KEY is not set), so Exa is not wired;
+ *    if one is ever added it can become the primary ahead of DDG. --- */
 
 const DDG_LITE = 'https://lite.duckduckgo.com/lite/?q=';
 const DDG_HTML = 'https://html.duckduckgo.com/html/?q=';
+const DDG_JSON = 'https://api.duckduckgo.com/?format=json&no_html=1&q=';
+const BING = 'https://www.bing.com/search?q=';
 
 function decodeEntities(s) {
   return s
@@ -1089,28 +1097,85 @@ function parseDdgHtml(html) {
   return results;
 }
 
+function parseBing(html) {
+  const results = [];
+  // Bing results are <li class="b_algo"> blocks; the title link is the
+  // <h2><a href="...">Title</a></h2> inside. The href is a Bing redirect
+  // (bing.com/ck/a?...); it still lands on the destination when followed,
+  // so it is returned as-is.
+  const re = /<li class="b_algo"[\s\S]*?<h2><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>/g;
+  let m;
+  while ((m = re.exec(html)) && results.length < 5) {
+    const href = decodeEntities(m[1]);
+    const title = decodeEntities(m[2].replace(/<[^>]+>/g, '').trim());
+    if (!title || !/^https?:\/\//.test(href)) continue;
+    results.push({ title, href });
+  }
+  return results;
+}
+
+function parseDdgJson(data) {
+  const results = [];
+  // api.duckduckgo.com instant answers: an Abstract and RelatedTopics.
+  // Only useful for encyclopedic queries; repo-specific queries come
+  // back empty, so this is a last resort, never a primary.
+  if (data?.AbstractURL && data?.AbstractText) {
+    results.push({ title: data.AbstractText.slice(0, 200), href: data.AbstractURL });
+  }
+  for (const t of data?.RelatedTopics ?? []) {
+    if (results.length >= 5) break;
+    if (t?.FirstURL && t?.Text) results.push({ title: t.Text.slice(0, 200), href: t.FirstURL });
+  }
+  return results;
+}
+
 async function runWebSearch(args) {
   const query = args.trim();
   if (!query) throw new Error('web_search needs a query, e.g. "keyless free LLM API no api key"');
-  const headers = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) teamz-agent/1.0' };
-  for (const [label, url, parse] of [
-    ['lite', `${DDG_LITE}${encodeURIComponent(query)}`, parseDdgLite],
-    ['html', `${DDG_HTML}${encodeURIComponent(query)}`, parseDdgHtml],
-  ]) {
-    try {
-      const res = await fetchWithTimeout(url, { headers });
-      if (!res.ok) {
-        log(`web_search (${label}): HTTP ${res.status}, trying next source`);
-        continue;
+  const ddgHeaders = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) teamz-agent/1.0' };
+  const bingHeaders = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0' };
+  // DuckDuckGo first (what the tool promises), Bing as the fallback that
+  // actually answers from this server IP, DDG instant answers last.
+  // DDG Lite is retried once: it serves results intermittently from this
+  // IP and a second attempt often lands in a good phase.
+  const sources = [
+    ['lite', `${DDG_LITE}${encodeURIComponent(query)}`, parseDdgLite, ddgHeaders, true],
+    ['html', `${DDG_HTML}${encodeURIComponent(query)}`, parseDdgHtml, ddgHeaders, false],
+    ['bing', `${BING}${encodeURIComponent(query)}`, parseBing, bingHeaders, false],
+  ];
+  for (const [label, url, parse, headers, retry] of sources) {
+    for (let attempt = 0; attempt < (retry ? 2 : 1); attempt++) {
+      try {
+        const res = await fetchWithTimeout(url, { headers });
+        if (!res.ok) {
+          log(`web_search (${label}): HTTP ${res.status}, trying next source`);
+          break;
+        }
+        const results = parse(await res.text());
+        if (results.length > 0) {
+          return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}`).join('\n');
+        }
+        log(`web_search (${label}): no results parsed, trying next source`);
+        if (attempt === 0 && retry) await new Promise((r) => setTimeout(r, 1500));
+      } catch (err) {
+        log(`web_search (${label}) failed: ${err instanceof Error ? err.message : String(err)}`);
+        break;
       }
-      const results = parse(await res.text());
+    }
+  }
+  // Last resort: DDG instant answers (encyclopedic queries only).
+  try {
+    const res = await fetchWithTimeout(`${DDG_JSON}${encodeURIComponent(query)}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      const results = parseDdgJson(await res.json());
       if (results.length > 0) {
         return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}`).join('\n');
       }
-      log(`web_search (${label}): no results parsed, trying next source`);
-    } catch (err) {
-      log(`web_search (${label}) failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  } catch (err) {
+    log(`web_search (ddg-json) failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   return `No web results found for "${query}".`;
 }
@@ -1138,7 +1203,7 @@ const TOOL_DEFS = [
   },
   {
     name: 'web_search',
-    description: 'Search the web (keyless DuckDuckGo Lite) and return real result titles and links.',
+    description: 'Search the web (DuckDuckGo first, Bing fallback) and return real result titles and links.',
     usage: 'a search query, e.g. "keyless free LLM API no api key"',
     run: runWebSearch,
   },
@@ -1400,7 +1465,7 @@ export function buildToolSystemPrompt(agent) {
  *
  * `propose(observations, priorActions)` is one LLM call; it must throw on
  * transport failure. `deadline` is the absolute timestamp the reply must
- * be ready by (the runner aborts at 60s; the deadline is 57s). Before
+ * be ready by (the runner aborts at 330s; the deadline is 320s). Before
  * each propose the loop checks there is enough time left for a useful
  * call — on the anonymous tier the second call only gets the ~7s after
  * the 50s gap, so a slow propose is cut short rather than overrunning
@@ -1643,7 +1708,7 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Search the web (keyless DuckDuckGo Lite) and return real result titles and links.',
+      description: 'Search the web (DuckDuckGo first, Bing fallback) and return real result titles and links.',
       parameters: {
         type: 'object',
         properties: {

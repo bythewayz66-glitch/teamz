@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -215,5 +215,77 @@ describe('stage_patch', () => {
   it('appears in the tool inventory the model sees', () => {
     expect(endpoint.inventoryText()).toContain('repo_read');
     expect(endpoint.inventoryText()).toContain('stage_patch');
+  });
+});
+
+describe('dispatch deadline', () => {
+  it('gives the tool loop 320s (Jesse, Nov 26, 2026 — was 57s)', () => {
+    expect(endpoint.DISPATCH_DEADLINE_MS).toBe(320_000);
+  });
+});
+
+describe('web_search', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const ddgLiteHtml =
+    `<html><body>` +
+    `<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fmem20&amp;rut=abc" class='result-link'>Mem20 docs</a>` +
+    `<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fbythewayz66-glitch%2Fmem20&amp;rut=def" class='result-link'>mem20 repo</a>` +
+    `</body></html>`;
+  const bingHtml =
+    `<html><body><ol id="b_results">` +
+    `<li class="b_algo" data-id iid=SERP.1><h2><a target="_blank" href="https://www.bing.com/ck/a?!&amp;&amp;p=abc">Bing result title</a></h2></li>` +
+    `</ol></body></html>`;
+  const emptyHtml = '<html><body><p>nothing here</p></body></html>';
+
+  function mockFetchFor(pages: Record<string, string>) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        for (const [key, body] of Object.entries(pages)) {
+          if (url.includes(key)) {
+            return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+          }
+        }
+        return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
+      }),
+    );
+  }
+
+  it('returns DuckDuckGo Lite results when they exist', async () => {
+    mockFetchFor({ 'lite.duckduckgo.com': ddgLiteHtml });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Mem20 docs');
+    expect(res.output).toContain('https://example.com/mem20');
+    expect(res.output).toContain('mem20 repo');
+    expect(res.output).not.toContain('No web results found');
+  });
+
+  it('falls through to Bing when DuckDuckGo returns nothing', async () => {
+    mockFetchFor({
+      'lite.duckduckgo.com': emptyHtml,
+      'html.duckduckgo.com': emptyHtml,
+      'www.bing.com': bingHtml,
+    });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Bing result title');
+    expect(res.output).toContain('bing.com/ck/a');
+    expect(res.output).not.toContain('No web results found');
+  });
+
+  it('says plainly when every source is empty', async () => {
+    mockFetchFor({
+      'lite.duckduckgo.com': emptyHtml,
+      'html.duckduckgo.com': emptyHtml,
+      'www.bing.com': emptyHtml,
+      'api.duckduckgo.com': '{"Abstract":"","RelatedTopics":[]}',
+    });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('No web results found');
   });
 });
