@@ -757,6 +757,7 @@ export function triagePrompt(
     `Your job: list the specific denial issues first (numbered, one per problem in the Reviewer's reason), then decide which agent should fix them, then hand back a corrected assignment.\n` +
     failedLine +
     `Verify any factual claim in the corrected assignment against the live repo with repo_read before you write it — never copy a claim out of a document. ${DOCS_RULE}\n` +
+    `Check ONLY the paths named in the Reviewer's reason (at most two repo_read calls) — then stop reading and answer. Do not browse the repo.\n` +
     `Reply in this exact format:\n` +
     `First the numbered list of denial issues.\n` +
     `Then, on its own line: REASSIGN: @<agent-id> — the agent who should do the fix.\n` +
@@ -931,8 +932,18 @@ export async function runTriageRework(
   }
   let reassignee = deps.agentsById.get(parsed.agentId);
   if (!reassignee) {
-    deps.emit(`${contextLabel}: triage named unknown agent ${parsed.agentId} — rework NOT sent`);
-    return { ok: false, reason: `triage named unknown agent ${parsed.agentId}` };
+    // A weak model may invent an agent id that does not exist (Nov 27,
+    // 2026: nemotron named agent-webpage-builder, which is not a real
+    // agent). Do not drop the item: fall back to the Orchestrator, who
+    // must re-draft it with a real assignee (the triage prompt's own
+    // fallback for unfixable items).
+    const orchestrator = deps.agentsById.get('agent-orchestrator');
+    if (!orchestrator) {
+      deps.emit(`${contextLabel}: triage named unknown agent ${parsed.agentId} — rework NOT sent`);
+      return { ok: false, reason: `triage named unknown agent ${parsed.agentId}` };
+    }
+    deps.emit(`${contextLabel}: triage named unknown agent ${parsed.agentId} — falling back to @Orchestrator to re-draft`);
+    reassignee = orchestrator;
   }
   if (failedAgentId && reassignee.id === failedAgentId) {
     // Never the same agent twice: the agent that produced the denied

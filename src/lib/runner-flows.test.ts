@@ -1442,6 +1442,48 @@ describe('processDue — deny→rework loop, triage recovery, stranded sweep (No
     expect(out.jobs[0].status).toBe('awaiting_approval');
   });
 
+  it('triage naming an invented agent id falls back to the Orchestrator (Nov 27, 2026: nemotron named agent-webpage-builder)', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      jobs: [reviewableJob()],
+    };
+    const calls: Array<{ agentId: string }> = [];
+    let reviewerCalls = 0;
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push({ agentId: a.id });
+        if (a.id === 'agent-reviewer') {
+          reviewerCalls += 1;
+          return reviewerCalls === 1
+            ? 'DENY: the build step touches a blocked path.'
+            : 'APPROVE: re-draft is bounded.';
+        }
+        if (a.id === 'agent-triage') {
+          return 'REASSIGN: @agent-webpage-builder\n@Webpage Builder redo the build step without the blocked path.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: @Orchestrator re-draft the build step without the blocked path.';
+        }
+        if (a.id === 'agent-orchestrator') return 'Re-drafted the build step.';
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-reviewer',
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-orchestrator',
+    ]);
+    expect(fired.some((f) => f.includes('named unknown agent agent-webpage-builder'))).toBe(true);
+    expect(fired.some((f) => f.includes('falling back to @Orchestrator'))).toBe(true);
+    expect(fired.some((f) => f.includes('rework dispatched to @Orchestrator'))).toBe(true);
+    expect(out.jobs[0].status).toBe('awaiting_approval');
+  });
+
   it('a second denial after triage never reaches the room — recorded as a gate message', async () => {
     const state: RunnerState = {
       ...emptyRunnerState(),
@@ -1692,5 +1734,6 @@ describe('processDue — deny→rework loop, triage recovery, stranded sweep (No
     expect(triage).toContain('list the specific denial issues');
     expect(triage).toContain('REASSIGN: @<agent-id>');
     expect(triage).toContain('DOCS RULE');
+    expect(triage).toContain('at most two repo_read calls');
   });
 });
