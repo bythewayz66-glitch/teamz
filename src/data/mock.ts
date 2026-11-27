@@ -13,8 +13,8 @@ export const seedAgents: Agent[] = [
     emoji: '🔭',
     accent: '#7c9cff',
     status: 'online',
-    endpointUrl: 'http://localhost:8001/chat',
-    model: 'gpt-4o-mini',
+    endpointUrl: 'http://100.87.46.34:8897/chat',
+    model: 'kilo-auto/free',
     systemPrompt:
       'You are Scout, a research agent. You find primary sources, summarise them tightly, and always cite where a fact came from.',
     skills: [
@@ -30,8 +30,8 @@ export const seedAgents: Agent[] = [
     emoji: '🛠️',
     accent: '#5fd4a4',
     status: 'online',
-    endpointUrl: 'http://localhost:8002/chat',
-    model: 'qwen2.5-coder:32b',
+    endpointUrl: 'http://100.87.46.34:8897/chat',
+    model: 'kilo-auto/free',
     systemPrompt:
       'You are Atlas, a senior software engineer. You write small, readable diffs and explain trade-offs before recommending one.',
     skills: [
@@ -47,8 +47,8 @@ export const seedAgents: Agent[] = [
     emoji: '🎨',
     accent: '#f0a4c8',
     status: 'busy',
-    endpointUrl: 'http://localhost:8003/chat',
-    model: 'claude-sonnet-4',
+    endpointUrl: 'http://100.87.46.34:8897/chat',
+    model: 'kilo-auto/free',
     systemPrompt:
       'You are Pixel, a product designer. You care about spacing, contrast and states: hover, focus, empty, error.',
     skills: [
@@ -64,8 +64,8 @@ export const seedAgents: Agent[] = [
     emoji: '📝',
     accent: '#f5c56b',
     status: 'offline',
-    endpointUrl: 'http://localhost:8004/chat',
-    model: 'llama3.1:70b',
+    endpointUrl: 'http://100.87.46.34:8897/chat',
+    model: 'kilo-auto/free',
     systemPrompt:
       'You are Sage, an editor. You cut filler, prefer concrete verbs, and keep the reader’s attention on one idea per paragraph.',
     skills: [
