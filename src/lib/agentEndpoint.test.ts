@@ -254,26 +254,27 @@ describe('web_search', () => {
     );
   }
 
-  it('returns DuckDuckGo Lite results when they exist', async () => {
-    mockFetchFor({ 'lite.duckduckgo.com': ddgLiteHtml });
+  it('returns Bing results first (Bing is the primary, Jesse Nov 26, 2026)', async () => {
+    // Both sources have results; Bing must win because it is tried first.
+    mockFetchFor({ 'www.bing.com': bingHtml, 'lite.duckduckgo.com': ddgLiteHtml });
+    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Bing result title');
+    expect(res.output).toContain('bing.com/ck/a');
+    expect(res.output).not.toContain('Mem20 docs');
+    expect(res.output).not.toContain('No web results found');
+  });
+
+  it('falls through to DuckDuckGo Lite when Bing returns nothing', async () => {
+    mockFetchFor({
+      'www.bing.com': emptyHtml,
+      'lite.duckduckgo.com': ddgLiteHtml,
+    });
     const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
     expect(res.ok).toBe(true);
     expect(res.output).toContain('Mem20 docs');
     expect(res.output).toContain('https://example.com/mem20');
     expect(res.output).toContain('mem20 repo');
-    expect(res.output).not.toContain('No web results found');
-  });
-
-  it('falls through to Bing when DuckDuckGo returns nothing', async () => {
-    mockFetchFor({
-      'lite.duckduckgo.com': emptyHtml,
-      'html.duckduckgo.com': emptyHtml,
-      'www.bing.com': bingHtml,
-    });
-    const res = await endpoint.executeTool('web_search', 'mem20 0.0.0.0 HTTP transport');
-    expect(res.ok).toBe(true);
-    expect(res.output).toContain('Bing result title');
-    expect(res.output).toContain('bing.com/ck/a');
     expect(res.output).not.toContain('No web results found');
   });
 

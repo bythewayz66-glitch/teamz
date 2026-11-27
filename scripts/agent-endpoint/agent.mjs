@@ -41,8 +41,8 @@
  *     by the dispatch deadline below.
  *   • Tools: calculator (local recursive-descent parser, never eval),
  *     wikipedia (REST summary + OpenSearch fallback), weather
- *     (Open-Meteo geocoding + forecast), web_search (keyless DuckDuckGo
- *     Lite — real results, never faked), create_automation (governed
+ *     (Open-Meteo geocoding + forecast), web_search (keyless Bing
+ *     first, DuckDuckGo fallback — real results, never faked), create_automation (governed
  *     POST /automations), add_provider (validate-then-add, keyless or
  *     keyed via keyEnv), reassign_agent (LLM-field-only reassignment,
  *     recorded). Same core tools as the UI, plus the provider/automation
@@ -1013,12 +1013,12 @@ async function runWeather(args) {
   return lines.join('\n');
 }
 
-/* --- Web search: keyless DuckDuckGo first, Bing as the fallback that
- * actually answers from this server IP, DDG instant answers last. Real
- * results, never faked: the endpoints return plain HTML with result
- * links; the parser pulls the top results out and the tool reports
- * exactly what came back (or that nothing came back). This is what the
- * Provider Researcher uses to find candidate providers.
+/* --- Web search: keyless Bing first, DuckDuckGo as the fallback,
+ * DDG instant answers last. Real results, never faked: the endpoints
+ * return plain HTML with result links; the parser pulls the top results
+ * out and the tool reports exactly what came back (or that nothing
+ * came back). This is what the Provider Researcher uses to find
+ * candidate providers.
  *
  * Honest limits, found live Nov 26, 2026:
  *  - DDG Lite uses SINGLE-quoted attributes (class='result-link');
@@ -1026,13 +1026,13 @@ async function runWeather(args) {
  *    returned nothing. Fixed.
  *  - DDG serves results only intermittently from this server IP: it
  *    answered once, then returned zero result links on 8 consecutive
- *    tries (Lite and HTML alike). The tool retries Lite once, then
- *    falls through to Bing, which answered 17-19 results on every
- *    probe from the same IP. Bing's title links are bing.com/ck/a
- *    redirects; they still land on the destination when followed, so
- *    they are returned as-is.
+ *    tries (Lite and HTML alike). Bing answered 17-19 results on every
+ *    probe from the same IP, so Bing is the primary (Jesse, Nov 26,
+ *    2026: "make Bing first") and DDG is the fallback. Bing's title
+ *    links are bing.com/ck/a redirects; they still land on the
+ *    destination when followed, so they are returned as-is.
  *  - No Exa key exists (EXA_API_KEY is not set), so Exa is not wired;
- *    if one is ever added it can become the primary ahead of DDG. --- */
+ *    if one is ever added it can become the primary ahead of Bing. --- */
 
 const DDG_LITE = 'https://lite.duckduckgo.com/lite/?q=';
 const DDG_HTML = 'https://html.duckduckgo.com/html/?q=';
@@ -1134,14 +1134,14 @@ async function runWebSearch(args) {
   if (!query) throw new Error('web_search needs a query, e.g. "keyless free LLM API no api key"');
   const ddgHeaders = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) teamz-agent/1.0' };
   const bingHeaders = { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0' };
-  // DuckDuckGo first (what the tool promises), Bing as the fallback that
-  // actually answers from this server IP, DDG instant answers last.
+  // Bing first (it answers reliably from this server IP), DuckDuckGo
+  // Lite and HTML as the fallback, DDG instant answers last.
   // DDG Lite is retried once: it serves results intermittently from this
   // IP and a second attempt often lands in a good phase.
   const sources = [
+    ['bing', `${BING}${encodeURIComponent(query)}`, parseBing, bingHeaders, false],
     ['lite', `${DDG_LITE}${encodeURIComponent(query)}`, parseDdgLite, ddgHeaders, true],
     ['html', `${DDG_HTML}${encodeURIComponent(query)}`, parseDdgHtml, ddgHeaders, false],
-    ['bing', `${BING}${encodeURIComponent(query)}`, parseBing, bingHeaders, false],
   ];
   for (const [label, url, parse, headers, retry] of sources) {
     for (let attempt = 0; attempt < (retry ? 2 : 1); attempt++) {
@@ -1203,7 +1203,7 @@ const TOOL_DEFS = [
   },
   {
     name: 'web_search',
-    description: 'Search the web (DuckDuckGo first, Bing fallback) and return real result titles and links.',
+    description: 'Search the web (Bing first, DuckDuckGo fallback) and return real result titles and links.',
     usage: 'a search query, e.g. "keyless free LLM API no api key"',
     run: runWebSearch,
   },
@@ -1708,7 +1708,7 @@ const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Search the web (DuckDuckGo first, Bing fallback) and return real result titles and links.',
+      description: 'Search the web (Bing first, DuckDuckGo fallback) and return real result titles and links.',
       parameters: {
         type: 'object',
         properties: {
