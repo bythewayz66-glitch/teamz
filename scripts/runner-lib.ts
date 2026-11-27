@@ -961,7 +961,7 @@ export async function runTriageRework(
       kind: 'gate',
       text:
         `${contextLabel}: rework for @${reassignee.name} did NOT reach the room: ${gated.reason ?? 'gated'} ` +
-        `(second denial — the item is recorded, not dropped, and returns to triage).`,
+        `(${gated.denied ? 'second denial' : 'gated'} — the item is recorded, not dropped, and returns to triage).`,
     });
     deps.emit(`${contextLabel}: rework for @${reassignee.name} ${gated.denied ? 'DENIED again after triage' : 'gated'} — NOT sent to the room`);
     return { ok: false, reason: gated.reason ?? 'gated' };

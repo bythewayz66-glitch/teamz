@@ -568,3 +568,72 @@ describe('usage tracking (Jesse, Nov 26, 2026 — exact daily totals, not estima
     }
   });
 });
+
+describe('upstream error replies (Nov 27, 2026 — Pollinations out of credits)', () => {
+  const CREDITS_ERROR =
+    "The account behind this API key doesn't have enough credits. " +
+    'Please [top up](<https://enter.pollinations.ai/top-up?ref=agent_low_balance_topup>) ' +
+    'or [complete a quest](<https://enter.pollinations.ai/quests>).';
+
+  it('detects the Pollinations credit-refusal text', () => {
+    expect(endpoint.isUpstreamErrorReply(CREDITS_ERROR)).toBe(true);
+    // Leading whitespace does not hide it.
+    expect(endpoint.isUpstreamErrorReply('  ' + CREDITS_ERROR)).toBe(true);
+    // The top-up link alone is enough.
+    expect(endpoint.isUpstreamErrorReply('see https://enter.pollinations.ai/top-up for more')).toBe(true);
+  });
+
+  it('does not flag ordinary replies, including prose about credits', () => {
+    expect(endpoint.isUpstreamErrorReply('hello there')).toBe(false);
+    expect(endpoint.isUpstreamErrorReply('The budget has enough credits for this month.')).toBe(false);
+    expect(endpoint.isUpstreamErrorReply('')).toBe(false);
+    expect(endpoint.isUpstreamErrorReply(null)).toBe(false);
+  });
+
+  // Pollinations enforces a 50s gap between upstream calls in-process
+  // (callWithSpacing), and the usage test above just used it — so this
+  // test waits out the remainder of that window. The timeout is explicit.
+  it('a 200 whose content is the credit refusal fails as a 429 with a rate-limit event — never as a reply', async () => {
+    const payload = JSON.stringify({
+      choices: [{ message: { content: CREDITS_ERROR } }],
+    });
+    const realFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (url: string, init?: unknown) => {
+      if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, init as RequestInit);
+      return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const eventsPath = join(dir, 'rate-limit-events.jsonl');
+    const eventsBefore = existsSync(eventsPath) ? readFileSync(eventsPath, 'utf-8').trim().split('\n').filter(Boolean).length : 0;
+    const { server } = endpoint;
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      expect(port).toBeGreaterThan(0);
+      const res = await fetch(`http://127.0.0.1:${port}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent: { id: 'agent-credits-test', name: 'Credits Test', systemPrompt: 'You are Credits Test.' },
+          messages: [{ role: 'user', content: 'Say hi.' }],
+          channel: { id: 'conv-build-room' },
+        }),
+      });
+      // 429, not a 200 carrying the error text as the agent's answer.
+      expect(res.status).toBe(429);
+      const body = await res.json();
+      expect(body.error).toContain('402');
+      expect(body.reply).toBeUndefined();
+      // The runner's rescue can now see it and move the agent.
+      const eventsAfter = existsSync(eventsPath) ? readFileSync(eventsPath, 'utf-8').trim().split('\n').filter(Boolean) : [];
+      expect(eventsAfter.length - eventsBefore).toBe(1);
+      const event = JSON.parse(eventsAfter[eventsAfter.length - 1]);
+      expect(event.agentId).toBe('agent-credits-test');
+      expect(event.provider).toBe('pollinations');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      vi.unstubAllGlobals();
+    }
+  }, 70_000);
+});

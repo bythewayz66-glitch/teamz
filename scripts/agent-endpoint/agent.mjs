@@ -1898,6 +1898,26 @@ function parseRetryAfterSeconds(res, bodyText) {
 }
 
 /**
+ * Pollinations (and some other upstreams) answer HTTP 200 with the
+ * quota/credit refusal as the model's content when the keyed account
+ * is out of credits — no 402 status, no usage, just the error text
+ * (Nov 27, 2026: "The account behind this API key doesn't have
+ * enough credits. Please top up …"). Handing that text back as the
+ * agent's answer silently poisons the fleet: the runner records it
+ * as completed work and Slack posts it. Detect the refusal so the
+ * callers can throw it as the 402 it is, which the /chat handler
+ * records as a rate-limit event for the runner's rescue.
+ */
+export function isUpstreamErrorReply(text) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  const t = text.trim();
+  return (
+    /^the account behind this api key doesn'?t have enough credits/i.test(t) ||
+    /enter\.pollinations\.ai\/top-up/i.test(t)
+  );
+}
+
+/**
  * Pull the model's reply out of a chat-completions payload.
  *
  * GPT-OSS (openai-fast) also emits NATIVE tool calls: when the system
@@ -2260,6 +2280,15 @@ async function callPollinations(openAiMessages, deadline) {
           throw new Error('Pollinations returned non-JSON on success');
         }
         const reply = extractReplyText(payload);
+        if (reply && isUpstreamErrorReply(reply)) {
+          // 200 with the credit refusal as content: throw it as the
+          // 402 it is (see isUpstreamErrorReply). Thrown via lastError
+          // so the catch below re-throws it immediately, without a
+          // pointless retry against an exhausted account.
+          lastError = new Error(`Pollinations 402: ${reply.slice(0, 240)}`);
+          log(`pollinations attempt ${attempt} failed: ${lastError.message}`);
+          throw lastError;
+        }
         if (reply) return { text: reply, usage: extractUsage(payload) };
         throw new Error('Pollinations returned an empty reply');
       }
@@ -2337,6 +2366,12 @@ async function callGenericProvider(provider, openAiMessages, deadline) {
         throw new Error(`${provider.id} returned non-JSON on success`);
       }
       const reply = extractReplyText(payload);
+      if (reply && isUpstreamErrorReply(reply)) {
+        // Same 200-with-error-content refusal as Pollinations: throw
+        // it as a 402 so the /chat handler records a rate-limit event
+        // instead of handing the error text back as an answer.
+        throw new Error(`${provider.id} 402: ${reply.slice(0, 240)}`);
+      }
       if (reply) return { text: reply, usage: extractUsage(payload) };
       throw new Error(`${provider.id} returned an empty reply`);
     }
