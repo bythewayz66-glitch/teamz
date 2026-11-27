@@ -153,6 +153,35 @@ describe('cron jobs and tick()', () => {
     expect(isCronJobDue(job, at(2026, 11, 26, 7, 0))).toBe(true);
   });
 
+  it('a missed slot stays due until it fires (catch-up — the starvation fix)', () => {
+    // Hourly job that last ran at 17:00. The runner was busy grinding
+    // through product jobs, so no tick started in the 18:00 minute.
+    // At 18:05 the 18:00 slot is still due — it must not silently expire.
+    const hourly = promptJob({ schedule: '0 * * * *', lastRunAt: at(2026, 11, 26, 17, 0).getTime() });
+    expect(isCronJobDue(hourly, at(2026, 11, 26, 18, 5))).toBe(true);
+    expect(isCronJobDue(hourly, at(2026, 11, 26, 18, 0))).toBe(true);
+    // A 15-minute job that missed several slots is due once, not once
+    // per missed slot.
+    const quarter = promptJob({ schedule: '*/15 * * * *', lastRunAt: at(2026, 11, 26, 18, 45).getTime() });
+    expect(isCronJobDue(quarter, at(2026, 11, 26, 19, 20))).toBe(true);
+    // After the catch-up firing, it is quiet until the next slot.
+    const caughtUp = promptJob({ schedule: '*/15 * * * *', lastRunAt: at(2026, 11, 26, 19, 20).getTime() });
+    expect(isCronJobDue(caughtUp, at(2026, 11, 26, 19, 25))).toBe(false);
+    expect(isCronJobDue(caughtUp, at(2026, 11, 26, 19, 30))).toBe(true);
+    // A job that ran on schedule is not due early.
+    const onTime = promptJob({ schedule: '0 * * * *', lastRunAt: at(2026, 11, 26, 17, 0).getTime() });
+    expect(isCronJobDue(onTime, at(2026, 11, 26, 17, 30))).toBe(false);
+  });
+
+  it('a never-run job still waits for its first slot (no immediate fire)', () => {
+    const hourly = promptJob({ schedule: '0 * * * *', lastRunAt: null });
+    expect(isCronJobDue(hourly, at(2026, 11, 26, 17, 30))).toBe(false);
+    expect(isCronJobDue(hourly, at(2026, 11, 26, 18, 0))).toBe(true);
+    const daily = promptJob({ schedule: '0 7 * * *', lastRunAt: null });
+    expect(isCronJobDue(daily, at(2026, 11, 26, 10, 0))).toBe(false);
+    expect(isCronJobDue(daily, at(2026, 11, 27, 7, 0))).toBe(true);
+  });
+
   it('minuteKey floors to the minute', () => {
     expect(minuteKey(60_000)).toBe(60_000);
     expect(minuteKey(60_000 + 59_999)).toBe(60_000);

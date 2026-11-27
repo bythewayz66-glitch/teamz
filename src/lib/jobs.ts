@@ -37,7 +37,7 @@ import {
   type ApprovalRequest,
   type GateFlags,
 } from './governance';
-import { Schedule, minuteKey } from './scheduler';
+import { hasScheduledSlotSince, Schedule } from './scheduler';
 
 /** The product lifecycle, in order. A job's stages are a subsequence of this. */
 export const PRODUCT_STAGES = [
@@ -536,8 +536,14 @@ export function isJobDue(job: ProductJob, now: Date): boolean {
     if (job.lastRunAt == null) return true;
     return now.getTime() - job.lastRunAt >= s.everyMs;
   }
-  if (!new Schedule(s.expr).matches(now)) return false;
-  if (job.lastRunAt !== null && minuteKey(job.lastRunAt) === minuteKey(now.getTime())) return false;
+  if (s.kind === 'cron') {
+    // Cron-schedule product jobs use the same catch-up rule as cron jobs
+    // (see lib/scheduler.ts): a slot missed because the runner was busy
+    // stays due until it fires, instead of silently expiring after its
+    // 1-minute window. A job that has never run waits for its first slot.
+    if (job.lastRunAt === null) return new Schedule(s.expr).matches(now);
+    return hasScheduledSlotSince(s.expr, job.lastRunAt, now.getTime());
+  }
   return true;
 }
 

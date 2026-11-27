@@ -980,6 +980,166 @@ describe('processDue — rate-limit rescue loop', () => {
     expect(out.rateLimitRescues[0].resendCompleted).toBe(true);
     expect(out.rateLimitBackoff['pollinations']).toBeUndefined();
   });
+
+  it('a stale event — the agent already moved off the 429ing provider — is acknowledged and skipped, never waking the Researcher', async () => {
+    // The freeai backlog: every freeai event is stale because no agent
+    // is on freeai any more (agents moved to kilo/groq/gemini). The
+    // rescue must not burn a Researcher wake + resend on each one.
+    const qa = { ...agent('agent-qa-tester', 'QA Tester'), provider: 'groq' };
+    const researcher = agent('agent-provider-researcher', 'Provider Researcher');
+    const state: RunnerState = { ...emptyRunnerState(), agents: [qa, researcher] };
+    const event: RateLimitEvent = {
+      id: 'rl-stale-freeai',
+      ts: T0.getTime(),
+      agentId: 'agent-qa-tester',
+      agentName: 'QA Tester',
+      channelId: 'conv-build-room',
+      prompt: 'Write the test plan.',
+      provider: 'freeai',
+      error: 'freeai 429: daily limit reached',
+    };
+    const calls: string[] = [];
+    const acknowledged: string[] = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push(a.id);
+        return 'should never be called';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      rateLimitEvents: async () => [event],
+      acknowledgeRateLimitEvents: async (ids) => {
+        acknowledged.push(...ids);
+      },
+    });
+    expect(calls).toEqual([]);
+    expect(acknowledged).toEqual(['rl-stale-freeai']);
+    expect(out.rateLimitRescues).toHaveLength(0);
+    expect(fired.some((f) => f.includes('is stale') && f.includes('freeai') && f.includes('groq'))).toBe(true);
+  });
+
+  it('the rescue is capped per tick and newest-first — the urgent recent events win, the backlog drains later', async () => {
+    const qa = agent('agent-qa-tester', 'QA Tester');
+    const researcher = agent('agent-provider-researcher', 'Provider Researcher');
+    const state: RunnerState = { ...emptyRunnerState(), agents: [qa, researcher] };
+    // 7 unhandled events, oldest first in the file (as the file holds them).
+    const events: RateLimitEvent[] = Array.from({ length: 7 }, (_, i) => ({
+      id: `rl-cap-${i}`,
+      ts: T0.getTime() - (6 - i) * 60_000,
+      agentId: 'agent-qa-tester',
+      agentName: 'QA Tester',
+      channelId: 'conv-build-room',
+      prompt: `Request ${i}.`,
+      provider: 'pollinations',
+      error: 'Pollinations 429',
+    }));
+    const calls: string[] = [];
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push(a.id);
+        if (a.id === 'agent-provider-researcher') return 'Reassigned; resend it.';
+        return 'Resent.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      rateLimitEvents: async () => events,
+      acknowledgeRateLimitEvents: async () => {},
+      reloadAgents: async () => [qa, researcher],
+    });
+    // 5 attempts (the cap), each a Researcher wake + a resend.
+    expect(calls).toHaveLength(10);
+    expect(out.rateLimitRescues).toHaveLength(5);
+    // Newest first: the 5 newest events (rl-cap-6 down to rl-cap-2).
+    expect(out.rateLimitRescues.map((r) => r.eventId)).toEqual([
+      'rl-cap-6',
+      'rl-cap-5',
+      'rl-cap-4',
+      'rl-cap-3',
+      'rl-cap-2',
+    ]);
+  });
+});
+
+describe('processDue — per-tick product-job cap', () => {
+  function cronJobAt10(name: string) {
+    // Last ran yesterday at 10:00, so today's 10:00 slot is due at T0
+    // and still due a minute later if the per-tick cap held it back —
+    // the catch-up rule, not the old 1-minute window.
+    const job = createJob(
+      {
+        name,
+        channelId: 'conv-build-room',
+        schedule: { kind: 'cron', expr: '0 10 * * *' },
+        stages: [
+          {
+            stage: 'design',
+            agentId: 'agent-atlas',
+            prompt: `Do the ${name} design step.`,
+            expectedOutput: 'Designed.',
+          },
+        ],
+      },
+      new Date(2026, 10, 25, 9, 0).getTime(),
+    );
+    return { ...job, lastRunAt: new Date(2026, 10, 25, 10, 0).getTime() };
+  }
+
+  it('starts at most maxJobsPerTick product jobs per tick — the rest stay due and drain on later ticks', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas')],
+      jobs: [cronJobAt10('job-one'), cronJobAt10('job-two'), cronJobAt10('job-three')],
+    };
+    const calls: string[] = [];
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent) => {
+        calls.push(a.id);
+        return 'Design done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      maxJobsPerTick: 1,
+    };
+    // Tick 1 (T0 = 10:00, all three due): only the first starts.
+    const first = await processDue(state, T0, deps);
+    expect(calls).toEqual(['agent-atlas']);
+    // A completed single-stage recurring job auto-resets (runs cleared,
+    // cyclesCompleted +1) — that is the signal it ran.
+    expect(first.state.jobs[0].cyclesCompleted).toBe(1);
+    expect(first.state.jobs[1].cyclesCompleted).toBe(0);
+    expect(first.state.jobs[2].cyclesCompleted).toBe(0);
+    // Tick 2 (one minute later): the first job is caught up (not due),
+    // the second starts; the third is still untouched.
+    const second = await processDue(first.state, new Date(T0.getTime() + 60_000), deps);
+    expect(calls).toEqual(['agent-atlas', 'agent-atlas']);
+    expect(second.state.jobs[1].cyclesCompleted).toBe(1);
+    expect(second.state.jobs[2].cyclesCompleted).toBe(0);
+    // Tick 3: the third starts. Nothing was dropped.
+    const third = await processDue(second.state, new Date(T0.getTime() + 120_000), deps);
+    expect(calls).toHaveLength(3);
+    expect(third.state.jobs[2].cyclesCompleted).toBe(1);
+  });
+
+  it('the default cap still bounds a tick with many due jobs', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas')],
+      jobs: Array.from({ length: 10 }, (_, i) => cronJobAt10(`job-${i}`)),
+    };
+    const calls: string[] = [];
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async () => {
+        calls.push('agent-atlas');
+        return 'Design done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // Default cap (6): 6 of 10 start; the other 4 stay due.
+    expect(calls).toHaveLength(6);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 1)).toHaveLength(6);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 0)).toHaveLength(4);
+  });
 });
 
 describe('processDue — Playto suggestions to the Reviewer', () => {

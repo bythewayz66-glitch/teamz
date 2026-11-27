@@ -282,6 +282,23 @@ describe('isJobDue', () => {
     expect(isJobDue({ ...cron, enabled: false }, new Date(2026, 10, 25, 7, 0))).toBe(false);
     expect(isJobDue(pauseJob(cron), new Date(2026, 10, 25, 7, 0))).toBe(false);
   });
+
+  it('a cron-schedule job whose slot was missed stays due until it fires', () => {
+    // Same catch-up rule as cron jobs: the runner was busy, so no tick
+    // started in the 7:00 minute — at 7:05 the slot is still due.
+    const cron = createJob({
+      name: 'c',
+      channelId: CHANNEL,
+      stages: [{ stage: 'design', agentId: 'a', prompt: 'p', expectedOutput: 'e' }],
+      schedule: { kind: 'cron', expr: '0 7 * * *' },
+    });
+    const ran = { ...cron, lastRunAt: new Date(2026, 10, 25, 7, 0).getTime() };
+    expect(isJobDue(ran, new Date(2026, 10, 26, 7, 5))).toBe(true);
+    // After the catch-up run it is quiet until the next slot.
+    const caughtUp = { ...cron, lastRunAt: new Date(2026, 10, 26, 7, 5).getTime() };
+    expect(isJobDue(caughtUp, new Date(2026, 10, 26, 7, 10))).toBe(false);
+    expect(isJobDue(caughtUp, new Date(2026, 10, 27, 7, 0))).toBe(true);
+  });
 });
 
 describe('templates', () => {

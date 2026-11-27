@@ -347,3 +347,100 @@ describe('web_search', () => {
     expect(res.output).toContain('No web results found');
   });
 });
+
+describe('room_read', () => {
+  // The endpoint reads RUNNER_STATE_PATH fresh on every call, so these
+  // tests overwrite the throwaway state file with a room of their own.
+  function writeRoomState(): void {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        agents: [
+          { id: 'agent-backend-architect', name: 'Backend Architect', endpointUrl: 'http://127.0.0.1:8897/chat', model: 'kilo-auto/free', provider: 'kilo' },
+          { id: 'agent-qa-tester', name: 'QA Tester', endpointUrl: 'http://127.0.0.1:8897/chat', model: 'qwen/qwen3.8-27b', provider: 'groq' },
+          { id: 'agent-orchestrator', name: 'Orchestrator', endpointUrl: 'http://127.0.0.1:8897/chat', model: 'kilo-auto/free', provider: 'kilo' },
+        ],
+        jobs: [],
+        triggers: [],
+        approvals: [],
+        cronJobs: [],
+        channelMessages: [
+          { id: 'msg-1', channelId: 'conv-build-room', agentId: 'agent-triage', agentName: 'Triage Agent', kind: 'triage', text: 'Triage for denied build of "Verify" (Reviewer: too risky): REASSIGN: @agent-backend-architect — fix the auth check and resubmit.', ts: 1000 },
+          { id: 'msg-2', channelId: 'conv-build-room', agentId: 'agent-orchestrator', agentName: 'Orchestrator', kind: 'gate', text: 'Orchestrator assignment for @QA Tester did NOT reach the room: denied by Reviewer. The item was not dropped.', ts: 2000 },
+          { id: 'msg-3', channelId: 'conv-build-room', agentId: 'agent-qa-tester', agentName: 'QA Tester', kind: 'mention', text: 'Test plan for the next mem20 change is done: 12 cases, all passing.', ts: 3000 },
+        ],
+        rateLimitRescues: [],
+        rateLimitBackoff: {},
+      }),
+      'utf-8',
+    );
+  }
+
+  it('unassigned (default) surfaces triage + gate items and recent messages', async () => {
+    writeRoomState();
+    const res = await endpoint.executeTool('room_read', JSON.stringify({ what: 'unassigned' }));
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('TRIAGE (needs reassigning)');
+    expect(res.output).toContain('@agent-backend-architect');
+    expect(res.output).toContain('GATE (did not reach the room)');
+    expect(res.output).toContain('QA Tester');
+    // Compact: the Orchestrator sees the whole digest in one observation.
+    expect(res.output.length).toBeLessThanOrEqual(1100);
+  });
+
+  it('unassigned with no args is the same default', async () => {
+    writeRoomState();
+    const res = await endpoint.executeTool('room_read', '{}');
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('TRIAGE (needs reassigning)');
+  });
+
+  it('room returns the recent Build Room messages', async () => {
+    writeRoomState();
+    const res = await endpoint.executeTool('room_read', JSON.stringify({ what: 'room' }));
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('[triage] Triage Agent:');
+    expect(res.output).toContain('[mention] QA Tester:');
+    expect(res.output).toContain('Test plan for the next mem20 change');
+  });
+
+  it('agents with a role lists matching agents with their @handles', async () => {
+    writeRoomState();
+    const res = await endpoint.executeTool('room_read', JSON.stringify({ what: 'agents', role: 'backend' }));
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('Backend Architect (@agent-backend-architect) [kilo]');
+    expect(res.output).not.toContain('QA Tester');
+  });
+
+  it('agents without a role gives a provider breakdown and a hint', async () => {
+    writeRoomState();
+    const res = await endpoint.executeTool('room_read', JSON.stringify({ what: 'agents' }));
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('3 agents');
+    expect(res.output).toContain('kilo 2');
+    expect(res.output).toContain('Pass a role keyword');
+  });
+
+  it('agents with no match says so plainly', async () => {
+    writeRoomState();
+    const res = await endpoint.executeTool('room_read', JSON.stringify({ what: 'agents', role: 'zookeeper' }));
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('no agents match role');
+  });
+
+  it('an empty room says there is nothing to assign', async () => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({ version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [], channelMessages: [], rateLimitRescues: [], rateLimitBackoff: {} }),
+      'utf-8',
+    );
+    const res = await endpoint.executeTool('room_read', JSON.stringify({ what: 'unassigned' }));
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('No unassigned work');
+  });
+
+  it('appears in the tool inventory the model sees', () => {
+    expect(endpoint.inventoryText()).toContain('room_read');
+  });
+});

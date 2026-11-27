@@ -576,6 +576,95 @@ export function runRepoRead(args) {
 }
 
 /**
+ * Read the Build Room (conv-build-room) from the runner state: the items
+ * needing assignment, the recent deliveries, and the agents available.
+ * This is the Orchestrator's triage tool — it had no way to see the room
+ * (its replies said so for 35 straight runs), so it could never @mention
+ * a real agent. The output is kept compact (under ~1050 chars) because
+ * tool observations are truncated at 1200 chars in the loop.
+ *
+ * Args JSON (all optional): {"what": "unassigned" | "room" | "agents",
+ * "role": "<keyword to match agent names>"}.
+ * - "unassigned" (default): triage items (denied work to reassign),
+ *   gate items (assignments that did not reach the room), and the most
+ *   recent room messages — the work that needs assigning.
+ * - "room": the most recent Build Room messages.
+ * - "agents": agents matching `role` (name/id substring,
+ *   case-insensitive), one line each: Name (@agent-id) [provider].
+ *   Without a role, a provider breakdown and a hint to pass a role.
+ */
+export function runRoomRead(args) {
+  let input = {};
+  if (typeof args === 'string' && args.trim()) {
+    try {
+      input = JSON.parse(args);
+    } catch {
+      throw new Error('room_read needs a JSON object like {"what": "unassigned"} or {"what": "agents", "role": "backend"}');
+    }
+  }
+  let state;
+  try {
+    state = loadRunnerStateJson();
+  } catch (err) {
+    throw new Error(`room_read: cannot read runner state — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const what = typeof input.what === 'string' ? input.what : 'unassigned';
+  const role = typeof input.role === 'string' ? input.role.trim().toLowerCase() : '';
+  const messages = Array.isArray(state.channelMessages) ? state.channelMessages : [];
+  const agents = Array.isArray(state.agents) ? state.agents : [];
+  const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
+  const excerpt = (text, n = 140) => {
+    const line = oneLine(text);
+    return line.length > n ? `${line.slice(0, n)}…` : line;
+  };
+  const roomMessages = messages.filter((m) => m.channelId === 'conv-build-room');
+  if (what === 'agents') {
+    if (!role) {
+      const counts = {};
+      for (const a of agents) counts[a.provider ?? 'none'] = (counts[a.provider ?? 'none'] ?? 0) + 1;
+      const breakdown = Object.entries(counts)
+        .sort((x, y) => y[1] - x[1])
+        .map(([p, n]) => `${p} ${n}`)
+        .join(', ');
+      return `${agents.length} agents: ${breakdown}. Pass a role keyword, e.g. {"what":"agents","role":"backend"}, to list matching agents with their @handles.`;
+    }
+    const matched = agents.filter((a) => `${a.name ?? ''} ${a.id ?? ''}`.toLowerCase().includes(role));
+    if (matched.length === 0) {
+      return `no agents match role ${JSON.stringify(input.role)} — try another keyword, e.g. "backend", "qa", "writer".`;
+    }
+    const lines = matched
+      .slice(0, 12)
+      .map((a) => `${a.name} (@${a.id}) [${a.provider ?? 'default'}]`);
+    return `${matched.length} agent(s) matching ${JSON.stringify(input.role)}:\n${lines.join('\n')}${matched.length > 12 ? `\n…${matched.length - 12} more` : ''}`;
+  }
+  if (what === 'room') {
+    const recent = roomMessages.slice(-8);
+    if (recent.length === 0) return 'The Build Room is empty — no messages recorded yet.';
+    return recent.map((m) => `[${m.kind}] ${m.agentName}: ${excerpt(m.text, 130)}`).join('\n');
+  }
+  // Default: "unassigned" — the work that needs assigning, most urgent
+  // first. Lines are added only while the total stays compact.
+  const lines = [];
+  let total = 0;
+  const add = (line) => {
+    if (total + line.length + 1 > 1050) return;
+    lines.push(line);
+    total += line.length + 1;
+  };
+  for (const m of roomMessages.filter((m) => m.kind === 'triage').slice(-4)) {
+    add(`TRIAGE (needs reassigning): ${excerpt(m.text, 160)}`);
+  }
+  for (const m of roomMessages.filter((m) => m.kind === 'gate').slice(-3)) {
+    add(`GATE (did not reach the room): ${excerpt(m.text, 160)}`);
+  }
+  for (const m of roomMessages.slice(-5)) {
+    add(`[${m.kind}] ${m.agentName}: ${excerpt(m.text, 120)}`);
+  }
+  if (lines.length === 0) return 'No unassigned work in the Build Room right now — nothing to assign.';
+  return lines.join('\n');
+}
+
+/**
  * Stage ONE small patch for a job's implement stage. Args JSON:
  * {"jobId", "file", "oldText", "newText", "message"}. Writes a patch
  * JSON under PATCH_DIR — it never touches the repo. The push script
@@ -1350,6 +1439,16 @@ const TOOL_DEFS = [
     usage: 'a JSON object, e.g. {"jobId": "job-...", "file": "docs/x.md", "oldText": "...", "newText": "...", "message": "docs: fix ..."}',
     run: async (args) => runStagePatch(args),
   },
+  {
+    name: 'room_read',
+    description:
+      'Read the Build Room (conv-build-room) from the runner state: the work that needs assigning and the agents available. ' +
+      'The Orchestrator\'s triage tool — call it first on every triage run. ' +
+      'Args must be a JSON object (all optional): {"what": "unassigned" (default: triage + gate items and recent messages), "room" (recent messages), "agents" (agents matching "role")}. ' +
+      'For "agents", pass {"role": "<keyword>"} to list matching agents with their @handles, e.g. {"what": "agents", "role": "backend"}.',
+    usage: 'a JSON object, e.g. {"what": "unassigned"} or {"what": "agents", "role": "backend"}',
+    run: async (args) => runRoomRead(args),
+  },
 ];
 
 const TOOL_NAMES = TOOL_DEFS.map((d) => d.name);
@@ -1379,6 +1478,8 @@ const TOOL_ALIASES = {
   reporead: 'repo_read',
   readrepo: 'repo_read',
   stagepatch: 'stage_patch',
+  roomread: 'room_read',
+  readroom: 'room_read',
 };
 
 function resolveToolName(name) {

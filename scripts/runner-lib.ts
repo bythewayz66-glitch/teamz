@@ -974,6 +974,19 @@ export interface RunnerDeps {
    * one is still running (see scripts/runner.ts).
    */
   minDispatchGapMs?: number;
+  /**
+   * Maximum product jobs started per tick (default 6). A tick that
+   * starts every due product job takes hours — with ~160 active jobs
+   * the 30s tick interval is skipped while one is in flight, so the
+   * Orchestrator (15-min) and hourly crons miss their 1-minute
+   * windows and never fire (observed live Nov 26, 2026: hourly last
+   * ran 17:00, Orchestrator 18:45). Capping the product work per tick
+   * bounds the tick to minutes, so crons are checked often and fire
+   * on schedule (via the catch-up due check in lib/scheduler.ts).
+   * Due jobs that are not started stay due and drain on later ticks —
+   * nothing is dropped. Crons, triggers, and rescues are never capped.
+   */
+  maxJobsPerTick?: number;
 }
 
 export interface ProcessDueResult {
@@ -999,6 +1012,21 @@ export function rescueBackoffDelayMs(consecutiveFailures: number): number {
   const exp = Math.max(0, Math.min(consecutiveFailures - 1, 10));
   return Math.min(RESCUE_BACKOFF_BASE_MS * 2 ** exp, RESCUE_BACKOFF_MAX_MS);
 }
+
+/**
+ * Maximum rate-limit rescues attempted per tick (default when the caller
+ * does not pass one — processDue always uses this). The rescue section
+ * runs before the product jobs in a tick, and the events file had grown
+ * to 155 unhandled events (mostly stale freeai/ovh ones) — processing
+ * them all, newest-last, with a 50s gap per dispatch, blocked the tick
+ * for hours and the recent Kilo 429s at the end of the file were never
+ * reached. Capped and newest-first, the urgent recent events are
+ * handled promptly and the stale ones are skipped cheaply (see below).
+ */
+export const MAX_RESCUE_EVENTS_PER_TICK = 5;
+
+/** Default product jobs started per tick (see RunnerDeps.maxJobsPerTick). */
+export const DEFAULT_MAX_JOBS_PER_TICK = 6;
 
 /** True when an error is a rate-limit failure (402/429 / FREE_LIMIT). */
 export function isRateLimitError(err: unknown): boolean {
@@ -1247,11 +1275,42 @@ export async function processDue(
     } catch (err) {
       emit(`rate-limit check FAILED: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Newest first, capped per tick: the urgent recent events (a Kilo
+    // 429 tonight) are handled promptly instead of waiting behind a
+    // backlog of stale ones, and the rescue section can never block
+    // the tick for hours. Stale events are skipped cheaply and do not
+    // count against the cap (see the stale check below).
+    events = [...events].sort((a, b) => b.ts - a.ts);
+    let rescuesAttempted = 0;
     // Providers already logged as backing off this tick (one line per provider).
     const backedOffProviders = new Set<string>();
     for (const event of events) {
+      if (rescuesAttempted >= MAX_RESCUE_EVENTS_PER_TICK) break;
       const prior = state.rateLimitRescues.find((r) => r.eventId === event.id);
       if (prior && (prior.resendCompleted || prior.attempts >= 3)) continue;
+      // Stale event: the agent has already been reassigned off the
+      // provider that 429'd (its current provider differs from the
+      // event's), so the rescue already happened by another path and
+      // the retained request is the job loop's to retry, not this
+      // loop's to resend. Acknowledge it and skip — no Researcher
+      // wake, no resend. This is what clears a dead provider's
+      // backlog (e.g. freeai, emptied Nov 26, 2026: every one of its
+      // events is stale because no agent is on freeai any more).
+      const currentAgent = agentById.get(event.agentId);
+      const currentProvider = currentAgent?.provider;
+      if (currentProvider && currentProvider !== event.provider) {
+        if (deps.acknowledgeRateLimitEvents) {
+          try {
+            await deps.acknowledgeRateLimitEvents([event.id]);
+          } catch {
+            // Best-effort: it will be skipped again next tick.
+          }
+        }
+        emit(
+          `rate-limit rescue: event ${event.id} is stale — @${event.agentName} already moved from ${event.provider} to ${currentProvider}; acknowledged, skipping`,
+        );
+        continue;
+      }
       // Backoff: if the last rescue for this provider failed with a rate
       // limit, do not dispatch again until the cooldown expires. This is
       // what stops the loop spinning when the rescue itself 402s.
@@ -1265,6 +1324,9 @@ export async function processDue(
         }
         continue;
       }
+      // Counted against the per-tick cap: one rescue attempt (Researcher
+      // wake + resend) per event, whether it succeeds or fails.
+      rescuesAttempted += 1;
       // True when this rescue attempt itself hits a rate limit (the
       // Researcher dispatch 402/429s, or the resend 402/429s).
       let rescueRateLimited = false;
@@ -1401,6 +1463,17 @@ export async function processDue(
     }
   }
 
+  // Product jobs. Capped per tick (see RunnerDeps.maxJobsPerTick): a tick
+  // that starts every due product job takes hours, so the 30s tick
+  // interval is skipped while one is in flight and the Orchestrator /
+  // hourly crons miss their windows. Due jobs not started stay due and
+  // drain on later ticks — nothing is dropped. The cap counts jobs
+  // started (a job that turns out to be blocked without dispatching
+  // still counts: it is the conservative bound that keeps the tick
+  // short). Parked / awaiting-approval jobs cost no dispatch and are
+  // unaffected by the cap.
+  const maxJobsPerTick = deps.maxJobsPerTick ?? DEFAULT_MAX_JOBS_PER_TICK;
+  let jobsStarted = 0;
   for (let job of state.jobs) {
     // A parked job whose current stage has no pending approval and no
     // denied approval was parked transiently — the Reviewer was
@@ -1428,6 +1501,13 @@ export async function processDue(
     if (job.runs.some((r) => r.status === 'dispatched')) continue;
     const plan = currentStage(job);
     if (!plan) continue;
+    if (jobsStarted >= maxJobsPerTick) {
+      // Per-tick product cap reached — the remaining due jobs stay due
+      // and drain on later ticks. The tick ends here so crons are
+      // checked again promptly instead of after hours of product work.
+      break;
+    }
+    jobsStarted += 1;
     let started = startStage(job, state.approvals, nowMs);
     if (!started.ok) {
       const blockedReason = started.reason;

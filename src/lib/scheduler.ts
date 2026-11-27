@@ -240,16 +240,38 @@ export function minuteKey(ts: number): number {
 }
 
 /**
- * Is this cron job due at `now`? Enabled, schedule matches this minute, and
- * it has not already fired in this minute.
+ * Has a scheduled slot passed since `lastRunAtMs` (exclusive) and up to
+ * `nowMs` (inclusive)? This is the catch-up check: a cron whose slot was
+ * missed because the runner was busy grinding through product jobs stays
+ * due until it fires, instead of the slot silently expiring after its
+ * 1-minute window. The next slot after the last run is found with
+ * Schedule.next(); a job that missed many slots fires once (catch-up),
+ * not once per missed slot, because firing sets lastRunAt to now.
+ */
+export function hasScheduledSlotSince(expr: string, lastRunAtMs: number, nowMs: number): boolean {
+  try {
+    return new Schedule(expr).next(new Date(lastRunAtMs)).getTime() <= nowMs;
+  } catch {
+    // No slot within the lookahead (or a bad expression): not due.
+    return false;
+  }
+}
+
+/**
+ * Is this cron job due at `now`? Enabled, and either it has never run and
+ * the schedule matches this minute, or a scheduled slot has passed since
+ * its last run (catch-up — a missed slot stays due until it fires).
+ * A job that fired in the current minute is never due again in it.
  */
 export function isCronJobDue(job: CronJob, now: Date): boolean {
   if (!job.enabled) return false;
-  if (!new Schedule(job.schedule).matches(now)) return false;
-  if (job.lastRunAt !== null && minuteKey(job.lastRunAt) === minuteKey(now.getTime())) {
-    return false;
+  if (job.lastRunAt === null) {
+    // Never run: due only when the schedule matches this minute.
+    // (Unchanged creation semantics — a new daily job does not fire
+    // immediately on creation, it waits for its first slot.)
+    return new Schedule(job.schedule).matches(now);
   }
-  return true;
+  return hasScheduledSlotSince(job.schedule, job.lastRunAt, now.getTime());
 }
 
 /** Append a run record, keeping history bounded (newest 50 kept). */

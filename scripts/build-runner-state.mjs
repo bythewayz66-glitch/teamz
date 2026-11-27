@@ -90,8 +90,9 @@ export const HOURLY_TASKS = {
 };
 
 export const ORCHESTRATOR_TARGET =
-  'Triage the Build Room (conv-build-room). Review what the agents delivered since your last run and what is still unassigned. ' +
-  'For each piece of unassigned work, @mention the right agent with a clear brief and the expected output, so the work moves. ' +
+  'Triage the Build Room (conv-build-room). Start by calling room_read with {"what": "unassigned"} to see what the agents delivered since your last run and what is still unassigned. ' +
+  'For each piece of unassigned work, find the right agent with room_read {"what": "agents", "role": "<keyword>"} and @mention that agent by its exact name or @agent-id with a clear brief and the expected output, so the work moves. ' +
+  'Never invent an agent or an assignment you cannot see in room_read. ' +
   'If you notice a need that keeps recurring, propose a new automation with the create_automation tool. ' +
   'If there is nothing to assign, say so in one line and report what each agent delivered. ' +
   'Standing orders: Teamz owns mem20 and operates without a human in the loop, autonomously 24 hours a day, driving mem20 to success and completion. ' +
