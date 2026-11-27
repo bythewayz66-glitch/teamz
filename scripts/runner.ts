@@ -15,10 +15,10 @@
  *   --once             run a single tick and exit (smoke tests, cron use)
  *
  * The loop reloads the state file before every tick and saves it after,
- * so approvals and jobs added to the file (by Jesse, or by a future status
- * page) take effect on the next tick. A gated stage with no approval is
- * never executed — the runner files an approval request in the state file
- * and parks the job until Jesse approves it there.
+ * so approvals and jobs added to the file (by a future status page) take
+ * effect on the next tick. A gated stage with no approval is never
+ * executed — the runner files an approval request in the state file and
+ * parks the job until the Reviewer approves it there.
  *
  * This service never installs anything, never touches credentials, and
  * never runs a command that is not on a job's explicit allowlist.

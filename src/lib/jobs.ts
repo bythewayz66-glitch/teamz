@@ -61,8 +61,8 @@ export function stageIndex(stage: JobStage): number {
 export type JobStatus = 'active' | 'paused' | 'awaiting_approval' | 'done' | 'failed';
 
 /**
- * When a job's stages fire. `manual` means the job only runs when Jesse
- * (or a Run now) starts it; `interval` and `cron` are evaluated by the
+ * When a job's stages fire. `manual` means the job only runs when it is
+ * started by hand (Run now); `interval` and `cron` are evaluated by the
  * runner tick, using the same rules as `lib/scheduler.ts`.
  */
 export type JobSchedule =
@@ -402,7 +402,7 @@ export function startStage(
  * `done` when the last stage completes. On failure the run is recorded as
  * failed and the stage does NOT advance, so the next scheduled tick retries
  * the same stage; the approval is not consumed, so a retry does not need
- * Jesse to approve twice.
+ * the Reviewer to approve twice.
  */
 export function completeStageRun(
   job: ProductJob,
@@ -612,7 +612,7 @@ export function shipReleaseTemplate(input: TemplateInput, nowMs: number = Date.n
     {
       name: input.name ?? 'Ship a mem20 release',
       description:
-        'Full product loop for one mem20 release: design, build, implement, upgrade, release, document, advertise, sell. Release, advertise, and sell wait for Jesse’s approval.',
+        'Full product loop for one mem20 release: design, build, implement, upgrade, release, document, advertise, sell. Release, advertise, and sell wait for the Reviewer’s approval.',
       channelId: input.channelId,
       managerAgentId: input.managerAgentId ?? null,
       schedule: input.schedule ?? { kind: 'manual' },
@@ -657,9 +657,9 @@ export function shipReleaseTemplate(input: TemplateInput, nowMs: number = Date.n
           stage: 'release',
           agentId: stageAgent(input, 'release'),
           prompt:
-            'Prepare the release for Jesse to approve: release notes from the design, build, implementation, and upgrade outputs; the version; and the exact checklist of what was verified. Do not publish, tag, or push anything — this stage only prepares the release for approval.',
+            'Prepare the release for the Reviewer to approve: release notes from the design, build, implementation, and upgrade outputs; the version; and the exact checklist of what was verified. Do not publish, tag, or push anything — this stage only prepares the release for approval.',
           expectedOutput:
-            'Release notes and a verification checklist, ready for Jesse’s approval. Nothing published yet.',
+            'Release notes and a verification checklist, ready for the Reviewer’s approval. Nothing published yet.',
           contextStages: ['design', 'build', 'implement', 'upgrade'],
         },
         {
@@ -712,7 +712,8 @@ export function shipReleaseTemplate(input: TemplateInput, nowMs: number = Date.n
  * commits and pushes anything. The upgrade stage is gated with
  * `requiresReview`, so it never runs without a Reviewer approval
  * (decidedBy 'reviewer'); releases, public publishing, and destructive
- * changes still route to Jesse, never to the Reviewer. Most nights there
+ * changes still need Reviewer approval, with extra scrutiny for
+ * high-stakes decisions. Most nights there
  * is nothing to fix: the implement stage replies NO-CHANGE, the push
  * script reports NOTHING-TO-PUSH, and the document stage records that.
  */
@@ -779,7 +780,7 @@ export function publishDocsTemplate(input: TemplateInput, nowMs: number = Date.n
     {
       name: input.name ?? 'Publish mem20 docs',
       description:
-        'Documentation loop: outline the docs, then write and publish them. Publishing is public, so the document stage waits for Jesse’s approval.',
+        'Documentation loop: outline the docs, then write and publish them. Publishing is public, so the document stage waits for the Reviewer’s approval.',
       channelId: input.channelId,
       managerAgentId: input.managerAgentId ?? null,
       schedule: input.schedule ?? { kind: 'manual' },
@@ -796,7 +797,7 @@ export function publishDocsTemplate(input: TemplateInput, nowMs: number = Date.n
           stage: 'document',
           agentId: stageAgent(input, 'document'),
           prompt:
-            'Write the documentation from the design outline and publish it to the public docs site. Keep it accurate to the implementation as it actually is, with concrete examples. This stage publishes publicly, so it only runs after Jesse approves it.',
+            'Write the documentation from the design outline and publish it to the public docs site. Keep it accurate to the implementation as it actually is, with concrete examples. This stage publishes publicly, so it only runs after the Reviewer approves it.',
           expectedOutput: 'Documentation published for every page in the outline, matching the implementation.',
           contextStages: ['design'],
           flags: { publishesPublic: true },

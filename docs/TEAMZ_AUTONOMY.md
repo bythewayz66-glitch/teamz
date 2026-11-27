@@ -5,8 +5,8 @@ runner on jnet1, the 31 agents it drives, their automations, the
 Reviewer gate, the Orchestrator, the Provider Researcher, and the
 Keymaster. The detail docs are:
 
-- `docs/REVIEWER_POLICY.md` — what the Reviewer may approve, the
-  carve-outs, the fallback.
+- `docs/REVIEWER_POLICY.md` — what the Reviewer decides, high-stakes
+  scrutiny, and the retry behavior.
 - `docs/ORCHESTRATOR.md` — the mission directive, the mention flow,
   governed automation creation.
 - `docs/PROVIDER_RESEARCHER.md` — the provider registry, load
@@ -129,16 +129,16 @@ panel shows them.
 Gated stages (`release` / `advertise` / `sell`, or any stage flagged
 `spendsMoney` / `publishesPublic` / `destructive`) never execute
 without a live approval record (`src/lib/governance.ts`,
-`canExecuteStage`). Routine gated stages (`requiresReview`) go to
-the Reviewer; carve-outs always go to Jesse. See
+`canExecuteStage`). All gated stages go to the Reviewer — routine and
+high-stakes alike; there are no carve-outs to anyone else. See
 `docs/REVIEWER_POLICY.md`.
 
 ## Tests
 
-`npm test` — 331 tests (Nov 26, 2026), including the new suites:
+`npm test` — 359 tests, including the new suites:
 `src/lib/reviewer.test.ts`, `src/lib/orchestrator.test.ts`,
 `src/lib/runner-flows.test.ts` (Orchestrator mentions, Reviewer
-approve/deny/carve-out/fallback, rate-limit rescue through the real
+approve/deny/high-stakes/retry, rate-limit rescue through the real
 `processDue`), `src/lib/roster.test.ts` (roster/UI parity, Build Room
 membership, automation inventory), `src/lib/keymaster.test.ts`
 (inventory contains no credential values).

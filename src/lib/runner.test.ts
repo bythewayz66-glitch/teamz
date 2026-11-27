@@ -17,7 +17,7 @@ import {
   type RunnerState,
 } from '../../scripts/runner-lib';
 import { createJob, repoCheckTemplate, type ProductJob } from './jobs';
-import { decideApproval, type ApprovalRequest } from './governance';
+import { type ApprovalRequest } from './governance';
 
 const T0 = 1_700_000_000_000;
 
@@ -226,7 +226,7 @@ describe('processDue — one headless tick', () => {
     expect(job.currentStageIndex).toBe(1);
   });
 
-  it('a gated stage files an approval request and dispatches nothing', async () => {
+  it('a gated stage asks the Reviewer and dispatches nothing to the worker until it is approved', async () => {
     const job = createJob({
       name: 'gated job',
       channelId: 'conv-build-room',
@@ -238,8 +238,9 @@ describe('processDue — one headless tick', () => {
     });
     const calls: string[] = [];
     const deps = {
-      dispatchPrompt: async () => {
-        calls.push('dispatch');
+      dispatchPrompt: async (agent: RunnerAgent) => {
+        calls.push(agent.id);
+        if (agent.id === 'agent-reviewer') return 'APPROVE: release notes verified.';
         return 'done';
       },
       executeCommand: async (): Promise<CommandResult> => {
@@ -250,27 +251,30 @@ describe('processDue — one headless tick', () => {
     // First tick: design runs.
     let out = await processDue(baseState(job), new Date(T0), deps);
     expect(calls).toHaveLength(1);
-    // Second tick (after the interval): release is gated — no dispatch,
-    // an approval request is filed, and the job parks.
+    // Second tick (after the interval): release is gated and no Reviewer
+    // is configured — nothing is dispatched, no approval request is
+    // filed, and the job parks as a config error.
     out = await processDue(out.state, new Date(T0 + 61_000), deps);
     expect(calls).toHaveLength(1);
-    expect(out.state.approvals).toHaveLength(1);
-    expect(out.state.approvals[0].status).toBe('pending');
-    expect(out.state.approvals[0].stage).toBe('release');
+    expect(out.state.approvals).toHaveLength(0);
     expect(out.state.jobs[0].status).toBe('awaiting_approval');
     expect(out.state.jobs[0].runs).toHaveLength(1);
-    // Third tick with the approval granted: the release runs.
-    const approved: ApprovalRequest[] = [
-      decideApproval(out.state.approvals[0], 'approved', T0 + 122_000),
-    ];
-    const resumed: RunnerState = {
+    expect(out.fired.some((f) => f.includes('NO REVIEWER CONFIGURED'))).toBe(true);
+    // Third tick with a Reviewer configured: the Reviewer approves, the
+    // release runs, and the approval is consumed.
+    const withReviewer: RunnerState = {
       ...out.state,
-      approvals: approved,
-      jobs: out.state.jobs.map((j) => ({ ...j, status: 'active' as const })),
+      agents: [
+        ...out.state.agents,
+        { id: 'agent-reviewer', name: 'Reviewer', endpointUrl: 'http://127.0.0.1:9/chat', model: 'test', systemPrompt: '' },
+      ],
     };
-    out = await processDue(resumed, new Date(T0 + 123_000), deps);
-    expect(calls).toHaveLength(2);
+    out = await processDue(withReviewer, new Date(T0 + 123_000), deps);
+    expect(calls).toEqual(['agent-atlas', 'agent-reviewer', 'agent-atlas']);
     expect(out.state.jobs[0].status).toBe('done');
+    expect(out.state.approvals).toHaveLength(1);
+    expect(out.state.approvals[0].status).toBe('approved');
+    expect(out.state.approvals[0].decidedBy).toBe('reviewer');
     expect(out.state.approvals[0].consumedAt).not.toBeNull();
   });
 

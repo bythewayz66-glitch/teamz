@@ -272,7 +272,7 @@ export function useAutonomy(ws: UseWorkspace): UseAutonomy {
               job.id,
               job.name,
               plan.stage,
-              `Stage "${plan.stage}" of "${job.name}" needs Jesse's approval: ${started.reason}`,
+              `Stage "${plan.stage}" of "${job.name}" needs the Reviewer's approval: ${started.reason}`,
               nowMs,
             );
             setState((s) => ({
@@ -617,7 +617,7 @@ export function useAutonomy(ws: UseWorkspace): UseAutonomy {
         job.id,
         job.name,
         plan.stage,
-        `Stage "${plan.stage}" of "${job.name}" — approval requested by Jesse`,
+        `Stage "${plan.stage}" of "${job.name}" — approval requested for a Reviewer decision`,
         Date.now(),
       );
       return {

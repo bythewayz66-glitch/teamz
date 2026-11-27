@@ -15,8 +15,8 @@ Orchestrator's standing-orders message in the Build Room seed
 (`conv-build-room`). The Orchestrator acts on it: it assigns work,
 creates automations, and drives the pipeline on its own initiative —
 while respecting the Reviewer's gates. Spending money, public releases,
-and destructive actions still need Jesse; everything else, it drives
-itself.
+and destructive actions still need the Reviewer's approval; everything
+else, it drives itself.
 
 ## Mention flow (runner side)
 

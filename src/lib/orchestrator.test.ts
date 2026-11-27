@@ -68,13 +68,13 @@ describe('parseReviewerReply — one-line verdicts only', () => {
   });
 
   it('parses DENY with its reason', () => {
-    expect(parseReviewerReply('DENY: carve-out — needs Jesse.')).toEqual({
+    expect(parseReviewerReply('DENY: too risky, needs rework.')).toEqual({
       decision: 'deny',
-      reason: 'carve-out — needs Jesse.',
+      reason: 'too risky, needs rework.',
     });
   });
 
-  it('rejects prose with no verdict — the runner falls back to Jesse', () => {
+  it('rejects prose with no verdict — the runner parks the job and retries the Reviewer', () => {
     expect(parseReviewerReply('Looks fine to me, go ahead I suppose.')).toBeNull();
     expect(parseReviewerReply('')).toBeNull();
   });
@@ -113,7 +113,7 @@ describe('validateAutomationProposal — the governed job-creation rules', () =>
     expect(validateAutomationProposal({ ...base, target: 'x'.repeat(2001) }, AGENTS).ok).toBe(false);
   });
 
-  it('refuses spending, publishing, releasing, and deleting as carve-outs', () => {
+  it('refuses spending, publishing, releasing, and deleting as high-stakes proposals', () => {
     for (const target of [
       'Buy the ads for the launch.',
       'Publish the release notes to the public site.',

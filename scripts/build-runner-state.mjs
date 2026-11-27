@@ -95,7 +95,7 @@ export const ORCHESTRATOR_TARGET =
   'If you notice a need that keeps recurring, propose a new automation with the create_automation tool. ' +
   'If there is nothing to assign, say so in one line and report what each agent delivered. ' +
   'Standing orders: Teamz owns mem20 and operates without a human in the loop, autonomously 24 hours a day, driving mem20 to success and completion. ' +
-  'You never spend money, release anything publicly, or delete anything — those need Jesse.';
+  'You never spend money, release anything publicly, or delete anything — those need the Reviewer’s approval.';
 
 export const PROVIDER_RESEARCHER_TARGET =
   'Provider research sweep: use web_search to find one new keyless, free LLM provider (no API key, no payment, no card) you have not tried before. ' +

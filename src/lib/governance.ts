@@ -2,11 +2,18 @@
  * Governance — approval gates for the autonomous product loop.
  *
  * The hard rule: the runner NEVER spends money, publishes something public,
- * or releases anything without Jesse's approval. That rule is enforced in
- * code, in this module, not just in the UI: `startStage` in `jobs.ts` calls
- * `canExecuteStage` here, and a gated stage with no unconsumed approval for
- * that job + stage comes back blocked. The UI can only approve or deny; it
- * cannot make a gated stage run.
+ * or releases anything without the REVIEWER's approval. That rule is
+ * enforced in code, in this module, not just in the UI: `startStage` in
+ * `jobs.ts` calls `canExecuteStage` here, and a gated stage with no
+ * unconsumed approval for that job + stage comes back blocked. The UI can
+ * only record a decision; it cannot make a gated stage run.
+ *
+ * The Reviewer agent is the SOLE decision-maker for every approval —
+ * routine and high-stakes alike. Jesse is the founder and approves
+ * nothing. There is no code path that waits on Jesse for approval, and
+ * no carve-out that routes a decision to him: release / advertise / sell,
+ * spending, publishing, and destructive stages all go to the Reviewer,
+ * which applies extra scrutiny to them (see `isHighStakes`).
  *
  * Stages that always require approval: `release`, `advertise`, `sell`.
  * Anything that would spend money or publish something public requires
@@ -17,15 +24,16 @@
  * in `document`) proceed autonomously.
  *
  * Approvals are records, not flags: an approval is created by requesting
- * one, decided by Jesse (approved or denied), and consumed when the gated
- * stage it covers completes successfully. A failed run does not consume the
- * approval, so a retry after a failure does not need Jesse to approve twice.
- * A denied request never becomes an approval — a new request must be made.
+ * one, decided by the Reviewer (approved or denied), and consumed when
+ * the gated stage it covers completes successfully. A failed run does not
+ * consume the approval, so a retry after a failure does not need the
+ * Reviewer to approve twice. A denied request never becomes an approval
+ * — a new request must be made.
  */
 
 import type { JobStage } from './jobs';
 
-/** Stages that always need Jesse's approval before they execute. */
+/** Stages that always need the Reviewer's approval before they execute. */
 export const GATED_STAGES: readonly JobStage[] = ['release', 'advertise', 'sell'];
 
 /** A stage that would spend money or publish publicly is gated either way. */
@@ -37,10 +45,10 @@ export interface GateFlags {
   /** The stage's work would delete or destroy data, code, or infrastructure. */
   destructive?: boolean;
   /**
-   * The stage is routine (not a carve-out) but still needs a decision
-   * before it runs — the Reviewer decides these, Jesse never has to.
-   * See `isCarveOut`: a requiresReview stage that is also a carve-out
-   * always goes to Jesse, never to the Reviewer.
+   * The stage needs a decision before it runs — the Reviewer decides
+   * these. A stage that is also high-stakes (see `isHighStakes`) still
+   * goes to the Reviewer, with extra scrutiny; it is never routed
+   * anywhere else.
    */
   requiresReview?: boolean;
 }
@@ -56,13 +64,15 @@ export function stageRequiresApproval(stage: JobStage, flags: GateFlags = {}): b
 }
 
 /**
- * The carve-outs: stages that ALWAYS need Jesse himself, never the
- * Reviewer. Checked first, before any Reviewer routing — see
- * docs/REVIEWER_POLICY.md. A stage is a carve-out when it is a gated
+ * The high-stakes flag: stages that need EXTRA Reviewer scrutiny, not a
+ * different approver. There is no carve-out to anyone else — the Reviewer
+ * is the sole decision-maker for these too; this flag only tells the
+ * Reviewer (and the dispatch prompt) to apply extra care. See
+ * docs/REVIEWER_POLICY.md. A stage is high-stakes when it is a gated
  * lifecycle stage (release / advertise / sell) or its flags say it would
  * spend money, publish publicly, or destroy something.
  */
-export function isCarveOut(stage: JobStage, flags: GateFlags = {}): boolean {
+export function isHighStakes(stage: JobStage, flags: GateFlags = {}): boolean {
   return (
     (GATED_STAGES as readonly JobStage[]).includes(stage) ||
     flags.spendsMoney === true ||
@@ -91,11 +101,11 @@ export interface ApprovalRequest {
   /** Epoch ms the approved stage completed, if it has. */
   consumedAt: number | null;
   /**
-   * Who decided this request: Jesse himself, or the Reviewer agent acting
-   * under the Reviewer policy (routine decisions only — carve-outs are
-   * never decided by the Reviewer). Absent on old records: Jesse.
+   * Who decided this request: always the Reviewer agent — the sole
+   * approver. Absent on old records created before the Reviewer became
+   * the sole decision-maker.
    */
-  decidedBy?: 'jesse' | 'reviewer';
+  decidedBy?: 'reviewer';
 }
 
 /** The outcome of asking "may this stage execute right now?" */
@@ -202,7 +212,7 @@ export function assertCanExecute(
   }
 }
 
-/** Record Jesse's decision on a pending request. Only pending requests move. */
+/** Record the Reviewer's decision on a pending request. Only pending requests move. */
 export function decideApproval(
   request: ApprovalRequest,
   decision: 'approved' | 'denied',
@@ -211,14 +221,13 @@ export function decideApproval(
   if (request.status !== 'pending') {
     throw new Error(`approval ${request.id} is already ${request.status}`);
   }
-  return { ...request, status: decision, decidedAt: nowMs, decidedBy: 'jesse' };
+  return { ...request, status: decision, decidedAt: nowMs, decidedBy: 'reviewer' };
 }
 
 /**
- * Record the Reviewer agent's decision on a request. Only for routine
- * decisions — callers must have checked `isCarveOut` first and routed
- * carve-outs to Jesse. The record says who decided it, so an audit can
- * tell a Reviewer approval from a Jesse approval.
+ * Record the Reviewer agent's decision on a request, with its reason
+ * attached. The record says who decided it, so an audit can see every
+ * decision was the Reviewer's — there is no other approver.
  */
 export function decideApprovalByReviewer(
   request: ApprovalRequest,
@@ -249,7 +258,7 @@ export function consumeApproval(
   return { ...request, consumedAt: nowMs };
 }
 
-/** Requests still waiting on Jesse, oldest first. */
+/** Requests still waiting on the Reviewer, oldest first. */
 export function pendingApprovals(approvals: ApprovalRequest[]): ApprovalRequest[] {
   return approvals
     .filter((a) => a.status === 'pending')

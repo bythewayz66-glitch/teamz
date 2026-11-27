@@ -10,10 +10,11 @@
  *
  * State lives in one JSON file (`RunnerState` below). The service reloads
  * it from disk before every tick and writes it back after, so the file is
- * the shared surface: a future status page — or Jesse editing the file —
- * can add approvals and jobs, and the next tick picks them up. The browser
- * tab keeps its own copy in localStorage; the two are not yet synced, and
- * the server file is the authority for the 24/7 runner.
+ * the shared surface: a future status page can add jobs, and the next tick
+ * picks them up. Approvals are decided by the Reviewer agent only — never
+ * by editing the file, and never by anyone else. The browser tab keeps
+ * its own copy in localStorage; the two are not yet synced, and the
+ * server file is the authority for the 24/7 runner.
  *
  * Security rules, enforced here and not just documented:
  *  - Commands run only from a job's explicit allowlist (`isCommandAllowed`,
@@ -39,13 +40,14 @@ import {
   isCommandAllowed,
   isJobDue,
   parkForApproval,
+  resumeJob,
   startStage,
   type ProductJob,
 } from '../src/lib/jobs';
 import {
   findPendingApproval,
   decideApprovalByReviewer,
-  isCarveOut,
+  isHighStakes,
   requestApproval,
   type ApprovalRequest,
 } from '../src/lib/governance';
@@ -147,7 +149,7 @@ export interface RateLimitBackoff {
 /**
  * The runner's whole world, in one JSON file. `jobs` are product-loop
  * jobs, `cronJobs` are scheduled prompt jobs, `triggers` are interval
- * prompts, `approvals` are Jesse's decisions. Agents are the address book
+ * prompts, `approvals` are the Reviewer's decisions. Agents are the address book
  * the runner POSTs to.
  */
 export interface RunnerState {
@@ -495,8 +497,9 @@ const CARVE_OUT_WORDS =
 /**
  * Validate a proposed automation the way POST /automations does (the
  * endpoint duplicates these rules in plain JS — keep them in sync).
- * Returns the refusal reason; `carveOut` means "route to Jesse", never
- * to the Reviewer and never auto-approved.
+ * Returns the refusal reason; `carveOut` marks a high-stakes proposal
+ * (spending / publishing / releasing / deleting) — refused outright,
+ * never auto-approved, never turned into an automation.
  */
 export function validateAutomationProposal(
   input: AutomationProposal,
@@ -523,7 +526,7 @@ export function validateAutomationProposal(
   if (CARVE_OUT_WORDS.test(`${name} ${target}`)) {
     return {
       ok: false,
-      reason: 'refused: the proposal spends money, publishes publicly, releases, or deletes — that needs Jesse, not an automation',
+      reason: 'refused: the proposal spends money, publishes publicly, releases, or deletes — automations may not do that; only a Reviewer-approved job stage may',
       carveOut: true,
     };
   }
@@ -1051,7 +1054,29 @@ export async function processDue(
     }
   }
 
-  for (const job of state.jobs) {
+  for (let job of state.jobs) {
+    // A parked job whose current stage has no pending approval and no
+    // denied approval was parked transiently — the Reviewer was
+    // unreachable, unreadable, or not configured, and no approval record
+    // was filed, so nothing is actually awaiting a decision. Resume it
+    // here so this tick retries the Reviewer. A job parked behind a
+    // pending or denied approval stays parked: a denial is terminal
+    // until the job is resumed by hand, and a pending request is never
+    // asked twice.
+    const parkedPlan = currentStage(job);
+    if (
+      job.status === 'awaiting_approval' &&
+      parkedPlan &&
+      !state.approvals.some(
+        (a) =>
+          a.jobId === job.id &&
+          a.stage === parkedPlan.stage &&
+          (a.status === 'pending' || a.status === 'denied'),
+      )
+    ) {
+      job = resumeJob(job, nowMs);
+      state.jobs = state.jobs.map((j) => (j.id === job.id ? job : j));
+    }
     if (!isJobDue(job, now)) continue;
     if (job.runs.some((r) => r.status === 'dispatched')) continue;
     const plan = currentStage(job);
@@ -1068,46 +1093,34 @@ export async function processDue(
         fired.push(`job ${job.name} / ${plan.stage}: still awaiting approval`);
         continue;
       }
-      // Carve-out FIRST: release / advertise / sell, or any stage that
-      // spends money, publishes publicly, or destroys something ALWAYS
-      // goes to Jesse. The Reviewer is never even asked.
-      const requestJesse = (note: string) => {
-        const req = requestApproval(
-          job.id,
-          job.name,
-          plan.stage,
-          `Stage "${plan.stage}" of "${job.name}" needs Jesse's approval: ${blockedReason}. ${note}`,
-          nowMs,
-        );
-        state.approvals = [...state.approvals, req];
-        state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-        fired.push(`job ${job.name} / ${plan.stage}: approval requested from Jesse (${req.id})`);
-      };
-      if (isCarveOut(plan.stage, plan.flags)) {
-        requestJesse('Carve-out — the Reviewer may never approve this.');
-        continue;
-      }
-      // Routine gated stage: ask the Reviewer. Approved in writing, with
-      // the decision recorded as decidedBy 'reviewer'; denied parks the
-      // job. If the Reviewer is unreachable or its reply is unreadable,
-      // fall back to a Jesse approval request — never silently approve.
-      // The Reviewer judges the actual work, not just the stage
+      // Every gated stage goes to the Reviewer — routine AND high-stakes
+      // (release / advertise / sell, spending, publishing, destructive).
+      // The Reviewer is the SOLE decision-maker: Jesse is the founder and
+      // approves nothing, and there is no human approval path anywhere in
+      // this flow. The Reviewer judges the actual work, not just the stage
       // description: completed stage outputs (e.g. the staged patch
       // summary) travel with the request.
       const reviewer = agentById.get('agent-reviewer');
       if (!reviewer) {
-        requestJesse('No Reviewer agent configured — routed to Jesse.');
+        // Config error, not a decision: park the job and say so plainly.
+        // No approval request is filed — there is nobody else to ask.
+        // The job is retried on a later tick (see the transient-park
+        // resume at the top of the job loop) once a Reviewer is configured.
+        state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
+        fired.push(
+          `job ${job.name} / ${plan.stage}: NO REVIEWER CONFIGURED — a gated stage cannot be decided without the Reviewer agent; job parked (config error, no approval filed)`,
+        );
         continue;
       }
       try {
+        const highStakes = isHighStakes(plan.stage, plan.flags);
         const reviewerPrompt =
-          `REVIEW REQUEST — decide this routine operational stage.\n` +
-          `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}\n` +
+          `REVIEW REQUEST — you are the SOLE decision-maker for this stage. There is no other approver: no human approval, no escalation, no one else to route this to. Decide it yourself.\n` +
+          `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}${highStakes ? ' — HIGH-STAKES: this stage releases, spends money, publishes publicly, or destroys something. Apply extra scrutiny and deny unless the evidence below actually supports it.' : ''}\n` +
           `Stage prompt: ${plan.prompt}\nExpected output: ${plan.expectedOutput}\n` +
           `What has happened so far in this job (completed stage outputs — judge the actual change, not just the description):\n${reviewContext(job) || '(nothing yet)'}\n` +
-          `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". ` +
-          `You must NEVER approve spending money, public releases, or destructive or deletion ` +
-          `actions — if this request touches any of those, reply "DENY: carve-out — needs Jesse". ` +
+          `Standing rules you must apply: never remove a feature and never fake one — completion only. Verify every claim against the real code, tree, and git history. The repo-root AGENTS.md is canonical and trumps all other rules docs. mem20core and mem20corez are distinct components — never merge them.\n` +
+          `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". Your decision and its reason are recorded — every decision is recorded with its reason. ` +
           `One distinction: pushing a routine code or doc change to the team's own repo through the ` +
           `governed push script is NOT a public release — a release is release notes, an announcement, ` +
           `publishing the docs site, or selling something. The push script only commits one small staged ` +
@@ -1148,8 +1161,14 @@ export async function processDue(
         }
         started = retry;
       } catch (err) {
-        requestJesse(
-          `Reviewer unavailable or unreadable (${err instanceof Error ? err.message : String(err)}) — falling back to Jesse.`,
+        // Reviewer unreachable or reply unreadable: park WITHOUT filing
+        // an approval request, so a later tick retries the Reviewer (see
+        // the transient-park resume at the top of the job loop). Never
+        // silently approve, and never fall back to anyone else — there is
+        // nobody else to fall back to.
+        state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
+        fired.push(
+          `job ${job.name} / ${plan.stage}: Reviewer unavailable or unreadable (${err instanceof Error ? err.message : String(err)}) — job parked, will retry the Reviewer on a later tick`,
         );
         continue;
       }

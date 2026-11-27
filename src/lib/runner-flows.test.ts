@@ -113,7 +113,7 @@ describe('processDue — Reviewer approval flow', () => {
     });
   }
 
-  function carveOutJob() {
+  function highStakesJob() {
     return createJob({
       name: 'Release job',
       channelId: 'conv-build-room',
@@ -177,37 +177,71 @@ describe('processDue — Reviewer approval flow', () => {
     expect(out.jobs[0].currentStageIndex).toBe(0);
   });
 
-  it('a release stage is a carve-out: Jesse is asked, the Reviewer is never called', async () => {
+  it('a release stage goes to the Reviewer like any other gated stage — the Reviewer is the sole decision-maker', async () => {
     const state: RunnerState = {
       ...emptyRunnerState(),
       agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
-      jobs: [carveOutJob()],
+      jobs: [highStakesJob()],
     };
     const calls: string[] = [];
-    const { state: out, fired } = await processDue(state, T0, {
+    const reviewerPrompts: string[] = [];
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async (a, prompt) => {
+        calls.push(a.id);
+        if (a.id === 'agent-reviewer') {
+          reviewerPrompts.push(prompt);
+          return 'APPROVE: release notes verified against the code and history, nothing faked.';
+        }
+        return 'Release prepared.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls).toEqual(['agent-reviewer', 'agent-atlas']);
+    expect(out.approvals).toHaveLength(1);
+    expect(out.approvals[0].status).toBe('approved');
+    expect(out.approvals[0].decidedBy).toBe('reviewer');
+    expect(out.jobs[0].status).toBe('done');
+    // The dispatch tells the Reviewer it is the sole decision-maker, that
+    // this is high-stakes, and what standing rules to apply.
+    expect(reviewerPrompts[0]).toContain('SOLE decision-maker');
+    expect(reviewerPrompts[0]).toContain('HIGH-STAKES');
+    expect(reviewerPrompts[0]).toContain('never remove a feature and never fake one');
+    expect(reviewerPrompts[0]).toContain('repo-root AGENTS.md is canonical');
+    expect(reviewerPrompts[0]).toContain('mem20core and mem20corez are distinct');
+  });
+
+  it('a Reviewer denial of a high-stakes stage parks the job and never runs the stage', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [highStakesJob()],
+    };
+    const calls: string[] = [];
+    const { state: out } = await processDue(state, T0, {
       dispatchPrompt: async (a) => {
         calls.push(a.id);
+        if (a.id === 'agent-reviewer') return 'DENY: release notes do not match the code.';
         return 'should never run';
       },
       executeCommand: commandStub(),
       log: silentLog(),
     });
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(['agent-reviewer']);
     expect(out.approvals).toHaveLength(1);
-    expect(out.approvals[0].status).toBe('pending');
-    expect(out.approvals[0].decidedBy).toBeUndefined();
-    expect(out.approvals[0].reason).toContain('Carve-out');
+    expect(out.approvals[0].status).toBe('denied');
+    expect(out.approvals[0].decidedBy).toBe('reviewer');
     expect(out.jobs[0].status).toBe('awaiting_approval');
-    expect(fired.some((f) => f.includes('approval requested from Jesse'))).toBe(true);
+    expect(out.jobs[0].currentStageIndex).toBe(0);
   });
 
-  it('an unreachable Reviewer falls back to a Jesse approval request — never silently approves', async () => {
+  it('an unreachable Reviewer parks the job with no approval filed — never silently approves, never falls back to anyone', async () => {
     const state: RunnerState = {
       ...emptyRunnerState(),
       agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
       jobs: [reviewableJob()],
     };
-    const { state: out } = await processDue(state, T0, {
+    const { state: out, fired } = await processDue(state, T0, {
       dispatchPrompt: async (a) => {
         if (a.id === 'agent-reviewer') throw new Error('endpoint down');
         return 'should never run';
@@ -215,19 +249,18 @@ describe('processDue — Reviewer approval flow', () => {
       executeCommand: commandStub(),
       log: silentLog(),
     });
-    expect(out.approvals).toHaveLength(1);
-    expect(out.approvals[0].status).toBe('pending');
-    expect(out.approvals[0].reason).toContain('Reviewer unavailable');
+    expect(out.approvals).toHaveLength(0);
     expect(out.jobs[0].status).toBe('awaiting_approval');
+    expect(fired.some((f) => f.includes('will retry the Reviewer on a later tick'))).toBe(true);
   });
 
-  it('an unreadable Reviewer reply falls back to Jesse', async () => {
+  it('an unreadable Reviewer reply parks the job with no approval filed', async () => {
     const state: RunnerState = {
       ...emptyRunnerState(),
       agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
       jobs: [reviewableJob()],
     };
-    const { state: out } = await processDue(state, T0, {
+    const { state: out, fired } = await processDue(state, T0, {
       dispatchPrompt: async (a) => {
         if (a.id === 'agent-reviewer') return 'Looks fine to me, I guess?';
         return 'should never run';
@@ -235,9 +268,70 @@ describe('processDue — Reviewer approval flow', () => {
       executeCommand: commandStub(),
       log: silentLog(),
     });
-    expect(out.approvals).toHaveLength(1);
-    expect(out.approvals[0].status).toBe('pending');
+    expect(out.approvals).toHaveLength(0);
     expect(out.jobs[0].status).toBe('awaiting_approval');
+    expect(fired.some((f) => f.includes('will retry the Reviewer on a later tick'))).toBe(true);
+  });
+
+  it('a job parked by an unreachable Reviewer retries the Reviewer on a later tick', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [reviewableJob()],
+    };
+    let reviewerCalls = 0;
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent) => {
+        if (a.id === 'agent-reviewer') {
+          reviewerCalls += 1;
+          if (reviewerCalls === 1) throw new Error('endpoint down');
+          return 'APPROVE: routine code change, no spend or publish.';
+        }
+        return 'Build step done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    };
+    const first = await processDue(state, T0, deps);
+    expect(first.state.approvals).toHaveLength(0);
+    expect(first.state.jobs[0].status).toBe('awaiting_approval');
+    const second = await processDue(first.state, new Date(T0.getTime() + 2000), deps);
+    expect(reviewerCalls).toBe(2);
+    expect(second.state.approvals).toHaveLength(1);
+    expect(second.state.approvals[0].status).toBe('approved');
+    expect(second.state.approvals[0].decidedBy).toBe('reviewer');
+    expect(second.state.jobs[0].status).toBe('done');
+  });
+
+  it('no Reviewer configured parks the job as a config error — no approval filed, retried once a Reviewer exists', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas')],
+      jobs: [reviewableJob()],
+    };
+    const deps = {
+      dispatchPrompt: async () => 'should never run',
+      executeCommand: commandStub(),
+      log: silentLog(),
+    };
+    const first = await processDue(state, T0, deps);
+    expect(first.state.approvals).toHaveLength(0);
+    expect(first.state.jobs[0].status).toBe('awaiting_approval');
+    expect(first.fired.some((f) => f.includes('NO REVIEWER CONFIGURED'))).toBe(true);
+    const withReviewer: RunnerState = {
+      ...first.state,
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+    };
+    const second = await processDue(withReviewer, new Date(T0.getTime() + 2000), {
+      ...deps,
+      dispatchPrompt: async (a: RunnerAgent) => {
+        if (a.id === 'agent-reviewer') return 'APPROVE: routine code change.';
+        return 'Build step done.';
+      },
+    });
+    expect(second.state.approvals).toHaveLength(1);
+    expect(second.state.approvals[0].decidedBy).toBe('reviewer');
+    expect(second.state.jobs[0].status).toBe('done');
   });
 
   it('the Reviewer request carries completed stage outputs, so it judges the actual change', async () => {

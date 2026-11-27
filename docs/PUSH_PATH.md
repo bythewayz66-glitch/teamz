@@ -11,13 +11,14 @@ absolutely"). It is the only way the runner writes to a repo.
 - **Routine code/doc changes** go through the **Reviewer**: approve or
   deny, recorded with `decidedBy: 'reviewer'`. A push happens only
   under a live Reviewer approval for that job + push stage.
-- **Releases, public publishing, and destructive changes still route to
-  Jesse** — never to the Reviewer. The carve-outs in
-  `src/lib/governance.ts` (`isCarveOut`) are checked first, before the
-  Reviewer is ever asked. Pushing a routine commit to the team's own
-  repo is not a release and not a public announcement; it is the
-  working path for routine changes, which is why the push stage is
-  Reviewer-gated (`requiresReview`) rather than a carve-out.
+- **Releases, public publishing, and destructive changes are
+  high-stakes**: they still need the Reviewer's approval, with extra
+  scrutiny (`isHighStakes` in `src/lib/governance.ts`). There are no
+  carve-outs to anyone else — the Reviewer is the sole decision-maker
+  for these too. Pushing a routine commit to the team's own repo is
+  not a release and not a public announcement; it is the working path
+  for routine changes, which is why the push stage is Reviewer-gated
+  (`requiresReview`).
 - **No push without an approval on disk.** The runner persists state
   before a gated command stage runs (`onBeforeCommand`), and the push
   script re-checks the approval in `/var/lib/teamz-runner/state.json`
@@ -118,8 +119,8 @@ approval=<id> job=<id>`, or `NOTHING-TO-PUSH`, or
 `/var/lib/teamz-runner/patches/applied/`, the approval is consumed
 when the stage completes, and the document stage quotes the record.
 The approval record in state.json says who decided it
-(`decidedBy: 'reviewer'`), so an audit can tell a Reviewer approval
-from a Jesse approval.
+(`decidedBy: 'reviewer'`) — every approval is the Reviewer's; there is
+no other approver.
 
 ## What the push path deliberately cannot do
 
@@ -131,7 +132,9 @@ from a Jesse approval.
 - Push a big or destructive change: one file, ≤ 50 lines, no
   deletions, clean tree, `main` only, `HEAD == origin/main`.
 - Spend money, publish a release, or delete anything: those are
-  carve-outs and route to Jesse before the Reviewer is ever asked.
+  high-stakes and need the Reviewer's approval with extra scrutiny —
+  and the push script still refuses them outright (one file, ≤ 50
+  lines, no deletions).
 
 ## Sync state (Nov 26, 2026)
 
