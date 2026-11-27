@@ -637,3 +637,116 @@ describe('upstream error replies (Nov 27, 2026 — Pollinations out of credits)'
     }
   }, 70_000);
 });
+
+describe('native tool calls (Nov 27, 2026 — nemotron Triage could not repo_read)', () => {
+  it('extractToolArgs keeps the raw JSON for object-arg tools', () => {
+    const repoArgs = '{"file": "comics/the-z-corps/", "find": "README"}';
+    expect(endpoint.extractToolArgs(repoArgs, 'repo_read')).toBe(repoArgs);
+    expect(endpoint.extractToolArgs('{"jobId": "job-x", "file": "docs/a.md", "oldText": "a", "newText": "b"}', 'stage_patch')).toContain('"jobId": "job-x"');
+    expect(endpoint.extractToolArgs('{"what": "unassigned"}', 'room_read')).toBe('{"what": "unassigned"}');
+    expect(endpoint.extractToolArgs('{"url": "https://mem20.com/"}', 'fetch_url')).toBe('{"url": "https://mem20.com/"}');
+    expect(endpoint.extractToolArgs('{"agentId": "agent-x", "provider": "grexlabs"}', 'reassign_agent')).toContain('agent-x');
+  });
+
+  it('extractToolArgs still pulls the one string out for single-string tools', () => {
+    expect(endpoint.extractToolArgs('{"expression": "17 * 23"}', 'calculator')).toBe('17 * 23');
+    expect(endpoint.extractToolArgs('{"query": "mem20"}', 'web_search')).toBe('mem20');
+    expect(endpoint.extractToolArgs('{"term": "Paris"}', 'wikipedia')).toBe('Paris');
+    expect(endpoint.extractToolArgs('plain string', 'calculator')).toBe('plain string');
+    expect(endpoint.extractToolArgs('', 'repo_read')).toBe('');
+  });
+
+  it('extractReplyText converts a native repo_read call without mangling its args', () => {
+    const payload = {
+      choices: [{
+        message: {
+          tool_calls: [{ function: { name: 'repo_read', arguments: '{"file": "docs/series/cartoon/index.html"}' } }],
+          content: '',
+        },
+      }],
+    };
+    const action = JSON.parse(endpoint.extractReplyText(payload));
+    expect(action).toEqual({
+      action: 'tool',
+      tool: 'repo_read',
+      args: '{"file": "docs/series/cartoon/index.html"}',
+    });
+  });
+
+  it('parseAction stringifies object args instead of "[object Object]"', () => {
+    const parsed = endpoint.parseAction('{"action": "tool", "tool": "repo_read", "args": {"file": "docs/x.md"}}');
+    expect(parsed).toEqual({
+      action: 'tool',
+      tool: 'repo_read',
+      args: '{"file":"docs/x.md"}',
+    });
+    // String args are untouched.
+    expect(endpoint.parseAction('{"action": "tool", "tool": "calculator", "args": "17 * 23"}').args).toBe('17 * 23');
+  });
+
+  // The generic provider enforces a 5s gap between upstream calls, so
+  // the two-call loop needs a few seconds more than the default 5s.
+  it('a /chat dispatch can repo_read through a native tool call (the run-5 Triage path)', async () => {
+    // Route the dispatch through a throwaway generic provider so the
+    // test does not wait out Pollinations' 50s per-provider spacing.
+    // extractReplyText is provider-agnostic, so this covers the same
+    // code the live nemotron Triage call hit.
+    const registryPath = process.env.PROVIDER_REGISTRY_PATH as string;
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        providers: [{ id: 'test-provider', name: 'Test', model: 'test-model', baseUrl: 'https://example.com/v1/chat/completions', keyEnv: null }],
+        validationLog: [],
+      }),
+      'utf-8',
+    );
+    const toolCallPayload = JSON.stringify({
+      choices: [{
+        message: {
+          tool_calls: [{ function: { name: 'repo_read', arguments: '{"file": "docs/series/cartoon/index.html"}' } }],
+          content: '',
+        },
+      }],
+    });
+    const finalPayload = JSON.stringify({
+      choices: [{ message: { content: '{"action":"final","final":"The cartoon page says no episode has been produced yet."}' } }],
+    });
+    const realFetch = globalThis.fetch;
+    let upstreamCalls = 0;
+    const fetchMock = vi.fn(async (url: string, init?: unknown) => {
+      if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, init as RequestInit);
+      upstreamCalls += 1;
+      const payload = upstreamCalls === 1 ? toolCallPayload : finalPayload;
+      return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { server } = endpoint;
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      expect(port).toBeGreaterThan(0);
+      const res = await fetch(`http://127.0.0.1:${port}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent: { id: 'agent-native-test', name: 'Native Test', provider: 'test-provider', model: 'test-model', systemPrompt: 'You are Native Test.' },
+          messages: [{ role: 'user', content: 'Read docs/series/cartoon/index.html with repo_read and report what it says.' }],
+          channel: { id: 'conv-build-room' },
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.reply).toContain('no episode has been produced yet');
+      expect(upstreamCalls).toBe(2);
+      // The repo_read actually ran and succeeded (not "needs a JSON object").
+      const agentLog = readFileSync(join(dir, 'agent.log'), 'utf-8');
+      expect(agentLog).toContain('tool=repo_read');
+      expect(agentLog).toMatch(/tool=repo_read[^\n]*ok=true/);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      vi.unstubAllGlobals();
+      rmSync(registryPath, { force: true });
+    }
+  }, 15_000);
+});

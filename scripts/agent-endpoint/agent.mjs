@@ -1720,7 +1720,12 @@ export function parseAction(raw) {
     if (action === 'tool') {
       const tool = obj.tool;
       if (typeof tool === 'string' && tool.trim()) {
-        return { action: 'tool', tool: tool.trim(), args: String(obj.args ?? '') };
+        // Args are a string per the contract, but a model may emit an
+        // object instead — stringify it so repo_read et al. still get
+        // their JSON object instead of "[object Object]".
+        const rawArgs = obj.args ?? '';
+        const args = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs);
+        return { action: 'tool', tool: tool.trim(), args };
       }
     }
     if (action === 'final') {
@@ -1940,7 +1945,7 @@ export function extractReplyText(payload) {
     const fn = calls[0]?.function ?? {};
     const name = typeof fn.name === 'string' ? fn.name.trim() : '';
     if (name) {
-      return JSON.stringify({ action: 'tool', tool: name, args: extractToolArgs(fn.arguments) });
+      return JSON.stringify({ action: 'tool', tool: name, args: extractToolArgs(fn.arguments, name) });
     }
   }
   const content = message.content;
@@ -1949,13 +1954,37 @@ export function extractReplyText(payload) {
 }
 
 /**
- * A native tool call's arguments are a JSON string whose keys the model
- * invents ({"expression": "17 * 23"}, {"query": "..."}). Pull out the
- * one string the tool needs: a known key first, else the first string
- * value, else the raw JSON.
+ * Tools whose args are a JSON object (repo_read, stage_patch, room_read,
+ * create_automation, add_provider, reassign_agent, fetch_url): their run
+ * functions JSON.parse the args, so a native tool call must hand them the
+ * raw arguments JSON, not a single extracted string. Everything else
+ * (wikipedia, weather, calculator, web_search) takes one plain string.
  */
-export function extractToolArgs(argsRaw) {
+const OBJECT_ARG_TOOLS = new Set([
+  'repo_read',
+  'stage_patch',
+  'room_read',
+  'create_automation',
+  'add_provider',
+  'reassign_agent',
+  'fetch_url',
+]);
+
+/**
+ * A native tool call's arguments are a JSON string whose keys the model
+ * invents ({"expression": "17 * 23"}, {"query": "..."}). For a
+ * single-string tool, pull out the one string the tool needs: a known
+ * key first, else the first string value, else the raw JSON. For an
+ * object-arg tool, return the raw arguments JSON unchanged — reducing
+ * it to one string breaks the tool (Nov 27, 2026: nemotron's native
+ * repo_read call {"file": "comics/the-z-corps/", "find": "README"} was
+ * reduced to the string "comics/the-z-corps/", repo_read threw "needs a
+ * JSON object", and the Triage agent rambled itself to the iteration
+ * limit instead of reassigning).
+ */
+export function extractToolArgs(argsRaw, toolName) {
   if (typeof argsRaw !== 'string' || !argsRaw.trim()) return '';
+  if (OBJECT_ARG_TOOLS.has(toolName)) return argsRaw.trim();
   try {
     const parsed = JSON.parse(argsRaw);
     if (typeof parsed === 'string') return parsed;
