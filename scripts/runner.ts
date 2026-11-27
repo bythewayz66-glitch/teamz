@@ -356,8 +356,9 @@ async function main(): Promise<number> {
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 
-  // A tick can now run long: with the 50s inter-dispatch gap, the
-  // hourly batch drains over ~22 minutes. Ticks must never overlap —
+  // A tick can now run long: with the 15-minute inter-dispatch gap
+  // (Nov 27, 2026 fleet slowdown), the hourly batch drains over
+  // hours, not minutes. Ticks must never overlap —
   // a second tick loading the same state file while the first is still
   // dispatching could fire the same jobs twice — so a tick that finds
   // one already running just skips and logs it. Cron dedupe (lastRunAt
