@@ -184,10 +184,16 @@ def main():
         print(f"  {pid:<12} {cap:>6,}/day  load ~{load:>6,.0f}  headroom ~{cap - load:>6,.0f}{tag}{flag}")
     print()
     print("--- Comparison ---")
-    print(f"Model A (RPM scaling):      ~{max_a:.0f} agents")
-    print(f"Model B (daily capacity):   ~{max_b} agents (conservative) / ~{max_b_opt} (optimistic)")
+    print(f"Model A (RPM scaling):      ~{max_a:.0f} agents (conservative)")
+    print(f"Model B (daily capacity):   ~{max_b} agents (conservative) / ~{max_b_opt} (optimistic, liberal)")
     lo, hi = min(max_a, max_b), max(max_a, max_b_opt)
     print(f"Range across both models:   ~{lo:.0f} – {hi:.0f} agents")
+    # Jesse's rule: Model A is conservative, Model B is liberal, so the
+    # actual max agents used is halfway between the two sums.
+    actual_max = (max_a + max_b) / 2
+    print()
+    print(f"ACTUAL MAX AGENTS (used):   {(max_a + max_b):.0f} / 2 = {actual_max:.0f}")
+    print("  (halfway between Model A and Model B conservative)")
     if max_a < max_b:
         print("Model A is the binding one: per-minute throughput (RPM) binds")
         print("before the daily caps do. New agents should go to the")
