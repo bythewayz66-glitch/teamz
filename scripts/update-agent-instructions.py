@@ -12,6 +12,12 @@ Jesse's rules, baked into every agent's systemPrompt:
     Website Currency Agent, and Provider Researcher (verify-before-decide,
     stage-early/small-scope, list-issues + different-agent, room_read
     first, fetch_url for the live site, stranded-agent fixes).
+  - Nov 27, 2026 unstick job: WORKING DISCIPLINE for the 12 agents that
+    failed the Reviewer backlog (stage-early, small scope, verify-first,
+    search-before-declaring-missing, flag-don't-fill), PRICING_CATALOG for
+    the two pricing agents (the 15 real a-la-carte ids + 4 tiers, never
+    invent a SKU), and a temporary move of the Reviewer, Triage, and
+    Provider Researcher from flapping blockrun-free to apisfreellm.
 
 Usage:
   python3 scripts/update-agent-instructions.py [--live-state PATH]
@@ -52,6 +58,54 @@ MEM20_CONTEXT = (
     "Verify every claim against the live code, tree, and git history before acting on it."
 )
 
+# Working discipline for the agents that failed the Nov 27, 2026 backlog
+# jobs (tool-limit rambles, invented evidence, NO-CHANGE on a file that
+# exists, unverified claims). Appended to the implement agents that
+# produced those failures, so the same stage cannot fail the same way.
+WORKING_DISCIPLINE = (
+    "WORKING DISCIPLINE — the rules that keep a stage from failing the way the Nov 27 backlog jobs failed. "
+    "1. STAGE EARLY — if the work produces a repo change, stage the patch with stage_patch FIRST, before polishing "
+    "or writing the report. A stage that ends with no staged patch has produced nothing. "
+    "2. SMALL SCOPE — keep the stage small enough to finish inside 25 tool iterations: one file, one fix, one "
+    "verified claim at a time. If the job is bigger than one hunk, do the single most impactful hunk and list the "
+    "rest as follow-ups. "
+    "3. VERIFY FIRST — verify every claim against the live repo with repo_read before writing it into an output; "
+    "quote the file and line you read. Never assert a number, a path, or a licence you have not read yourself in "
+    "this run. "
+    "4. SEARCH BEFORE DECLARING MISSING — a file or claim is missing only after a repo-wide find and grep turn up "
+    "nothing; never declare it missing after checking one path. "
+    "5. FLAG, DON'T FILL — anything you could not verify gets flagged as unverified, never a plausible substitute. "
+    "6. For report jobs: write the report skeleton to the file first, then fill it in; keep the report short enough "
+    "to complete."
+)
+
+# Real catalog grounding for the two pricing agents (Nov 27, 2026 unstick
+# job). The pricing job failed because its design invented 12 SKU ids.
+# Source of truth: mem20shopz/mem20shopz/catalog.json on the live repo.
+PRICING_CATALOG = (
+    "PRICING_CATALOG — THE ONLY SKUs THAT EXIST. Source of truth: mem20shopz/mem20shopz/catalog.json on the live "
+    "repo at /opt/mem20. Before proposing or building ANY price, you MUST repo_read catalog.json and use ONLY the "
+    "ids you find there. ONLY these ids exist — never invent a SKU id; if an id is not in this list it does not "
+    "exist, and any price table containing an id outside this list is invalid and must be rejected, not patched "
+    "around. A-LA-CARTE SKUs (15, currently unpriced): foundation-single (Foundation, one_time), fleet-starter "
+    "(Fleet Starter, one_time), hosting-monthly (Managed Hosting, subscription), ops-audit (Operations Audit, "
+    "one_time), control-plane-setup (Control Plane Setup, one_time), oncall-monthly (On-Call, subscription), "
+    "memory-tiering (Memory Tiering, one_time), agent-fleet-build (Agent Fleet Build, one_time), "
+    "intelligence-monthly (Intelligence Retainer, subscription), asset-pipeline (Asset Pipeline, one_time), "
+    "game-vertical (Game Vertical, one_time), studio-monthly (Studio Retainer, subscription), migration "
+    "(Migration, one_time), training (Team Training, one_time), priority-support-monthly (Priority Support, "
+    "subscription). TIER SKUs (4, ALREADY PRICED — never propose for them): team $6,000/yr, business $18,000/yr, "
+    "scale $36,000/yr, enterprise $80,000/yr. RULES: 1. Only the 19 ids above exist. Never invent a SKU id. Ids "
+    "such as fleet-cluster, ops-incident-response, ops-ha-hardening, intel-audit, intel-model-tuning, "
+    "intel-custom-pipeline, creative-prompt-pack, creative-agent-design, creative-workflow-build, "
+    "support-advisory, support-dedicated, and support-enterprise-sla DO NOT EXIST and must never appear in a "
+    "price table. 2. Always repo_read catalog.json before proposing or building prices, and re-check every id and "
+    "kind against what it actually contains. 3. kind must match the catalog kind for each SKU exactly (one_time "
+    "or subscription). 4. Ground every price in the v3 house ladder (Team $6,000 / Business $18,000 / Scale "
+    "$36,000 / Enterprise $80,000 per year — see docs/pricing/PRICING_DECISION_2026-11-25.md) and the SKU's "
+    "scope. Never use $14,000 as a price — that is the blended ACV, a portfolio average, never a sellable price."
+)
+
 ROLE_BLOCKS = {
     "agent-reviewer": (
         "VERIFY BEFORE YOU DECIDE — you have a repo_read tool: use it. Before you approve or deny on any factual "
@@ -80,61 +134,75 @@ ROLE_BLOCKS = {
         "reassignment and the gate items that did not reach the room. Assign the work in the room by @mention; a denial that sits "
         "unassigned is a failure. You do not decide releases, spending, or public actions — the Reviewer does."
     ),
+    # Nov 27, 2026 unstick job: the fetch_url block above was already
+    # appended by the earlier fix and lives in this agent's prompt; the
+    # new block below is what gets appended now (marker must be new).
     "agent-website-currency-agent": (
-        "READ THE LIVE SITE with fetch_url — never judge the site from the repo copy alone. Fetch https://mem20.com/ and the docs pages "
-        "you check, and compare what the live site actually shows against the live surface (527 tools / 135 domains, v4.0.0). "
-        "repo_read only reads the repo; the site is what users see."
+        "VERIFY PATHS BEFORE YOU CLAIM — before you write that a path does or does not exist, repo_read the file "
+        "in this run and quote what you found. A homepage card, a series page, or any repo path is real only if "
+        "you read it. Never deny a path exists on the strength of a doc or a guess."
     ),
+    # Nov 27, 2026 unstick job: the STRANDED block above was already
+    # appended by the earlier fix and lives in this agent's prompt; the
+    # new block below is what gets appended now (marker must be new).
+    # Pollinations is OUT OF CREDITS and blockrun-free is flapping, so
+    # the old "Prefer pollinations, blockrun-free, or grexlabs" is stale.
     "agent-provider-researcher": (
-        "STRANDED AGENTS: an agent with no provider — or a provider the registry does not know — cannot run and never rate-limits, "
-        "so rescue never sees it. When a sweep hands you stranded agents, reassign EACH one to a healthy provider with reassign_agent. "
-        "Prefer pollinations, blockrun-free, or grexlabs. Never assign kilo (returns empty content), gemini while it is quota-exhausted, "
-        "or any provider that is backed off or known dead."
+        "PROVIDER HEALTH — Nov 27, 2026: pollinations is OUT OF CREDITS (do not assign it), blockrun-free is "
+        "flapping with free-model-capacity 429s, gemini and groq are quota-exhausted until their daily reset. "
+        "Prefer apisfreellm and grexlabs until new providers are wired in. Never assign a provider that is "
+        "backed off or known dead; a reassignment to a dead provider is worse than no reassignment."
+    ),
+    # Nov 27, 2026 unstick job: the agents that failed the Reviewer
+    # backlog, each with the discipline that prevents its failure mode.
+    # Pricing agents get the catalog block first, then the discipline.
+    "agent-pricing-strategist": PRICING_CATALOG + "\n\n" + WORKING_DISCIPLINE,
+    "agent-billing-support": PRICING_CATALOG + "\n\n" + WORKING_DISCIPLINE,
+    "agent-sales-agent": WORKING_DISCIPLINE,
+    "agent-customer-success": WORKING_DISCIPLINE,
+    "agent-marketing-agent": WORKING_DISCIPLINE,
+    "agent-partnership-scout": WORKING_DISCIPLINE,
+    "agent-legal-reviewer": WORKING_DISCIPLINE + (
+        " QUOTE WITH LINE — every finding must quote the exact wording and the file and line you read in this "
+        "run. If the central claim is not in the file, say so and pivot; never invent the evidence."
+    ),
+    "agent-competitor-analyst": WORKING_DISCIPLINE + (
+        " OFFICIAL SOURCES ONLY — competitor prices and features come only from the competitor's own public docs "
+        "or pricing pages, cited with URL and access date. Secondary blogs are not evidence."
+    ),
+    "agent-performance-engineer": WORKING_DISCIPLINE + (
+        " MEASURE ONLY WHAT YOU RUN — report only timings you measured yourself in this run, with the exact "
+        "command, host, python version, and timestamp for each number. A report with no command lines is not a "
+        "report."
+    ),
+    "agent-database-engineer": WORKING_DISCIPLINE + (
+        " PROVE IT BEFORE AND AFTER — reproduce the defect with an execution test in /tmp against a copy of the "
+        "code, then show the same test passing after the fix. Never edit the repo to test."
+    ),
+    "agent-api-designer": WORKING_DISCIPLINE + (
+        " A WHEEL LISTING IS NOT PROOF — verify a packaging fix by building the wheel, installing it, and "
+        "running the repo's own verify script against the installed files. Only a booting installed package "
+        "verifies the fix."
     ),
 }
 
-# Live provider moves (Nov 27, 2026): off dead/degraded providers onto
-# healthy ones. Gemini stays for the 35 agents already on it (quota
-# resets daily; rescue covers 429s). Core agents + the 9 providerless
-# agents + the 13 Kilo agents + the BlockRun agent move now.
-# Model is the registry model for the target provider.
+# Live provider moves (Nov 27, 2026 unstick job): temporary only.
+# The Reviewer, Triage, and Provider Researcher are on blockrun-free,
+# which is flapping with "Free model capacity exhausted" 429s — the
+# Reviewer cannot answer and the queue cannot drain. apisfreellm answered
+# the repo-verification probe live (Nov 27 ~16:35 MST), so the three gate
+# agents move there until a stronger home is wired (OpenRouter/DeepInfra
+# via the $20 split ~18:10 MST, or the keys-pull). The Orchestrator and
+# Prompt Engineer are already on apisfreellm; no move needed.
+# The Nov 27 (earlier fix) pollinations moves were REMOVED from this dict:
+# pollinations is OUT OF CREDITS, those moves already applied live, and
+# re-emitting them would move agents back onto a dead provider. The 11
+# agents still on pollinations are the Provider Researcher's rescue work,
+# not this script's.
 PROVIDER_MOVES = {
-    # Core agents off Gemini (quota-exhausted for triage): -> pollinations
-    "agent-reviewer": ("pollinations", "openai"),
-    "agent-orchestrator": ("pollinations", "openai"),
-    "agent-triage": ("pollinations", "openai"),
-    "agent-provider-researcher": ("pollinations", "openai"),
-    "agent-drift-monitor": ("pollinations", "openai"),
-    "agent-website-currency-agent": ("pollinations", "openai"),
-    # The 10 providerless agents -> pollinations (explicit)
-    "agent-writing-assistant": ("pollinations", "openai"),
-    "agent-prompt-engineer": ("pollinations", "openai"),
-    "agent-minimal-change-engineer": ("pollinations", "openai"),
-    "agent-git-workflow-master": ("pollinations", "openai"),
-    "agent-codebase-onboarding-engineer": ("pollinations", "openai"),
-    "agent-application-security-engineer": ("pollinations", "openai"),
-    "agent-reality-checker": ("pollinations", "openai"),
-    "agent-senior-project-manager": ("pollinations", "openai"),
-    "agent-keymaster": ("pollinations", "openai"),
-    "agent-ceo-assistant": ("pollinations", "openai"),
-    # Kilo agents (empty content) -> pollinations
-    "agent-ai-engineer": ("pollinations", "openai"),
-    "agent-atlas": ("pollinations", "openai"),
-    "agent-scout": ("pollinations", "openai"),
-    "agent-release-manager": ("pollinations", "openai"),
-    "agent-community-manager": ("pollinations", "openai"),
-    "agent-tutorial-creator": ("pollinations", "openai"),
-    "agent-vendor-manager": ("pollinations", "openai"),
-    # Kilo agents -> blockrun-free (nvidia/nemotron-3.5-lightning)
-    "agent-pixel": ("blockrun-free", "nvidia/nemotron-3.5-lightning"),
-    "agent-sage": ("blockrun-free", "nvidia/nemotron-3.5-lightning"),
-    "agent-newsletter-writer": ("blockrun-free", "nvidia/nemotron-3.5-lightning"),
-    # Kilo agents -> grexlabs (auto:free)
-    "agent-changelog-writer": ("grexlabs", "auto:free"),
-    "agent-onboarding-engineer": ("grexlabs", "auto:free"),
-    "agent-video-producer": ("grexlabs", "auto:free"),
-    # BlockRun (429) -> blockrun-free
-    "agent-content-creator": ("blockrun-free", "nvidia/nemotron-3.5-lightning"),
+    "agent-reviewer": ("apisfreellm", "free-ai"),
+    "agent-triage": ("apisfreellm", "free-ai"),
+    "agent-provider-researcher": ("apisfreellm", "free-ai"),
 }
 
 JSON_FILES = [

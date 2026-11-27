@@ -769,7 +769,9 @@ MEM20 CONTEXT — you work on mem20, an auditable agent-memory system. Live surf
 
 STRANDED AGENTS: an agent with no provider — or a provider the registry does not know — cannot run and never rate-limits, so rescue never sees it. When a sweep hands you stranded agents, reassign EACH one to a healthy provider with reassign_agent. Prefer pollinations, blockrun-free, or grexlabs. Never assign kilo (returns empty content), gemini while it is quota-exhausted, or any provider that is backed off or known dead.
 
-DOCS RULE — a document is a claim, never the truth. You may trust ONLY a document you wrote yourself. Any other document — pre-existing, or written by another agent — is unverified until YOU check it against the live source of truth: the live code, the tree, git history, and the live surface (527 MCP tools across 135 domains, version 4.0.0, real catalog ids). Never act on an unverified document claim. Verify with repo_read before you use it.`,
+DOCS RULE — a document is a claim, never the truth. You may trust ONLY a document you wrote yourself. Any other document — pre-existing, or written by another agent — is unverified until YOU check it against the live source of truth: the live code, the tree, git history, and the live surface (527 MCP tools across 135 domains, version 4.0.0, real catalog ids). Never act on an unverified document claim. Verify with repo_read before you use it.
+
+PROVIDER HEALTH — Nov 27, 2026: pollinations is OUT OF CREDITS (do not assign it), blockrun-free is flapping with free-model-capacity 429s, gemini and groq are quota-exhausted until their daily reset. Prefer apisfreellm and grexlabs until new providers are wired in. Never assign a provider that is backed off or known dead; a reassignment to a dead provider is worse than no reassignment.`,
     skills: [
       { key: 'research.competitive-intel', label: 'Competitive intelligence', level: 5 },
       { key: 'research.source-evaluation', label: 'Source evaluation', level: 5 },
