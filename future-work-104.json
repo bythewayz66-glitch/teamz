@@ -1,1 +1,645 @@
-[{"agentId":"agent-mem20-assistant","prompt":"Re-run the mem20 drift audit against the live surface at /opt/mem20 and the repo, comparing your new counts (tools/domains) against your earlier drift_audit.py baseline. List every item that is now fixed, every item still drifting, and any new drift, with file and count evidence for each. Deliver an updated drift report file plus a staged patch for any small drift correction you can verify.","title":"Re-run the drift audit after the first fixes land","type":"job"},{"agentId":"agent-daily-planner","prompt":"Review the past week's daily plans against what actually happened in git history and GitHub issues #456-#465, and score each day's plan as met, partially met, or missed with evidence. Identify the three recurring reasons plans slipped and propose one concrete change to the daily planning format. Deliver the retrospective as a written report file.","title":"Weekly plan retrospective: plans vs actual progress","type":"job"},{"agentId":"agent-research-assistant","prompt":"Research the Phase 3 goal of integrating the mem20*z systems directly into the main runtime while preserving every feature, using only the real repo structure, the subsystem code, and git history as evidence. Compare at least two integration approaches (gradual merge vs runtime adapter) with pros, cons, and risks for each. Deliver a research report file with a recommendation for the Reviewer, citing every file you relied on.","title":"Research the Phase 3 mem20*z integration options","type":"job"},{"agentId":"agent-writing-assistant","prompt":"Draft landing-page copy for docs.mem20.com grounded only in the verified live surface (527 tools / 135 domains, v4.0.0) and the corrected docs, with each claim citing its source file or live count. Flag any existing landing claim you cannot verify and do not repeat the 272-tool figure. Deliver the draft as a written file with a source note per claim.","title":"Draft verified docs.mem20.com landing copy","type":"job"},{"agentId":"agent-code-reviewer","prompt":"Review the staged patches for GitHub issues #456 (sys.path store import), #457 (unauthenticated 0.0.0.0 HTTP transport), and #458 (wheel ships no mcp/ directory) once they exist, checking each patch against the real code, the issue, and the rule that no feature is removed or faked. For each patch record approve, request-changes, or reject with file/line reasons. Deliver the review as a written report file for the Reviewer.","title":"Review the next staged patch batch for issues #456-#458","type":"job"},{"agentId":"agent-qa-tester","prompt":"Build a regression test suite covering the fixes for issues #456, #457, and #458, with at least one test per fix that fails on the old code and passes on the fixed code. Run the suite in the repo sandbox and record the actual pass/fail counts and output. Deliver the test file as a staged patch plus a written test report with the observed results.","title":"Regression test suite for the #456-#458 fixes","type":"job"},{"agentId":"agent-bug-analysis-agent","prompt":"Triage the Backend Architect's remaining findings beyond the P0 blockers (the 5 P1 and 9 P2 findings), verifying each one against the current code and git history and re-scoring it if the code has changed. For each finding state whether it is still valid, what file it affects, and the concrete next fix step. Deliver a written triage report file grouped by severity.","title":"Triage the remaining Backend Architect P1/P2 findings","type":"job"},{"agentId":"agent-frontend-developer","prompt":"Fix the stale numbers on the mem20 homepage and docs/index.html (any page still claiming 272 tools or 487/129 counts), verifying the correct 527/135 figures against the live surface yourself. Apply the SEO Specialist's verified title/meta fixes and re-check all 24 homepage links return 200. Deliver a staged patch plus a written verification report listing each page fixed and its before/after values.","title":"Fix the homepage stale numbers and verify the SEO patches","type":"job"},{"agentId":"agent-backend-architect","prompt":"Produce an architecture design document for the mem20core vs mem20corez boundary (distinct components, never merged) and how the Phase 3 integration of the mem20*z systems would respect that boundary, grounded in the actual imports and module structure you read. Include a component diagram in text form, the invariants each component must keep, and three risks with mitigations. Deliver the design as a written file for the Reviewer.","title":"Architecture design for the mem20core/corez boundary and Phase 3","type":"job"},{"agentId":"agent-data-engineer","prompt":"Re-audit surface.json against the live 527/135 surface and clear the 4 files previously found drifted (two CI workflow pins still at 487/129 and two docs), verifying each one yourself against /opt/mem20 and git history. Produce a staged patch correcting every drifted value you can verify plus a written report showing the live count, the old value, and the new value for each file. Note that workflow-file pushes remain blocked and the patch is staged, not pushed.","title":"Re-audit surface.json and clear the 4 drifted files","type":"job"},{"agentId":"agent-ai-engineer","prompt":"Re-audit the grounded-vs-simulated separation in the mem20 codebase after the Test Automation Engineer's CI guard is staged, checking each of your earlier 8 leaks (2 critical, 3 high, 3 medium from issue #460) to see which are closed, which remain, and whether any new leak appeared. Record each leak with file/line evidence and the guard test that covers it or the gap that remains. Deliver an updated audit report file.","title":"Re-audit grounded/simulated separation after the CI guard lands","type":"job"},{"agentId":"agent-prompt-engineer","prompt":"Audit the system prompts of all 104 Teamz agents for stale or contradictory claims (272 tools, 487/129, 485/133, or any count other than the live 527/135), verifying the live figures against /opt/mem20 yourself. List every stale prompt with agent id, the exact wording, and the corrected wording. Deliver a written audit report plus a staged patch correcting the smallest verifiable errors.","title":"Audit all 104 agent prompts for stale counts and claims","type":"job"},{"agentId":"agent-minimal-change-engineer","prompt":"Review the next batch of staged patches (issues #456-#465 fixes and the finance-model correction) and measure each one for minimal change: lines added/removed, files touched, and whether any change goes beyond the fix it claims. Flag any patch that changes more than its issue requires, with file/line evidence. Deliver a written review report with a per-patch change table for the Reviewer.","title":"Minimal-change review of the next staged patch batch","type":"job"},{"agentId":"agent-git-workflow-master","prompt":"Prepare the branch and pull-request plan for the three workflow files stuck in local commit ccace2a (issue #464: pr-gate preflight job plus workflow pins now 527/135), ready to execute once the Muse GitHub App gains the workflows permission or Jesse applies the files. Verify the prepared pr-gate-with-preflight.yml at ~/workspace/your_files/pr-gate-with-preflight.yml against the live surface and list each file, its intended change, and the exact push steps. Deliver the plan as a written file; do not attempt a push.","title":"Branch and PR plan for the stuck workflow files","type":"job"},{"agentId":"agent-codebase-onboarding-engineer","prompt":"Write an onboarding map for a new Teamz agent joining mem20: the 135 domains grouped by area, the key files per group, the canonical root AGENTS.md rules, and the three subsystems with no domain.py flagged as not-yet-working. Verify every domain and file reference against the real repo tree. Deliver the map as a written file that a new agent can follow without asking for directions.","title":"Onboarding map for new Teamz agents across 135 domains","type":"job"},{"agentId":"agent-technical-writer","prompt":"Rewrite the mem20 README from a fresh verified snapshot of the live surface (527 tools / 135 domains, v4.0.0), correcting the lying claims you previously found in the README and the other four docs, with each corrected claim citing its verified source. Do not carry over any claim you cannot verify in code or tree. Deliver the revised README as a staged patch plus a change log listing each claim changed.","title":"Rewrite the README from a verified v4.0.0 snapshot","type":"job"},{"agentId":"agent-application-security-engineer","prompt":"Build a threat model for the shop.mem20.com checkout (pricing tiers Team $6k / Business $18k / Scale $36k / Enterprise $80k, Stripe) based on the real shop code, configs, and the known unauthenticated-transport finding in issue #457. List each threat with the asset, the attack path grounded in real code or config, its severity, and a concrete mitigation. Deliver the threat model as a written report file for the Reviewer.","title":"Threat model for the shop.mem20.com Stripe checkout","type":"job"},{"agentId":"agent-product-researcher","prompt":"Synthesise the Competitor Analyst's baseline, the Market Researcher's landscape report, and the Feedback Analyst's triaged findings into one product-research synthesis: the three strongest evidence-backed user needs, the three biggest gaps, and which repo issues or docs each one maps to. Use only findings you can cite by issue number or file; do not invent user quotes. Deliver the synthesis as a written report file.","title":"Synthesise user research from competitor and feedback evidence","type":"job"},{"agentId":"agent-analytics-reporter","prompt":"Produce a fix-velocity analytics report from git history and GitHub issues #456-#465: how many of the 10 issues are fixed, staged, or still open, how many of the 19 empty stubs remain, and how the drift counts (docs, finance model, workflow pins) have moved since the v4.0.0 baseline. Cite a commit, file, or issue for every number. Deliver the report as a written file with a summary table.","title":"Fix-velocity report: issues closed, stubs remaining, drift trend","type":"job"},{"agentId":"agent-reading-companion","prompt":"Produce a guided reading companion for the mem20 root AGENTS.md (canonical) and SITEMAP.md, summarising each section in plain language, flagging the SITEMAP fix that now points at the repo-root AGENTS.md, and listing five questions a new reader should be able to answer after reading them. Verify every summary point against the actual files. Deliver the companion as a written file.","title":"Guided reading companion for root AGENTS.md and the SITEMAP","type":"job"},{"agentId":"agent-reality-checker","prompt":"Reality-check the Marketing Agent's v6 launch copy (issue #462) claim by claim against the live surface at /opt/mem20, marking each claim verified, false, or unverifiable with file or count evidence. Pay special attention to tool counts, tier prices, and any feature drawn from the 19 empty stubs. Deliver a written verdict report with a claim table for the Reviewer.","title":"Reality-check the v6 launch copy against the live surface","type":"job"},{"agentId":"agent-content-creator","prompt":"Write three short blog posts about mem20 v4.0.0 drawn only from the Changelog Writer's verified changelog entries (commits, lock re-pin 891cc09, tools_preflight ROOT fix 9ede3312), each post citing the commit or file behind its claims. Include an honest paragraph in each post about what is still unfinished. Deliver the three posts as a written file ready for Reviewer approval.","title":"Three verified blog posts from the v4.0.0 changelog","type":"job"},{"agentId":"agent-meeting-notes-specialist","prompt":"Create a decision-log template for Reviewer meetings (decision, options considered, evidence cited, who decided, date) and use it to draft the agenda and notes skeleton for the next Reviewer decision meeting, covering the starlette cap decision, the stuck workflow files, and the first stub implementations. Base every agenda item on a real open issue or staged patch. Deliver the template and agenda as a written file.","title":"Decision-log template and notes for the next Reviewer meeting","type":"job"},{"agentId":"agent-ceo-assistant","prompt":"Draft a one-page weekly executive summary for the Reviewer covering the state of mem20: live surface counts re-verified, issues #456-#465 status, stubs remaining, drift status, and the three decisions awaiting the Reviewer, each with its evidence source. Use only numbers you verify against the repo or live system. Deliver the summary as a written file.","title":"Weekly executive summary for the Reviewer","type":"job"},{"agentId":"agent-senior-project-manager","prompt":"Build a project plan tracking the future work of all 104 Teamz agents: group the future tasks by workstream (drift/0% drift, stubs, subsystems, docs, shop, Z Corps), list dependencies between tasks (for example the CI guard before the AI Engineer re-audit), and flag any task blocked by the workflows permission or the starlette decision. Deliver the plan as a written file with a dependency table.","title":"Project plan tracking all 104 agents' future work","type":"job"},{"agentId":"agent-personal-growth-mentor","prompt":"Assess skill gaps across the 104 Teamz agents based on their assigned future work and the mem20 open items: which roles lack a clear next pipeline step, which tasks depend on a skill no agent currently owns, and what three capabilities the team most needs next. Ground every gap in a real task or open issue, not in speculation. Deliver the assessment as a written report file.","title":"Skill-gap assessment for the 104 Teamz agents","type":"job"},{"agentId":"agent-reviewer","prompt":"Audit your own decision log as Reviewer: list every decision you have made so far, the evidence each one rested on, and any decision that later evidence contradicts, with a correction recommendation for each. Then review the v4.0.1 release candidate scope (the fixed issues #456-#458 and the corrected finance model) and record an approve, approve-with-conditions, or reject verdict per item with reasons. Deliver the audit and verdicts as a written decision report; do not implement any agent's work yourself.","title":"Audit the Reviewer's own decision log and review the v4.0.1 candidate","type":"job"},{"agentId":"agent-orchestrator","prompt":"Produce a coordination plan for dispatching all 104 future-work tasks in dependency order: which tasks can run in parallel, which must wait (for example stub implementations after the Data Annotator's inventory, re-audits after the CI guard), and how dispatch will be sequenced across the Build Room without overloading any agent. Include a dispatch-order table and a rule for what happens when a task is blocked. Deliver the plan as a written file; do not implement any agent's task yourself.","title":"Coordination plan for dispatching the 104 future-work tasks","type":"job"},{"agentId":"agent-provider-researcher","prompt":"Research OVH as the rescue-only fallback provider for mem20: the OVH services that could host the mem20 runtime if the primary host fails, their publicly listed prices, and the steps to restore the live 527-tool surface there. Compare at least two OVH options and one alternative provider on price, restore effort, and risk, citing public pricing pages with URLs and dates. Deliver the comparison as a written report file; do not touch mem20 code.","title":"OVH rescue-only fallback research and cost comparison","type":"job"},{"agentId":"agent-keymaster","prompt":"Produce a key inventory for mem20 listing each credential or API key by name and purpose only (for example the Pollinations key, model-provider keys, Stripe keys) with where each is referenced in config, and a rotation schedule naming which keys are due for rotation and in what order. Never write any secret value, token, or key material into the report or any file. Deliver the inventory and rotation plan as a written report file for the Reviewer.","title":"Key inventory and rotation plan (names only, no secrets)","type":"job"},{"agentId":"agent-atlas","prompt":"Update the mem20 atlas (the map of the system) to reflect the first round of drift fixes: corrected counts in surface.json, inputs.json, and workflow pins, the status of the 3 subsystems with no domain.py, and the 19 empty stubs with their current state. Verify every entry against the real repo tree and live surface. Deliver the updated atlas as a written file with a change log against the previous version.","title":"Update the mem20 atlas after the first drift fixes","type":"job"},{"agentId":"agent-scout","prompt":"Scout five additional integration targets for mem20 beyond the Partnership Scout's first five, each a real named product or platform with a public integration surface you can cite by URL. For each, record what mem20 would gain, what the integration would require from the real mem20 code, and one risk. Deliver the scouting report as a written file with a source list.","title":"Scout the next 5 integration targets beyond the first list","type":"job"},{"agentId":"agent-pixel","prompt":"Produce the visual brief for Z Corps Episode 2: character sheets for the returning characters (including Muse, blue hair with a pink streak, black dress, small square glasses, and her robotic dachshund Playto) with their established looks from Episode 1, plus the new shots and settings Episode 2 needs. Base every design note on the Episode 1 clips and the series bible at ~/workspace/your_files/z-corps-cartoon-series-bible.md. Deliver the brief as a written file for the Video Producer.","title":"Z Corps Episode 2 character sheets and visual brief","type":"job"},{"agentId":"agent-sage","prompt":"Critique the Roadmap Planner's roadmap to 0% drift and the Phase 3 integration plan: test each sequenced item for a missing dependency, an unverifiable done-criterion, or a claim that contradicts the live repo, citing the file or issue that proves the problem. List the three weakest items with a concrete repair for each. Deliver the critique as a written report file for the Reviewer.","title":"Critique the roadmap to 0% drift and Phase 3","type":"job"},{"agentId":"agent-pricing-strategist","prompt":"Re-price the mem20 tiers (Team $6k / Business $18k / Scale $36k / Enterprise $80k) from the corrected finance model inputs, once the Pricing Strategist's own audit and the Finance Analyst's reconciliation have landed, verifying the corrected 527/135 counts against the live surface yourself. Show the arithmetic for each tier and flag any tier whose price no longer matches its corrected cost basis. Deliver a pricing proposal report for the Reviewer; do not publish new prices.","title":"Re-price the tiers from the corrected finance model","type":"job"},{"agentId":"agent-sales-agent","prompt":"Write a sales FAQ and objection-handling document for mem20 using only claims verified in your one-pager and the live surface, with each answer citing its source file or tool count. Cover at least eight questions, including the honest answers for the 19 empty stubs, the 3 subsystems with no domain.py, and the starlette cap conflict. Deliver the document as a written file ready for Reviewer approval.","title":"Verified sales FAQ and objection-handling document","type":"job"},{"agentId":"agent-customer-success","prompt":"Fix the top 3 onboarding/support gaps from your baseline customer-success audit: produce staged patches for each fix, verifying every corrected instruction against the real files, commands, and live surface. Re-run the three fixed instructions yourself and record whether each now works. Deliver the staged patches plus a written verification report listing each gap, its fix, and its re-test result.","title":"Fix the top 3 onboarding gaps from your audit","type":"job"},{"agentId":"agent-marketing-agent","prompt":"Produce the v6.1 update to the mem20 launch copy, revising any number or capability claim that changed when the finance model was corrected from 485/133 to the live 527/135, and re-verifying every claim against a fresh snapshot from /opt/mem20. Strike any claim you cannot verify and log each change with its old wording and verified source. Deliver the revised copy as a written file with a change log.","title":"v6.1 launch copy update after the finance model correction","type":"job"},{"agentId":"agent-seo-specialist","prompt":"Re-audit SEO for docs.mem20.com and docs/index.html after the Documentation Engineer's 05-complete-tools-reference expansion, checking titles, meta descriptions, headings, and internal links on the newly covered tools and the pages that previously claimed stale counts. Produce a staged patch for the title/meta fixes you can verify plus a written SEO report listing each page and issue with file and line.","title":"SEO fixes for docs.mem20.com after the 05-reference expansion","type":"job"},{"agentId":"agent-competitor-analyst","prompt":"Deep-dive the strongest competitor from your baseline report: read its public docs and repo to document its memory model, tool surface, and grounded-vs-simulated handling in detail, then compare each point against mem20's verified live surface with file or count evidence. Conclude with two evidence-backed areas where mem20 should respond and one where it should not. Deliver the deep-dive as a written report file with a source list.","title":"Deep dive: top competitor's memory model vs mem20","type":"job"},{"agentId":"agent-partnership-scout","prompt":"Write outreach briefs for the top two partnership targets from your earlier report of five named targets: for each, a one-page brief stating what mem20 offers (verified claims only), what mem20 asks for, the integration point in the real mem20 code, and the next step. Do not send any outreach or invent a reply; the briefs are the artifact for the Reviewer to approve. Deliver both briefs as a written file.","title":"Outreach briefs for the top 2 partnership targets","type":"job"},{"agentId":"agent-investor-relations","prompt":"Update your investor brief with the outcome of the starlette cap decision (fastapi 0.165.0 + starlette 1.10.0 migration staged or rejected) and the current status of issues #456-#465, re-verifying every number against /opt/mem20 and the repo. Keep the known open risks honest and update the sourced numbers table with the new values and their sources. Deliver the updated brief as a written report file.","title":"Updated investor brief after the starlette decision","type":"job"},{"agentId":"agent-legal-reviewer","prompt":"Review the shop.mem20.com terms, pricing pages, and Stripe-adjacent claims for inaccurate statements, missing disclosures, and risky wording, checking each price and tier claim against the corrected finance model and the live surface. Produce a written report listing each finding with its source, the exact wording at issue, why it is a risk, and the corrected wording you recommend. This is a findings report for the Reviewer, not legal advice.","title":"Legal-accuracy review of shop.mem20.com terms and pricing pages","type":"job"},{"agentId":"agent-billing-support","prompt":"Write a billing FAQ and tier comparison table for mem20 (Team $6k / Business $18k / Scale $36k / Enterprise $80k) using only prices and counts you verify against pricing/README.md, the corrected finance model, and the live surface. Flag any tier detail that still needs a Reviewer decision before publication. Deliver the FAQ and table as a written file plus a staged patch correcting any billing claim your earlier audit found false.","title":"Verified billing FAQ and tier comparison table","type":"job"},{"agentId":"agent-performance-engineer","prompt":"Optimise the single slowest area from your baseline performance audit of the live mem20 surface, producing a staged patch with the change and a re-measurement run using the same commands, environment, and timestamps method as the baseline. Report the before and after timings in a table and state plainly if the optimisation did not help. Deliver the staged patch plus a written performance report.","title":"Optimise the slowest area from your baseline audit","type":"job"},{"agentId":"agent-database-engineer","prompt":"After your fix for issue #456 (sys.path store import), add regression tests that fail on the old import and pass on the fixed one, run them, and audit the rest of the repo for other sys.path imports with the same problem, listing each with file/line. Produce a staged patch containing the tests and any additional verified import fixes plus a written report of the test output you actually observed.","title":"Regression tests for the #456 fix and audit of other sys.path imports","type":"job"},{"agentId":"agent-devops-engineer","prompt":"Wire tools_preflight.py (gates G1-G5) into CI as a staged pr-gate job, building on the prepared pr-gate-with-preflight.yml at ~/workspace/your_files/pr-gate-with-preflight.yml and verifying the gate passes locally first. Record the gate output you observed and state plainly in your report that workflow-file pushes are blocked (Muse GitHub App lacks workflows permission) so the patch is staged for the Reviewer, not pushed. Deliver the staged patch plus a written verification report.","title":"Wire tools_preflight.py into CI as a staged pr-gate job","type":"job"},{"agentId":"agent-security-auditor","prompt":"Each month, re-sweep the mem20 codebase for security issues: the HTTP transport binding and auth, the store import paths, and any new unauthenticated endpoint or exposed secret reference, verifying each finding in the actual code with file/line evidence. Produce a monthly security report listing new findings, the status of issue #457, and the verification check run for each. Escalate any critical finding to the Reviewer in the report.","schedule":"0 8 15 * *","title":"Monthly security sweep of the mem20 transport and store","type":"cron"},{"agentId":"agent-test-automation-engineer","prompt":"Expand the CI guard for grounded-vs-simulated separation to cover all 8 leaks the AI Engineer found (2 critical, 3 high, 3 medium, issue #460), with one test per leak that fails on the leaking code and passes once it is fixed. Run the full guard suite and record the actual pass/fail counts. Deliver a staged patch with the new tests plus a written test report showing which leaks are now guarded and which still lack a fix.","title":"Expand the CI guard to cover all 8 grounded/simulated leaks","type":"job"},{"agentId":"agent-documentation-engineer","prompt":"Complete the next full domain batch in docs 05-complete-tools-reference beyond the domain you covered first, verifying each tool entry against the live 527-tool surface yourself and recording the new coverage count (tools covered out of 527) and the domains still missing. Produce a staged patch with the completed entries plus a written coverage report stating exactly how many tools are now covered and which domains remain.","title":"Complete the next domain batch in the 05-reference","type":"job"},{"agentId":"agent-api-designer","prompt":"Audit API consistency across the live MCP surface (527 tools / 135 domains): check naming, error handling, and description accuracy on a sample of at least 20 tools from different domains, verifying each against the real code. Then draft a v4.1 API change spec listing the inconsistencies worth fixing, each with file evidence and a proposed change. Deliver the audit and spec as a written report file.","title":"API consistency audit across the MCP surface and v4.1 spec","type":"job"},{"agentId":"agent-integration-engineer","prompt":"Build a real domain.py for mem20skillmemorytransferz, the second of the 3 subsystems with no domain.py, following the pattern of the working domain.py you built for mem20sensorymemoryingestz and the subsystem's own code and doctor/status tool contracts. Stage a patch containing the real implementation (no stub, no fake success path) and a report proving its status/doctor tools now succeed, with the exact check you ran. If it is not yet implementable, stage only what is proven and say what remains.","title":"Real domain.py for mem20skillmemorytransferz","type":"job"},{"agentId":"agent-migration-engineer","prompt":"Verify your staged starlette/fastapi migration (fastapi 0.165.0 + starlette 1.10.0, lifting the <0.47 cap) in a sandbox install: install the new pins, run the test suite and the tools_preflight.py gates, and record the actual pass/fail output and any incompatibility you find. Do not touch the live /opt/mem20 server. Deliver a written migration verification report with the observed results and a go/no-go recommendation for the Reviewer.","title":"Verify the starlette/fastapi migration in a sandbox","type":"job"},{"agentId":"agent-release-manager","prompt":"Build the v4.0.1 release plan from the issues fixed since v4.0.0 (issues #456-#458 and the corrected finance model), listing each included fix with its commit or staged patch, the verification evidence for it, and any item still blocked (stuck workflow files, starlette decision). Produce a written release checklist stating for each item whether it is verified done, staged, or blocked and by what, with file/commit evidence.","title":"v4.0.1 release plan from the fixed issues","type":"job"},{"agentId":"agent-drift-monitor","prompt":"Each week, produce a drift trend report: compare this week's live surface counts against the previous week's drift reports and against surface.json, inputs.json, workflow pins, and docs counts, and chart which sources are converging toward 0% drift and which are regressing. List each source, its claimed count, the live count, and the week-on-week change with the exact files checked. Escalate any new drift to the Reviewer in the report.","schedule":"0 9 * * 1","title":"Weekly drift trend report","type":"cron"},{"agentId":"agent-usage-analyst","prompt":"Each week, produce a usage trend report from real evidence available in the repo and live system (logs, surface.json, git activity, and tool-call records you can actually read, citing each source), showing which domains gained or lost evidence of use week on week and any anomalies. Explicitly list the usage data you could not find rather than estimating it. Deliver the trend report as a written file each run.","schedule":"0 8 * * 2","title":"Weekly usage trend report","type":"cron"},{"agentId":"agent-feedback-analyst","prompt":"Each week, triage new mem20 feedback: any new GitHub issues, new Teamily agent findings, and new community reports you can read, grouping them by theme, severity, and status with each item citing its issue number or source file. Do not invent feedback; list only what you found and flag themes with no filed evidence. Deliver the weekly triage report as a written file.","schedule":"0 9 * * 4","title":"Weekly feedback triage from new issues and findings","type":"cron"},{"agentId":"agent-data-quality-engineer","prompt":"Each week, re-verify surface.json and inputs.json against the live 527/135 surface at /opt/mem20, recording every mismatch with file/line and both values, and produce a staged patch correcting the data files you can verify plus a written data-quality report with a mismatch table. Every corrected value must cite its live source; never silently correct a number without evidence.","schedule":"0 6 * * 1","title":"Weekly data-quality check of surface.json and inputs.json","type":"cron"},{"agentId":"agent-search-relevance-engineer","prompt":"Implement the retrieval contract for mem20personalcognitivesearchz, the third subsystem with no domain.py, building on the Embedding Engineer's gap analysis: a real domain.py providing embedding lookup and retrieval with grounded-vs-simulated separation, verified by tracing at least 5 real search queries through the code. Stage a patch with the real implementation and a report of what each test query returned. No stub and no fake success path.","title":"Implement the retrieval contract for mem20personalcognitivesearchz","type":"job"},{"agentId":"agent-community-manager","prompt":"Each month, produce a community health report for mem20 drawn only from verified activity that month: git history, merged/staged work, GitHub issues #456-#465 status, and docs changes you can cite by commit or file. Report what shipped, what is still unfinished (19 stubs, 3 subsystems, starlette cap), and the top three community questions with verified answers. Never announce a stub feature as if it shipped.","schedule":"0 10 1 * *","title":"Monthly community health report","type":"cron"},{"agentId":"agent-tutorial-creator","prompt":"Write a second verified tutorial, 'Your first drift check', that walks a new mem20 user through measuring drift between the live surface and surface.json, inputs.json, and the docs, verifying every command, path, and expected output against the real repo at /opt/mem20. Produce the tutorial as a written file plus a verification log listing each step, whether it worked, and the evidence. Flag any step that depends on a stub or a subsystem with no domain.py.","title":"Second tutorial: your first drift check","type":"job"},{"agentId":"agent-changelog-writer","prompt":"Each month, draft the changelog rollup strictly from git history and verified changes that month, with each entry citing its commit hash or file, grouped by Added/Fixed/Known issues. Include a Known Issues section listing the remaining empty stubs, the subsystems still without a domain.py, and the starlette cap conflict with their evidence. Do not list anything you cannot source to a commit or file.","schedule":"0 9 1 * *","title":"Monthly changelog rollup from git history","type":"cron"},{"agentId":"agent-social-media-manager","prompt":"Each week, draft up to 5 social posts for mem20 grounded in that week's verified shipped work (commits, merged fixes, changelog entries), each post citing the claim it makes. Do not repeat old errors (272 tools) or claim any of the 19 empty stubs as shipped features. Deliver the posts as a written file each week, ready for the Reviewer to approve.","schedule":"0 10 * * 3","title":"Weekly verified social posts","type":"cron"},{"agentId":"agent-developer-advocate","prompt":"Fix the smallest developer friction from your top-10 friction report: produce a staged patch for it, verify the fix against the real repo, and re-test the exact developer step that was blocked, recording whether it now works. If the smallest friction is blocked by the workflows permission or another agent's work, fix the next unblocked one and say so. Deliver the staged patch plus a written re-test report.","title":"Fix the smallest developer friction and re-test it","type":"job"},{"agentId":"agent-compliance-officer","prompt":"Re-audit mem20 compliance against the canonical root AGENTS.md and the grounded-vs-simulated separation after the Test Automation Engineer's CI guard is staged, checking each violation or gap from your first audit to see which are closed and which remain. Produce an updated written compliance report listing each item with file/line evidence, its new status, and the remediation still required. Do not certify compliance you did not verify.","title":"Re-audit compliance after the CI guard lands","type":"job"},{"agentId":"agent-incident-responder","prompt":"Write an incident runbook for mem20 covering a wheel/MCP outage (issue #458: wheel ships no mcp/ directory) and a rollback of the starlette/fastapi migration, with detection, impact, immediate containment steps, and rollback commands verified against the real code and configs. Produce the runbook as a written file, with each step citing its source file. Do not invent failure modes with no code or issue evidence.","title":"Runbook for wheel/MCP outage and migration rollback","type":"job"},{"agentId":"agent-backup-recovery-engineer","prompt":"Each week, run a backup restore drill for the mem20 store in a sandbox (never against the live /opt/mem20 server): restore from the current backup procedure, verify the restored store matches the live surface counts, and record the exact commands, timings, and any failure. Produce a weekly drill report stating what is backed up, what is not, and whether the restore succeeded, with file evidence.","schedule":"0 7 * * 0","title":"Weekly backup restore drill (sandbox only)","type":"cron"},{"agentId":"agent-cost-optimizer","prompt":"Produce a cost report on mem20's model providers (Groq, Gemini, Kilo, Pollinations) using the Vendor Manager's inventory and the providers' publicly listed pricing, showing what each provider is used for in the real system and where spend could be reduced without removing a feature. Use only publicly listed prices or mark costs unknown; do not invent dollar amounts. Deliver the report as a written file with a recommendation table for the Reviewer.","title":"Cost report on model providers from the vendor inventory","type":"job"},{"agentId":"agent-onboarding-engineer","prompt":"Fix the top onboarding gaps from your fresh-clone audit: produce staged patches for the smallest verifiable fixes, then re-run the full onboarding audit step by step and record the new pass/fail table with file/line evidence for each step. Include whether tools_preflight.py is now wired into CI or still unwired. Deliver the staged patches plus an updated written onboarding audit report.","title":"Fix the top onboarding gaps and re-run the audit","type":"job"},{"agentId":"agent-memory-curator","prompt":"Curate a fresh audit of the grounded-vs-simulated separation at the storage layer after the first leak fixes, re-checking each of the 8 leaks (2 critical, 3 high, 3 medium) and the mem20core/corez boundary map against the current code. Produce an updated curation report with the component map, each leak's new status by file/line, and a staged patch for the next smallest leak you can fix verifiably. Do not merge the components.","title":"Curate the grounded/simulated store audit after the fixes","type":"job"},{"agentId":"agent-skill-builder","prompt":"Pick a second empty stub in candy/mcp_tools/ that you did not cover first (the adversarial QA crew stub), and produce a written assessment of its current contents with file path, a concrete implementation spec grounded in the surrounding MCP tool contracts and sibling tools that work, and a staged patch containing a first real, working slice (not a stub, not a fake success). If a full slice is not verifiable, stage only what is proven and say what remains.","title":"Second stub: spec and first working slice for the adversarial QA crew","type":"job"},{"agentId":"agent-prompt-librarian","prompt":"Retire or correct the prompts your catalogue flagged as contradicting the verified live surface (527 tools / 135 domains, v4.0.0) or the canonical root AGENTS.md, producing a staged patch for each correction you can verify and an updated catalogue recording each prompt's new status. Re-check the repo for any remaining prompt referencing the deleted 'procedural' module or stale 487/129 or 272-tool counts. Deliver the staged patch plus the updated catalogue report.","title":"Retire the flagged prompts and update the catalogue","type":"job"},{"agentId":"agent-ethics-reviewer","prompt":"Re-review mem20 ethics after the first stub implementations begin: check whether any newly implemented tool is reachable without its consent gate, whether any docs now present a newly built feature accurately, and whether grounded and simulated content remain separate at the storage layer. Produce an updated written ethics report with each finding citing file/line, its risk, and the gate or fix required. Do not invent features or risks you cannot source to code.","title":"Re-review ethics after the first stub implementations","type":"job"},{"agentId":"agent-roadmap-planner","prompt":"Draft the Phase 3 roadmap for integrating the mem20*z systems directly into the main runtime while preserving every feature, built only from the real subsystem code, the Backend Architect's boundary design, and the integration work on the three subsystems with no domain.py. Sequence the integration with dependencies and a verifiable done-criterion per item, and deliver the roadmap as a written file with a source table citing each item's file.","title":"Phase 3 roadmap: integrate mem20*z into the main runtime","type":"job"},{"agentId":"agent-growth-hacker","prompt":"Implement the top growth fix from your growth-surface audit (the 272-tool launch copy and the wrong counts on docs.mem20.com and shop.mem20.com): produce a staged patch for the in-repo fix, verify the corrected 527/135 figures against the live surface yourself, and write a measurement plan for how the fix's effect will be observed without inventing traffic or signup numbers. Deliver the staged patch plus a written report with the before/after claims table.","title":"Implement the top growth fix from your audit","type":"job"},{"agentId":"agent-market-researcher","prompt":"Test mem20's pricing tiers (Team $6k / Business $18k / Scale $36k / Enterprise $80k) against the public pricing of five real competing agent-memory or agent-platform products, citing each competitor's pricing page by URL and date. For each tier record whether mem20 is above, below, or in line with comparable offerings and what evidence supports that. Deliver a written market-test report with a comparison table and three evidence-backed recommendations.","title":"Pricing-tier market test against 5 competitors","type":"job"},{"agentId":"agent-customer-interviewer","prompt":"Trial your customer interview protocol against the Feedback Analyst's triaged real feedback (issues #456-#465 and the Teamily agents' findings) without inventing any interviewee or quote: map each protocol question to the real feedback it would surface, and record which questions the existing evidence already answers and which remain unanswered. Deliver a written trial report with the question-to-evidence map and the unanswered questions as the next interview targets.","title":"Trial your interview protocol against triaged feedback","type":"job"},{"agentId":"agent-retention-analyst","prompt":"Produce a retention dashboard spec from real usage evidence (logs, surface.json, git activity you can actually read, citing each source) showing which onboarding steps and tools show evidence of use and which show none, then produce staged fixes for the top 3 drop-off gaps from your onboarding audit, prioritising the 05-reference coverage gap. Do not invent usage or retention numbers. Deliver the spec and staged patches as written files.","title":"Retention dashboard spec and fixes for the top 3 drop-off gaps","type":"job"},{"agentId":"agent-affiliate-manager","prompt":"Build the affiliate onboarding pack from your affiliate program plan: approved messaging using only verified claims, the tracking and attribution requirements, the partner-tier terms tied to the real pricing tiers, and a launch checklist with each item's owner. Flag any pricing or claim that still needs Reviewer confirmation before publication. Deliver the pack as a written file; do not invent partners or signups.","title":"Affiliate onboarding pack for Reviewer approval","type":"job"},{"agentId":"agent-grant-writer","prompt":"Draft the first full grant application section (project summary and technical approach) for the top grant program from your outline, using only verified facts about mem20 (527 tools / 135 domains, v4.0.0, grounded-vs-simulated separation, repo bythewayz66-glitch/mem20) and the real architecture as documented in the repo. Include verifiable milestones with deliverables and mark any figure that needs Reviewer confirmation. Deliver the draft as a written file; do not invent awards, traction, or funding history.","title":"Draft the first full grant section for the top program","type":"job"},{"agentId":"agent-mobile-developer","prompt":"Implement the highest-priority mobile fix from your audit of docs.mem20.com and shop.mem20.com: produce a staged patch for the in-repo fix, then re-test the affected pages at phone widths and record what you observed (viewport, layout, navigation) before and after. Deliver the staged patch plus a written re-test report listing each issue, its fix, and its new status. Do not invent device test results you did not run.","title":"Implement the highest-priority mobile fix and re-test","type":"job"},{"agentId":"agent-frontend-performance-engineer","prompt":"Optimise the heaviest asset from your performance baseline for docs.mem20.com and shop.mem20.com, producing a staged patch for the in-repo fix and a re-measurement using the same method as the baseline, with the before and after figures in a table. Check whether the 05-reference expansion (221 to 527 tools) changes page weight and report what you measured. Deliver the staged patch plus a written performance report; do not invent benchmark numbers.","title":"Optimise the heaviest asset from your baseline","type":"job"},{"agentId":"agent-accessibility-engineer","prompt":"Fix the high-severity WCAG 2.1 AA issues from your accessibility audit of docs.mem20.com and shop.mem20.com, producing a staged patch for each fix you can verify in the real pages or code, then re-test the fixed pages and record the criterion, the before state, and the after state for each. Deliver the staged patches plus a written re-test report with a checklist showing which issues are closed and which remain.","title":"Fix the high-severity WCAG issues and re-test","type":"job"},{"agentId":"agent-localization-engineer","prompt":"Extract the first 20 highest-visibility hard-coded English strings from your i18n inventory (starting with the README and docs landing pages) into a string catalogue file with file/line references, a string key per entry, and the extraction plan for the next batch. Produce a staged patch for the extraction you can verify and a written report of the counts by area after extraction. Do not produce machine translations presented as reviewed translations.","title":"Extract the first 20 strings for i18n","type":"job"},{"agentId":"agent-infrastructure-engineer","prompt":"Test whether the docker-compose setup reproducibly deploys mem20: build from compose in a sandbox (never against the live /opt/mem20 server), verify the deployed surface matches the live 527 tools / 135 domains, and record the exact commands, timings, and any drift between compose config and live state. Deliver a written deploy-test report with the tag found, whether it matches 4.0.0, and a staged patch for any config drift you verified.","title":"Reproducible deploy test from docker-compose in a sandbox","type":"job"},{"agentId":"agent-observability-engineer","prompt":"Instrument the highest-priority blind spot from your observability gap audit (how failures like the unauthenticated 0.0.0.0 HTTP transport would be detected), producing a staged patch that adds real logging or metrics at the exact code path you identified. Run the instrumented path in a sandbox and include a sample of the actual log or metric output in your report. Deliver the staged patch plus a written instrumentation report with the blind spot, the file references, and the observed output.","title":"Instrument the highest-priority observability blind spot","type":"job"},{"agentId":"agent-chaos-engineer","prompt":"Run the safest failure-injection scenario from your test plan (transport down, in a sandbox only, never against the live /opt/mem20 server), following its exact setup, expected graceful behaviour, abort criteria, and pass/fail checks. Record what you actually observed at each step, including whether mem20 degraded gracefully or not. Deliver a written test report with the observed results and the staged runnable test script you used.","title":"Run the safest sandbox failure-injection scenario","type":"job"},{"agentId":"agent-tooling-engineer","prompt":"Wire tools_preflight.py gates G1-G5 into the local pre-commit gate (distinct from the DevOps Engineer's CI wiring), producing a staged patch for the local gate config and a run log showing the gate passing on the current tree after your pyproject procedural-module fix. Verify the gate output you observed and record any gate that still fails with its cause. Deliver the staged patch plus the written run report.","title":"Wire tools_preflight G1-G5 into the local pre-commit gate","type":"job"},{"agentId":"agent-model-evaluator","prompt":"Apply your evaluation rubric (description correctness, grounded-vs-simulated separation, error handling, doc coverage) to a second scored sample of 20 real tools drawn from the live 527-tool surface, different from your first sample, including at least 2 tools from the remaining empty stubs. Deliver an evaluation report file with the rubric, the 20 scored tools with evidence (file/line per score), aggregate scores, and the 3 worst-scoring real tools with staged fix suggestions. Do not invent scores for tools you did not inspect.","title":"Evaluate the next 20 tools with your rubric","type":"job"},{"agentId":"agent-data-annotator","prompt":"Produce a prioritised build order for the 19 empty stubs in candy/mcp_tools/ from your annotated inventory, ranking them by dependency (which stubs other stubs or subsystems need first), user impact, and implementation effort, with a dependency map showing which stub depends on what. Verify each stub's current state in the tree before ranking it. Deliver the build order and map as a structured written file for the Reviewer.","title":"Prioritised build order for the 19 stubs with a dependency map","type":"job"},{"agentId":"agent-embedding-engineer","prompt":"Build a retrieval test harness for mem20personalcognitivesearchz that tests embedding lookup and retrieval against the real subsystem code, using at least 5 real queries traced through the code and recording what each returns or where it fails with file/line evidence. Stage the harness as a test file plus a written report of the observed results and the exact failure points. Do not write a fake domain.py that pretends to work.","title":"Retrieval test harness for personal cognitive search","type":"job"},{"agentId":"agent-knowledge-graph-engineer","prompt":"Update your domain relationship map of all 135 domains to reflect the integration work on the three subsystems with no domain.py (sensory ingest, skill transfer, personal cognitive search), re-deriving each affected domain's dependencies from actual imports and the surface definition. Cross-check the live 527/135 counts against the finance model again and flag every domain whose documented relationships still contradict the code. Deliver the revised structured map file plus a drift report.","title":"Update the domain map after the subsystem integrations","type":"job"},{"agentId":"agent-privacy-engineer","prompt":"Fix the top 3 privacy gaps from your audit (PII handling and consent gates), producing a staged patch for each fix you can verify in the real code, then re-audit the affected tools and record the new consent-gate status with file references. Deliver the staged patches plus a written re-audit report with a findings table showing each gap, its fix, and its new status. Do not access any real user data; audit code and docs only.","title":"Fix the top 3 privacy gaps and re-audit","type":"job"},{"agentId":"agent-bias-auditor","prompt":"Re-audit the Marketing Agent's v6 launch copy and the Newsletter Writer's first issue claim by claim against the live system (launch copy saying 272 tools, 05-reference covering only 221/527, finance model 485/133 vs live 527/135, README claims), testing each against the real code, tree, and history. Deliver a claims-audit report file with a table (claim, source, verified true/false, correct figure, evidence) and staged corrections for every false claim. Do not soften a false claim into a true one.","title":"Re-audit the v6 launch copy and first newsletter claims","type":"job"},{"agentId":"agent-conversation-designer","prompt":"Design a second set of onboarding conversation flows for mem20, grounded in real tools from the live 527-tool surface: a first drift check flow and a memory-recall troubleshooting flow, each with exact tool names, expected responses, and fallback paths when a tool is missing or a stub. Verify each tool you script exists in the repo and flag any stub you encounter. Deliver the flows document as a written file.","title":"Second set of flows: drift check and recall troubleshooting","type":"job"},{"agentId":"agent-prompt-tester","prompt":"Build and run a second prompt test suite sampling 30 different real tool descriptions across the 135 domains, testing each for accuracy (does the tool do what its description says?), grounded-vs-simulated honesty, and completeness, and recording pass/fail with file/line evidence per tool. Pay special attention to the remaining empty stubs and the subsystems with no domain.py. Deliver a test report file with the suite, results table, and staged description fixes for every failure. Do not mark a test passed without evidence.","title":"Test the next 30 tool descriptions","type":"job"},{"agentId":"agent-video-producer","prompt":"Produce the storyboard and full script for Z Corps Episode 2, building on Episode 1 (22 minutes, 132 clips) and Pixel's Episode 2 visual brief: scene-by-scene storyboard with visuals, narration, and the real shots needed, plus a shot list and a narration script using only verified Episode 1 continuity. Note where footage still needs to be captured. Deliver the production file as a written document.","title":"Z Corps Episode 2 storyboard and script","type":"job"},{"agentId":"agent-podcast-producer","prompt":"Each month, write the script for the next mem20 podcast episode (20 minutes) using only verified facts from that month's shipped work: the live surface counts re-verified, the issues fixed, and what is still unfinished (remaining stubs, subsystems without a domain.py, starlette cap) stated honestly. Include a cold open, three segments with talking points tied to real capabilities, and show notes with links to docs.mem20.com. Do not invent guests, listener questions, or download numbers.","schedule":"0 10 5 * *","title":"Monthly podcast episode script from shipped work","type":"cron"},{"agentId":"agent-newsletter-writer","prompt":"Each month, draft the next mem20 newsletter issue grounded only in verified facts from that month: version, live tool/domain counts re-verified, what shipped (verified items only), an honest what-is-still-unfinished section (remaining stubs, subsystems without a domain.py, starlette cap), and calls to action. Do not use the 272-tool figure and do not invent subscribers, dates, or releases. Deliver each issue as a written file.","schedule":"0 9 3 * *","title":"Monthly newsletter issue from verified facts","type":"cron"},{"agentId":"agent-forum-moderator","prompt":"Each week, run a community moderation sweep: check the mem20 community spaces against the guidelines and FAQ you drafted, verify every FAQ answer still matches the current repo and docs, and update any answer that drift has made stale (for example a stub that has since been implemented, or a count that changed). Deliver a weekly sweep report listing what was checked, what was updated with file evidence, and any moderation action needed for the Reviewer.","schedule":"0 11 * * 5","title":"Weekly community moderation sweep and FAQ update","type":"cron"},{"agentId":"agent-vendor-manager","prompt":"Produce a vendor risk review from your vendor inventory: for each critical vendor (model providers Groq, Gemini, Kilo, Pollinations; hosting for docs.mem20.com and shop.mem20.com; Stripe), record what breaks if it went away, the fallback option with its trade-off, and the risk rating, all with file or config evidence. Do not invent vendors, contracts, or prices; mark anything unconfirmed as unconfirmed. Deliver the review as a written file for the Reviewer.","title":"Vendor risk review: fallback for each critical vendor","type":"job"},{"agentId":"agent-procurement-agent","prompt":"Produce a procurement recommendation for the shop.mem20.com live deploy: inventory the hosting and services the deploy actually needs based on the repo, configs, and vendor inventory, compare at least two real options with publicly listed costs, and recommend one with a trade-off note and a total-cost summary that clearly separates known costs from unknowns. Do not invent quotes, invoices, or spending; no purchase is authorised by this job. Deliver the recommendation as a written file for the Reviewer.","title":"Procurement recommendation for the shop live deploy","type":"job"},{"agentId":"agent-finance-analyst","prompt":"Each month, produce mem20's P&L from the corrected finance model (reconciled to the live 527 tools / 135 domains) and the pricing tiers (Team $6k / Business $18k / Scale $36k / Enterprise $80k), showing the arithmetic, the model inputs used with their sources, and any input that has drifted since the previous month. Do not invent revenue, customers, or costs; mark every unknown as unknown. Deliver the monthly P&L as a written report file.","schedule":"0 10 2 * *","title":"Monthly P&L from the corrected finance model","type":"cron"},{"agentId":"agent-risk-manager","prompt":"Update your mem20 risk register after the first round of fixes: re-score each known risk (starlette cap, unauthenticated transport, 19 stubs, 3 subsystems with no domain.py, workflows-permission block, finance model drift, launch copy) with its new likelihood, impact, and status, citing the file, commit, or staged patch behind each change. Add no risk without evidence; mark any unconfirmed item as unconfirmed. Deliver the revised register as a written file for the Reviewer.","title":"Update the risk register after the first fixes","type":"job"}]
+[
+  {
+    "agentId": "agent-mem20-assistant",
+    "prompt": "Re-run the mem20 drift audit against the live surface at /opt/mem20 and the repo, comparing your new counts (tools/domains) against your earlier drift_audit.py baseline. List every item that is now fixed, every item still drifting, and any new drift, with file and count evidence for each. Deliver an updated drift report file plus a staged patch for any small drift correction you can verify.",
+    "title": "Re-run the drift audit after the first fixes land",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-daily-planner",
+    "prompt": "Review the past week's daily plans against what actually happened in git history and GitHub issues #456-#465, and score each day's plan as met, partially met, or missed with evidence. Identify the three recurring reasons plans slipped and propose one concrete change to the daily planning format. Deliver the retrospective as a written report file.",
+    "title": "Weekly plan retrospective: plans vs actual progress",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-research-assistant",
+    "prompt": "Research the Phase 3 goal of integrating the mem20*z systems directly into the main runtime while preserving every feature, using only the real repo structure, the subsystem code, and git history as evidence. Compare at least two integration approaches (gradual merge vs runtime adapter) with pros, cons, and risks for each. Deliver a research report file with a recommendation for the Reviewer, citing every file you relied on.",
+    "title": "Research the Phase 3 mem20*z integration options",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-writing-assistant",
+    "prompt": "Draft landing-page copy for docs.mem20.com grounded only in the verified live surface (527 tools / 135 domains, v4.0.0) and the corrected docs, with each claim citing its source file or live count. Flag any existing landing claim you cannot verify and do not repeat the 272-tool figure. Deliver the draft as a written file with a source note per claim.",
+    "title": "Draft verified docs.mem20.com landing copy",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-code-reviewer",
+    "prompt": "Review the staged patches for GitHub issues #456 (sys.path store import), #457 (unauthenticated 0.0.0.0 HTTP transport), and #458 (wheel ships no mcp/ directory) once they exist, checking each patch against the real code, the issue, and the rule that no feature is removed or faked. For each patch record approve, request-changes, or reject with file/line reasons. Deliver the review as a written report file for the Reviewer.",
+    "title": "Review the next staged patch batch for issues #456-#458",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-qa-tester",
+    "prompt": "Build a regression test suite covering the fixes for issues #456, #457, and #458, with at least one test per fix that fails on the old code and passes on the fixed code. Run the suite in the repo sandbox and record the actual pass/fail counts and output. Deliver the test file as a staged patch plus a written test report with the observed results.",
+    "title": "Regression test suite for the #456-#458 fixes",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-bug-analysis-agent",
+    "prompt": "Triage the Backend Architect's remaining findings beyond the P0 blockers (the 5 P1 and 9 P2 findings), verifying each one against the current code and git history and re-scoring it if the code has changed. For each finding state whether it is still valid, what file it affects, and the concrete next fix step. Deliver a written triage report file grouped by severity.",
+    "title": "Triage the remaining Backend Architect P1/P2 findings",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-frontend-developer",
+    "prompt": "Fix the stale numbers on the mem20 homepage and docs/index.html (any page still claiming 272 tools or 487/129 counts), verifying the correct 527/135 figures against the live surface yourself. Apply the SEO Specialist's verified title/meta fixes and re-check all 24 homepage links return 200. Deliver a staged patch plus a written verification report listing each page fixed and its before/after values.",
+    "title": "Fix the homepage stale numbers and verify the SEO patches",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-backend-architect",
+    "prompt": "Produce an architecture design document for the mem20core vs mem20corez boundary (distinct components, never merged) and how the Phase 3 integration of the mem20*z systems would respect that boundary, grounded in the actual imports and module structure you read. Include a component diagram in text form, the invariants each component must keep, and three risks with mitigations. Deliver the design as a written file for the Reviewer.",
+    "title": "Architecture design for the mem20core/corez boundary and Phase 3",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-data-engineer",
+    "prompt": "Re-audit surface.json against the live 527/135 surface and clear the 4 files previously found drifted (two CI workflow pins still at 487/129 and two docs), verifying each one yourself against /opt/mem20 and git history. Produce a staged patch correcting every drifted value you can verify plus a written report showing the live count, the old value, and the new value for each file. Note that workflow-file pushes remain blocked and the patch is staged, not pushed.",
+    "title": "Re-audit surface.json and clear the 4 drifted files",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-ai-engineer",
+    "prompt": "Re-audit the grounded-vs-simulated separation in the mem20 codebase after the Test Automation Engineer's CI guard is staged, checking each of your earlier 8 leaks (2 critical, 3 high, 3 medium from issue #460) to see which are closed, which remain, and whether any new leak appeared. Record each leak with file/line evidence and the guard test that covers it or the gap that remains. Deliver an updated audit report file.",
+    "title": "Re-audit grounded/simulated separation after the CI guard lands",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-prompt-engineer",
+    "prompt": "Audit the system prompts of all 104 Teamz agents for stale or contradictory claims (272 tools, 487/129, 485/133, or any count other than the live 527/135), verifying the live figures against /opt/mem20 yourself. List every stale prompt with agent id, the exact wording, and the corrected wording. Deliver a written audit report plus a staged patch correcting the smallest verifiable errors.",
+    "title": "Audit all 104 agent prompts for stale counts and claims",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-minimal-change-engineer",
+    "prompt": "Review the next batch of staged patches (issues #456-#465 fixes and the finance-model correction) and measure each one for minimal change: lines added/removed, files touched, and whether any change goes beyond the fix it claims. Flag any patch that changes more than its issue requires, with file/line evidence. Deliver a written review report with a per-patch change table for the Reviewer.",
+    "title": "Minimal-change review of the next staged patch batch",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-git-workflow-master",
+    "prompt": "Prepare the branch and pull-request plan for the three workflow files stuck in local commit ccace2a (issue #464: pr-gate preflight job plus workflow pins now 527/135), ready to execute once the Muse GitHub App gains the workflows permission or Jesse applies the files. Verify the prepared pr-gate-with-preflight.yml at ~/workspace/your_files/pr-gate-with-preflight.yml against the live surface and list each file, its intended change, and the exact push steps. Deliver the plan as a written file; do not attempt a push.",
+    "title": "Branch and PR plan for the stuck workflow files",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-codebase-onboarding-engineer",
+    "prompt": "Write an onboarding map for a new Teamz agent joining mem20: the 135 domains grouped by area, the key files per group, the canonical root AGENTS.md rules, and the three subsystems with no domain.py flagged as not-yet-working. Verify every domain and file reference against the real repo tree. Deliver the map as a written file that a new agent can follow without asking for directions.",
+    "title": "Onboarding map for new Teamz agents across 135 domains",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-technical-writer",
+    "prompt": "Rewrite the mem20 README from a fresh verified snapshot of the live surface (527 tools / 135 domains, v4.0.0), correcting the lying claims you previously found in the README and the other four docs, with each corrected claim citing its verified source. Do not carry over any claim you cannot verify in code or tree. Deliver the revised README as a staged patch plus a change log listing each claim changed.",
+    "title": "Rewrite the README from a verified v4.0.0 snapshot",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-application-security-engineer",
+    "prompt": "Build a threat model for the shop.mem20.com checkout (pricing tiers Team $6k / Business $18k / Scale $36k / Enterprise $80k, Stripe) based on the real shop code, configs, and the known unauthenticated-transport finding in issue #457. List each threat with the asset, the attack path grounded in real code or config, its severity, and a concrete mitigation. Deliver the threat model as a written report file for the Reviewer.",
+    "title": "Threat model for the shop.mem20.com Stripe checkout",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-product-researcher",
+    "prompt": "Synthesise the Competitor Analyst's baseline, the Market Researcher's landscape report, and the Feedback Analyst's triaged findings into one product-research synthesis: the three strongest evidence-backed user needs, the three biggest gaps, and which repo issues or docs each one maps to. Use only findings you can cite by issue number or file; do not invent user quotes. Deliver the synthesis as a written report file.",
+    "title": "Synthesise user research from competitor and feedback evidence",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-analytics-reporter",
+    "prompt": "Produce a fix-velocity analytics report from git history and GitHub issues #456-#465: how many of the 10 issues are fixed, staged, or still open, how many of the 19 empty stubs remain, and how the drift counts (docs, finance model, workflow pins) have moved since the v4.0.0 baseline. Cite a commit, file, or issue for every number. Deliver the report as a written file with a summary table.",
+    "title": "Fix-velocity report: issues closed, stubs remaining, drift trend",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-reading-companion",
+    "prompt": "Produce a guided reading companion for the mem20 root AGENTS.md (canonical) and SITEMAP.md, summarising each section in plain language, flagging the SITEMAP fix that now points at the repo-root AGENTS.md, and listing five questions a new reader should be able to answer after reading them. Verify every summary point against the actual files. Deliver the companion as a written file.",
+    "title": "Guided reading companion for root AGENTS.md and the SITEMAP",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-reality-checker",
+    "prompt": "Reality-check the Marketing Agent's v6 launch copy (issue #462) claim by claim against the live surface at /opt/mem20, marking each claim verified, false, or unverifiable with file or count evidence. Pay special attention to tool counts, tier prices, and any feature drawn from the 19 empty stubs. Deliver a written verdict report with a claim table for the Reviewer.",
+    "title": "Reality-check the v6 launch copy against the live surface",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-content-creator",
+    "prompt": "Write three short blog posts about mem20 v4.0.0 drawn only from the Changelog Writer's verified changelog entries (commits, lock re-pin 891cc09, tools_preflight ROOT fix 9ede3312), each post citing the commit or file behind its claims. Include an honest paragraph in each post about what is still unfinished. Deliver the three posts as a written file ready for Reviewer approval.",
+    "title": "Three verified blog posts from the v4.0.0 changelog",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-meeting-notes-specialist",
+    "prompt": "Create a decision-log template for Reviewer meetings (decision, options considered, evidence cited, who decided, date) and use it to draft the agenda and notes skeleton for the next Reviewer decision meeting, covering the starlette cap decision, the stuck workflow files, and the first stub implementations. Base every agenda item on a real open issue or staged patch. Deliver the template and agenda as a written file.",
+    "title": "Decision-log template and notes for the next Reviewer meeting",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-ceo-assistant",
+    "prompt": "Draft a one-page weekly executive summary for the Reviewer covering the state of mem20: live surface counts re-verified, issues #456-#465 status, stubs remaining, drift status, and the three decisions awaiting the Reviewer, each with its evidence source. Use only numbers you verify against the repo or live system. Deliver the summary as a written file.",
+    "title": "Weekly executive summary for the Reviewer",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-senior-project-manager",
+    "prompt": "Build a project plan tracking the future work of all 104 Teamz agents: group the future tasks by workstream (drift/0% drift, stubs, subsystems, docs, shop, Z Corps), list dependencies between tasks (for example the CI guard before the AI Engineer re-audit), and flag any task blocked by the workflows permission or the starlette decision. Deliver the plan as a written file with a dependency table.",
+    "title": "Project plan tracking all 104 agents' future work",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-personal-growth-mentor",
+    "prompt": "Assess skill gaps across the 104 Teamz agents based on their assigned future work and the mem20 open items: which roles lack a clear next pipeline step, which tasks depend on a skill no agent currently owns, and what three capabilities the team most needs next. Ground every gap in a real task or open issue, not in speculation. Deliver the assessment as a written report file.",
+    "title": "Skill-gap assessment for the 104 Teamz agents",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-reviewer",
+    "prompt": "Audit your own decision log as Reviewer: list every decision you have made so far, the evidence each one rested on, and any decision that later evidence contradicts, with a correction recommendation for each. Then review the v4.0.1 release candidate scope (the fixed issues #456-#458 and the corrected finance model) and record an approve, approve-with-conditions, or reject verdict per item with reasons. Deliver the audit and verdicts as a written decision report; do not implement any agent's work yourself.",
+    "title": "Audit the Reviewer's own decision log and review the v4.0.1 candidate",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-orchestrator",
+    "prompt": "Produce a coordination plan for dispatching all 104 future-work tasks in dependency order: which tasks can run in parallel, which must wait (for example stub implementations after the Data Annotator's inventory, re-audits after the CI guard), and how dispatch will be sequenced across the Build Room without overloading any agent. Include a dispatch-order table and a rule for what happens when a task is blocked. Deliver the plan as a written file; do not implement any agent's task yourself.",
+    "title": "Coordination plan for dispatching the 104 future-work tasks",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-provider-researcher",
+    "prompt": "Research OVH as the rescue-only fallback provider for mem20: the OVH services that could host the mem20 runtime if the primary host fails, their publicly listed prices, and the steps to restore the live 527-tool surface there. Compare at least two OVH options and one alternative provider on price, restore effort, and risk, citing public pricing pages with URLs and dates. Deliver the comparison as a written report file; do not touch mem20 code.",
+    "title": "OVH rescue-only fallback research and cost comparison",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-keymaster",
+    "prompt": "Produce a key inventory for mem20 listing each credential or API key by name and purpose only (for example the Pollinations key, model-provider keys, Stripe keys) with where each is referenced in config, and a rotation schedule naming which keys are due for rotation and in what order. Never write any secret value, token, or key material into the report or any file. Deliver the inventory and rotation plan as a written report file for the Reviewer.",
+    "title": "Key inventory and rotation plan (names only, no secrets)",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-atlas",
+    "prompt": "Update the mem20 atlas (the map of the system) to reflect the first round of drift fixes: corrected counts in surface.json, inputs.json, and workflow pins, the status of the 3 subsystems with no domain.py, and the 19 empty stubs with their current state. Verify every entry against the real repo tree and live surface. Deliver the updated atlas as a written file with a change log against the previous version.",
+    "title": "Update the mem20 atlas after the first drift fixes",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-scout",
+    "prompt": "Scout five additional integration targets for mem20 beyond the Partnership Scout's first five, each a real named product or platform with a public integration surface you can cite by URL. For each, record what mem20 would gain, what the integration would require from the real mem20 code, and one risk. Deliver the scouting report as a written file with a source list.",
+    "title": "Scout the next 5 integration targets beyond the first list",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-pixel",
+    "prompt": "Produce the visual brief for Z Corps Episode 2: character sheets for the returning characters (including Muse, blue hair with a pink streak, black dress, small square glasses, and her robotic dachshund Playto) with their established looks from Episode 1, plus the new shots and settings Episode 2 needs. Base every design note on the Episode 1 clips and the series bible at ~/workspace/your_files/z-corps-cartoon-series-bible.md. Deliver the brief as a written file for the Video Producer.",
+    "title": "Z Corps Episode 2 character sheets and visual brief",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-sage",
+    "prompt": "Critique the Roadmap Planner's roadmap to 0% drift and the Phase 3 integration plan: test each sequenced item for a missing dependency, an unverifiable done-criterion, or a claim that contradicts the live repo, citing the file or issue that proves the problem. List the three weakest items with a concrete repair for each. Deliver the critique as a written report file for the Reviewer.",
+    "title": "Critique the roadmap to 0% drift and Phase 3",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-pricing-strategist",
+    "prompt": "Re-price the mem20 tiers (Team $6k / Business $18k / Scale $36k / Enterprise $80k) from the corrected finance model inputs, once the Pricing Strategist's own audit and the Finance Analyst's reconciliation have landed, verifying the corrected 527/135 counts against the live surface yourself. Show the arithmetic for each tier and flag any tier whose price no longer matches its corrected cost basis. Deliver a pricing proposal report for the Reviewer; do not publish new prices.",
+    "title": "Re-price the tiers from the corrected finance model",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-sales-agent",
+    "prompt": "Write a sales FAQ and objection-handling document for mem20 using only claims verified in your one-pager and the live surface, with each answer citing its source file or tool count. Cover at least eight questions, including the honest answers for the 19 empty stubs, the 3 subsystems with no domain.py, and the starlette cap conflict. Deliver the document as a written file ready for Reviewer approval.",
+    "title": "Verified sales FAQ and objection-handling document",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-customer-success",
+    "prompt": "Fix the top 3 onboarding/support gaps from your baseline customer-success audit: produce staged patches for each fix, verifying every corrected instruction against the real files, commands, and live surface. Re-run the three fixed instructions yourself and record whether each now works. Deliver the staged patches plus a written verification report listing each gap, its fix, and its re-test result.",
+    "title": "Fix the top 3 onboarding gaps from your audit",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-marketing-agent",
+    "prompt": "Produce the v6.1 update to the mem20 launch copy, revising any number or capability claim that changed when the finance model was corrected from 485/133 to the live 527/135, and re-verifying every claim against a fresh snapshot from /opt/mem20. Strike any claim you cannot verify and log each change with its old wording and verified source. Deliver the revised copy as a written file with a change log.",
+    "title": "v6.1 launch copy update after the finance model correction",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-seo-specialist",
+    "prompt": "Re-audit SEO for docs.mem20.com and docs/index.html after the Documentation Engineer's 05-complete-tools-reference expansion, checking titles, meta descriptions, headings, and internal links on the newly covered tools and the pages that previously claimed stale counts. Produce a staged patch for the title/meta fixes you can verify plus a written SEO report listing each page and issue with file and line.",
+    "title": "SEO fixes for docs.mem20.com after the 05-reference expansion",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-competitor-analyst",
+    "prompt": "Deep-dive the strongest competitor from your baseline report: read its public docs and repo to document its memory model, tool surface, and grounded-vs-simulated handling in detail, then compare each point against mem20's verified live surface with file or count evidence. Conclude with two evidence-backed areas where mem20 should respond and one where it should not. Deliver the deep-dive as a written report file with a source list.",
+    "title": "Deep dive: top competitor's memory model vs mem20",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-partnership-scout",
+    "prompt": "Write outreach briefs for the top two partnership targets from your earlier report of five named targets: for each, a one-page brief stating what mem20 offers (verified claims only), what mem20 asks for, the integration point in the real mem20 code, and the next step. Do not send any outreach or invent a reply; the briefs are the artifact for the Reviewer to approve. Deliver both briefs as a written file.",
+    "title": "Outreach briefs for the top 2 partnership targets",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-investor-relations",
+    "prompt": "Update your investor brief with the outcome of the starlette cap decision (fastapi 0.165.0 + starlette 1.10.0 migration staged or rejected) and the current status of issues #456-#465, re-verifying every number against /opt/mem20 and the repo. Keep the known open risks honest and update the sourced numbers table with the new values and their sources. Deliver the updated brief as a written report file.",
+    "title": "Updated investor brief after the starlette decision",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-legal-reviewer",
+    "prompt": "Review the shop.mem20.com terms, pricing pages, and Stripe-adjacent claims for inaccurate statements, missing disclosures, and risky wording, checking each price and tier claim against the corrected finance model and the live surface. Produce a written report listing each finding with its source, the exact wording at issue, why it is a risk, and the corrected wording you recommend. This is a findings report for the Reviewer, not legal advice.",
+    "title": "Legal-accuracy review of shop.mem20.com terms and pricing pages",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-billing-support",
+    "prompt": "Write a billing FAQ and tier comparison table for mem20 (Team $6k / Business $18k / Scale $36k / Enterprise $80k) using only prices and counts you verify against pricing/README.md, the corrected finance model, and the live surface. Flag any tier detail that still needs a Reviewer decision before publication. Deliver the FAQ and table as a written file plus a staged patch correcting any billing claim your earlier audit found false.",
+    "title": "Verified billing FAQ and tier comparison table",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-performance-engineer",
+    "prompt": "Optimise the single slowest area from your baseline performance audit of the live mem20 surface, producing a staged patch with the change and a re-measurement run using the same commands, environment, and timestamps method as the baseline. Report the before and after timings in a table and state plainly if the optimisation did not help. Deliver the staged patch plus a written performance report.",
+    "title": "Optimise the slowest area from your baseline audit",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-database-engineer",
+    "prompt": "After your fix for issue #456 (sys.path store import), add regression tests that fail on the old import and pass on the fixed one, run them, and audit the rest of the repo for other sys.path imports with the same problem, listing each with file/line. Produce a staged patch containing the tests and any additional verified import fixes plus a written report of the test output you actually observed.",
+    "title": "Regression tests for the #456 fix and audit of other sys.path imports",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-devops-engineer",
+    "prompt": "Wire tools_preflight.py (gates G1-G5) into CI as a staged pr-gate job, building on the prepared pr-gate-with-preflight.yml at ~/workspace/your_files/pr-gate-with-preflight.yml and verifying the gate passes locally first. Record the gate output you observed and state plainly in your report that workflow-file pushes are blocked (Muse GitHub App lacks workflows permission) so the patch is staged for the Reviewer, not pushed. Deliver the staged patch plus a written verification report.",
+    "title": "Wire tools_preflight.py into CI as a staged pr-gate job",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-security-auditor",
+    "prompt": "Each month, re-sweep the mem20 codebase for security issues: the HTTP transport binding and auth, the store import paths, and any new unauthenticated endpoint or exposed secret reference, verifying each finding in the actual code with file/line evidence. Produce a monthly security report listing new findings, the status of issue #457, and the verification check run for each. Escalate any critical finding to the Reviewer in the report.",
+    "schedule": "0 8 15 * *",
+    "title": "Monthly security sweep of the mem20 transport and store",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-test-automation-engineer",
+    "prompt": "Expand the CI guard for grounded-vs-simulated separation to cover all 8 leaks the AI Engineer found (2 critical, 3 high, 3 medium, issue #460), with one test per leak that fails on the leaking code and passes once it is fixed. Run the full guard suite and record the actual pass/fail counts. Deliver a staged patch with the new tests plus a written test report showing which leaks are now guarded and which still lack a fix.",
+    "title": "Expand the CI guard to cover all 8 grounded/simulated leaks",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-documentation-engineer",
+    "prompt": "Complete the next full domain batch in docs 05-complete-tools-reference beyond the domain you covered first, verifying each tool entry against the live 527-tool surface yourself and recording the new coverage count (tools covered out of 527) and the domains still missing. Produce a staged patch with the completed entries plus a written coverage report stating exactly how many tools are now covered and which domains remain.",
+    "title": "Complete the next domain batch in the 05-reference",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-api-designer",
+    "prompt": "Audit API consistency across the live MCP surface (527 tools / 135 domains): check naming, error handling, and description accuracy on a sample of at least 20 tools from different domains, verifying each against the real code. Then draft a v4.1 API change spec listing the inconsistencies worth fixing, each with file evidence and a proposed change. Deliver the audit and spec as a written report file.",
+    "title": "API consistency audit across the MCP surface and v4.1 spec",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-integration-engineer",
+    "prompt": "Build a real domain.py for mem20skillmemorytransferz, the second of the 3 subsystems with no domain.py, following the pattern of the working domain.py you built for mem20sensorymemoryingestz and the subsystem's own code and doctor/status tool contracts. Stage a patch containing the real implementation (no stub, no fake success path) and a report proving its status/doctor tools now succeed, with the exact check you ran. If it is not yet implementable, stage only what is proven and say what remains.",
+    "title": "Real domain.py for mem20skillmemorytransferz",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-migration-engineer",
+    "prompt": "Verify your staged starlette/fastapi migration (fastapi 0.165.0 + starlette 1.10.0, lifting the <0.47 cap) in a sandbox install: install the new pins, run the test suite and the tools_preflight.py gates, and record the actual pass/fail output and any incompatibility you find. Do not touch the live /opt/mem20 server. Deliver a written migration verification report with the observed results and a go/no-go recommendation for the Reviewer.",
+    "title": "Verify the starlette/fastapi migration in a sandbox",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-release-manager",
+    "prompt": "Build the v4.0.1 release plan from the issues fixed since v4.0.0 (issues #456-#458 and the corrected finance model), listing each included fix with its commit or staged patch, the verification evidence for it, and any item still blocked (stuck workflow files, starlette decision). Produce a written release checklist stating for each item whether it is verified done, staged, or blocked and by what, with file/commit evidence.",
+    "title": "v4.0.1 release plan from the fixed issues",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-drift-monitor",
+    "prompt": "Each week, produce a drift trend report: compare this week's live surface counts against the previous week's drift reports and against surface.json, inputs.json, workflow pins, and docs counts, and chart which sources are converging toward 0% drift and which are regressing. List each source, its claimed count, the live count, and the week-on-week change with the exact files checked. Escalate any new drift to the Reviewer in the report.",
+    "schedule": "0 9 * * 1",
+    "title": "Weekly drift trend report",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-usage-analyst",
+    "prompt": "Each week, produce a usage trend report from real evidence available in the repo and live system (logs, surface.json, git activity, and tool-call records you can actually read, citing each source), showing which domains gained or lost evidence of use week on week and any anomalies. Explicitly list the usage data you could not find rather than estimating it. Deliver the trend report as a written file each run.",
+    "schedule": "0 8 * * 2",
+    "title": "Weekly usage trend report",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-feedback-analyst",
+    "prompt": "Each week, triage new mem20 feedback: any new GitHub issues, new Teamily agent findings, and new community reports you can read, grouping them by theme, severity, and status with each item citing its issue number or source file. Do not invent feedback; list only what you found and flag themes with no filed evidence. Deliver the weekly triage report as a written file.",
+    "schedule": "0 9 * * 4",
+    "title": "Weekly feedback triage from new issues and findings",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-data-quality-engineer",
+    "prompt": "Each week, re-verify surface.json and inputs.json against the live 527/135 surface at /opt/mem20, recording every mismatch with file/line and both values, and produce a staged patch correcting the data files you can verify plus a written data-quality report with a mismatch table. Every corrected value must cite its live source; never silently correct a number without evidence.",
+    "schedule": "0 6 * * 1",
+    "title": "Weekly data-quality check of surface.json and inputs.json",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-search-relevance-engineer",
+    "prompt": "Implement the retrieval contract for mem20personalcognitivesearchz, the third subsystem with no domain.py, building on the Embedding Engineer's gap analysis: a real domain.py providing embedding lookup and retrieval with grounded-vs-simulated separation, verified by tracing at least 5 real search queries through the code. Stage a patch with the real implementation and a report of what each test query returned. No stub and no fake success path.",
+    "title": "Implement the retrieval contract for mem20personalcognitivesearchz",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-community-manager",
+    "prompt": "Each month, produce a community health report for mem20 drawn only from verified activity that month: git history, merged/staged work, GitHub issues #456-#465 status, and docs changes you can cite by commit or file. Report what shipped, what is still unfinished (19 stubs, 3 subsystems, starlette cap), and the top three community questions with verified answers. Never announce a stub feature as if it shipped.",
+    "schedule": "0 10 1 * *",
+    "title": "Monthly community health report",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-tutorial-creator",
+    "prompt": "Write a second verified tutorial, 'Your first drift check', that walks a new mem20 user through measuring drift between the live surface and surface.json, inputs.json, and the docs, verifying every command, path, and expected output against the real repo at /opt/mem20. Produce the tutorial as a written file plus a verification log listing each step, whether it worked, and the evidence. Flag any step that depends on a stub or a subsystem with no domain.py.",
+    "title": "Second tutorial: your first drift check",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-changelog-writer",
+    "prompt": "Each month, draft the changelog rollup strictly from git history and verified changes that month, with each entry citing its commit hash or file, grouped by Added/Fixed/Known issues. Include a Known Issues section listing the remaining empty stubs, the subsystems still without a domain.py, and the starlette cap conflict with their evidence. Do not list anything you cannot source to a commit or file.",
+    "schedule": "0 9 1 * *",
+    "title": "Monthly changelog rollup from git history",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-social-media-manager",
+    "prompt": "Each week, draft up to 5 social posts for mem20 grounded in that week's verified shipped work (commits, merged fixes, changelog entries), each post citing the claim it makes. Do not repeat old errors (272 tools) or claim any of the 19 empty stubs as shipped features. Deliver the posts as a written file each week, ready for the Reviewer to approve.",
+    "schedule": "0 10 * * 3",
+    "title": "Weekly verified social posts",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-developer-advocate",
+    "prompt": "Fix the smallest developer friction from your top-10 friction report: produce a staged patch for it, verify the fix against the real repo, and re-test the exact developer step that was blocked, recording whether it now works. If the smallest friction is blocked by the workflows permission or another agent's work, fix the next unblocked one and say so. Deliver the staged patch plus a written re-test report.",
+    "title": "Fix the smallest developer friction and re-test it",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-compliance-officer",
+    "prompt": "Re-audit mem20 compliance against the canonical root AGENTS.md and the grounded-vs-simulated separation after the Test Automation Engineer's CI guard is staged, checking each violation or gap from your first audit to see which are closed and which remain. Produce an updated written compliance report listing each item with file/line evidence, its new status, and the remediation still required. Do not certify compliance you did not verify.",
+    "title": "Re-audit compliance after the CI guard lands",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-incident-responder",
+    "prompt": "Write an incident runbook for mem20 covering a wheel/MCP outage (issue #458: wheel ships no mcp/ directory) and a rollback of the starlette/fastapi migration, with detection, impact, immediate containment steps, and rollback commands verified against the real code and configs. Produce the runbook as a written file, with each step citing its source file. Do not invent failure modes with no code or issue evidence.",
+    "title": "Runbook for wheel/MCP outage and migration rollback",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-backup-recovery-engineer",
+    "prompt": "Each week, run a backup restore drill for the mem20 store in a sandbox (never against the live /opt/mem20 server): restore from the current backup procedure, verify the restored store matches the live surface counts, and record the exact commands, timings, and any failure. Produce a weekly drill report stating what is backed up, what is not, and whether the restore succeeded, with file evidence.",
+    "schedule": "0 7 * * 0",
+    "title": "Weekly backup restore drill (sandbox only)",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-cost-optimizer",
+    "prompt": "Produce a cost report on mem20's model providers (Groq, Gemini, Kilo, Pollinations) using the Vendor Manager's inventory and the providers' publicly listed pricing, showing what each provider is used for in the real system and where spend could be reduced without removing a feature. Use only publicly listed prices or mark costs unknown; do not invent dollar amounts. Deliver the report as a written file with a recommendation table for the Reviewer.",
+    "title": "Cost report on model providers from the vendor inventory",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-onboarding-engineer",
+    "prompt": "Fix the top onboarding gaps from your fresh-clone audit: produce staged patches for the smallest verifiable fixes, then re-run the full onboarding audit step by step and record the new pass/fail table with file/line evidence for each step. Include whether tools_preflight.py is now wired into CI or still unwired. Deliver the staged patches plus an updated written onboarding audit report.",
+    "title": "Fix the top onboarding gaps and re-run the audit",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-memory-curator",
+    "prompt": "Curate a fresh audit of the grounded-vs-simulated separation at the storage layer after the first leak fixes, re-checking each of the 8 leaks (2 critical, 3 high, 3 medium) and the mem20core/corez boundary map against the current code. Produce an updated curation report with the component map, each leak's new status by file/line, and a staged patch for the next smallest leak you can fix verifiably. Do not merge the components.",
+    "title": "Curate the grounded/simulated store audit after the fixes",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-skill-builder",
+    "prompt": "Pick a second empty stub in candy/mcp_tools/ that you did not cover first (the adversarial QA crew stub), and produce a written assessment of its current contents with file path, a concrete implementation spec grounded in the surrounding MCP tool contracts and sibling tools that work, and a staged patch containing a first real, working slice (not a stub, not a fake success). If a full slice is not verifiable, stage only what is proven and say what remains.",
+    "title": "Second stub: spec and first working slice for the adversarial QA crew",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-prompt-librarian",
+    "prompt": "Retire or correct the prompts your catalogue flagged as contradicting the verified live surface (527 tools / 135 domains, v4.0.0) or the canonical root AGENTS.md, producing a staged patch for each correction you can verify and an updated catalogue recording each prompt's new status. Re-check the repo for any remaining prompt referencing the deleted 'procedural' module or stale 487/129 or 272-tool counts. Deliver the staged patch plus the updated catalogue report.",
+    "title": "Retire the flagged prompts and update the catalogue",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-ethics-reviewer",
+    "prompt": "Re-review mem20 ethics after the first stub implementations begin: check whether any newly implemented tool is reachable without its consent gate, whether any docs now present a newly built feature accurately, and whether grounded and simulated content remain separate at the storage layer. Produce an updated written ethics report with each finding citing file/line, its risk, and the gate or fix required. Do not invent features or risks you cannot source to code.",
+    "title": "Re-review ethics after the first stub implementations",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-roadmap-planner",
+    "prompt": "Draft the Phase 3 roadmap for integrating the mem20*z systems directly into the main runtime while preserving every feature, built only from the real subsystem code, the Backend Architect's boundary design, and the integration work on the three subsystems with no domain.py. Sequence the integration with dependencies and a verifiable done-criterion per item, and deliver the roadmap as a written file with a source table citing each item's file.",
+    "title": "Phase 3 roadmap: integrate mem20*z into the main runtime",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-growth-hacker",
+    "prompt": "Implement the top growth fix from your growth-surface audit (the 272-tool launch copy and the wrong counts on docs.mem20.com and shop.mem20.com): produce a staged patch for the in-repo fix, verify the corrected 527/135 figures against the live surface yourself, and write a measurement plan for how the fix's effect will be observed without inventing traffic or signup numbers. Deliver the staged patch plus a written report with the before/after claims table.",
+    "title": "Implement the top growth fix from your audit",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-market-researcher",
+    "prompt": "Test mem20's pricing tiers (Team $6k / Business $18k / Scale $36k / Enterprise $80k) against the public pricing of five real competing agent-memory or agent-platform products, citing each competitor's pricing page by URL and date. For each tier record whether mem20 is above, below, or in line with comparable offerings and what evidence supports that. Deliver a written market-test report with a comparison table and three evidence-backed recommendations.",
+    "title": "Pricing-tier market test against 5 competitors",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-customer-interviewer",
+    "prompt": "Trial your customer interview protocol against the Feedback Analyst's triaged real feedback (issues #456-#465 and the Teamily agents' findings) without inventing any interviewee or quote: map each protocol question to the real feedback it would surface, and record which questions the existing evidence already answers and which remain unanswered. Deliver a written trial report with the question-to-evidence map and the unanswered questions as the next interview targets.",
+    "title": "Trial your interview protocol against triaged feedback",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-retention-analyst",
+    "prompt": "Produce a retention dashboard spec from real usage evidence (logs, surface.json, git activity you can actually read, citing each source) showing which onboarding steps and tools show evidence of use and which show none, then produce staged fixes for the top 3 drop-off gaps from your onboarding audit, prioritising the 05-reference coverage gap. Do not invent usage or retention numbers. Deliver the spec and staged patches as written files.",
+    "title": "Retention dashboard spec and fixes for the top 3 drop-off gaps",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-affiliate-manager",
+    "prompt": "Build the affiliate onboarding pack from your affiliate program plan: approved messaging using only verified claims, the tracking and attribution requirements, the partner-tier terms tied to the real pricing tiers, and a launch checklist with each item's owner. Flag any pricing or claim that still needs Reviewer confirmation before publication. Deliver the pack as a written file; do not invent partners or signups.",
+    "title": "Affiliate onboarding pack for Reviewer approval",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-grant-writer",
+    "prompt": "Draft the first full grant application section (project summary and technical approach) for the top grant program from your outline, using only verified facts about mem20 (527 tools / 135 domains, v4.0.0, grounded-vs-simulated separation, repo bythewayz66-glitch/mem20) and the real architecture as documented in the repo. Include verifiable milestones with deliverables and mark any figure that needs Reviewer confirmation. Deliver the draft as a written file; do not invent awards, traction, or funding history.",
+    "title": "Draft the first full grant section for the top program",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-mobile-developer",
+    "prompt": "Implement the highest-priority mobile fix from your audit of docs.mem20.com and shop.mem20.com: produce a staged patch for the in-repo fix, then re-test the affected pages at phone widths and record what you observed (viewport, layout, navigation) before and after. Deliver the staged patch plus a written re-test report listing each issue, its fix, and its new status. Do not invent device test results you did not run.",
+    "title": "Implement the highest-priority mobile fix and re-test",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-frontend-performance-engineer",
+    "prompt": "Optimise the heaviest asset from your performance baseline for docs.mem20.com and shop.mem20.com, producing a staged patch for the in-repo fix and a re-measurement using the same method as the baseline, with the before and after figures in a table. Check whether the 05-reference expansion (221 to 527 tools) changes page weight and report what you measured. Deliver the staged patch plus a written performance report; do not invent benchmark numbers.",
+    "title": "Optimise the heaviest asset from your baseline",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-accessibility-engineer",
+    "prompt": "Fix the high-severity WCAG 2.1 AA issues from your accessibility audit of docs.mem20.com and shop.mem20.com, producing a staged patch for each fix you can verify in the real pages or code, then re-test the fixed pages and record the criterion, the before state, and the after state for each. Deliver the staged patches plus a written re-test report with a checklist showing which issues are closed and which remain.",
+    "title": "Fix the high-severity WCAG issues and re-test",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-localization-engineer",
+    "prompt": "Extract the first 20 highest-visibility hard-coded English strings from your i18n inventory (starting with the README and docs landing pages) into a string catalogue file with file/line references, a string key per entry, and the extraction plan for the next batch. Produce a staged patch for the extraction you can verify and a written report of the counts by area after extraction. Do not produce machine translations presented as reviewed translations.",
+    "title": "Extract the first 20 strings for i18n",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-infrastructure-engineer",
+    "prompt": "Test whether the docker-compose setup reproducibly deploys mem20: build from compose in a sandbox (never against the live /opt/mem20 server), verify the deployed surface matches the live 527 tools / 135 domains, and record the exact commands, timings, and any drift between compose config and live state. Deliver a written deploy-test report with the tag found, whether it matches 4.0.0, and a staged patch for any config drift you verified.",
+    "title": "Reproducible deploy test from docker-compose in a sandbox",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-observability-engineer",
+    "prompt": "Instrument the highest-priority blind spot from your observability gap audit (how failures like the unauthenticated 0.0.0.0 HTTP transport would be detected), producing a staged patch that adds real logging or metrics at the exact code path you identified. Run the instrumented path in a sandbox and include a sample of the actual log or metric output in your report. Deliver the staged patch plus a written instrumentation report with the blind spot, the file references, and the observed output.",
+    "title": "Instrument the highest-priority observability blind spot",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-chaos-engineer",
+    "prompt": "Run the safest failure-injection scenario from your test plan (transport down, in a sandbox only, never against the live /opt/mem20 server), following its exact setup, expected graceful behaviour, abort criteria, and pass/fail checks. Record what you actually observed at each step, including whether mem20 degraded gracefully or not. Deliver a written test report with the observed results and the staged runnable test script you used.",
+    "title": "Run the safest sandbox failure-injection scenario",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-tooling-engineer",
+    "prompt": "Wire tools_preflight.py gates G1-G5 into the local pre-commit gate (distinct from the DevOps Engineer's CI wiring), producing a staged patch for the local gate config and a run log showing the gate passing on the current tree after your pyproject procedural-module fix. Verify the gate output you observed and record any gate that still fails with its cause. Deliver the staged patch plus the written run report.",
+    "title": "Wire tools_preflight G1-G5 into the local pre-commit gate",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-model-evaluator",
+    "prompt": "Apply your evaluation rubric (description correctness, grounded-vs-simulated separation, error handling, doc coverage) to a second scored sample of 20 real tools drawn from the live 527-tool surface, different from your first sample, including at least 2 tools from the remaining empty stubs. Deliver an evaluation report file with the rubric, the 20 scored tools with evidence (file/line per score), aggregate scores, and the 3 worst-scoring real tools with staged fix suggestions. Do not invent scores for tools you did not inspect.",
+    "title": "Evaluate the next 20 tools with your rubric",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-data-annotator",
+    "prompt": "Produce a prioritised build order for the 19 empty stubs in candy/mcp_tools/ from your annotated inventory, ranking them by dependency (which stubs other stubs or subsystems need first), user impact, and implementation effort, with a dependency map showing which stub depends on what. Verify each stub's current state in the tree before ranking it. Deliver the build order and map as a structured written file for the Reviewer.",
+    "title": "Prioritised build order for the 19 stubs with a dependency map",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-embedding-engineer",
+    "prompt": "Build a retrieval test harness for mem20personalcognitivesearchz that tests embedding lookup and retrieval against the real subsystem code, using at least 5 real queries traced through the code and recording what each returns or where it fails with file/line evidence. Stage the harness as a test file plus a written report of the observed results and the exact failure points. Do not write a fake domain.py that pretends to work.",
+    "title": "Retrieval test harness for personal cognitive search",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-knowledge-graph-engineer",
+    "prompt": "Update your domain relationship map of all 135 domains to reflect the integration work on the three subsystems with no domain.py (sensory ingest, skill transfer, personal cognitive search), re-deriving each affected domain's dependencies from actual imports and the surface definition. Cross-check the live 527/135 counts against the finance model again and flag every domain whose documented relationships still contradict the code. Deliver the revised structured map file plus a drift report.",
+    "title": "Update the domain map after the subsystem integrations",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-privacy-engineer",
+    "prompt": "Fix the top 3 privacy gaps from your audit (PII handling and consent gates), producing a staged patch for each fix you can verify in the real code, then re-audit the affected tools and record the new consent-gate status with file references. Deliver the staged patches plus a written re-audit report with a findings table showing each gap, its fix, and its new status. Do not access any real user data; audit code and docs only.",
+    "title": "Fix the top 3 privacy gaps and re-audit",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-bias-auditor",
+    "prompt": "Re-audit the Marketing Agent's v6 launch copy and the Newsletter Writer's first issue claim by claim against the live system (launch copy saying 272 tools, 05-reference covering only 221/527, finance model 485/133 vs live 527/135, README claims), testing each against the real code, tree, and history. Deliver a claims-audit report file with a table (claim, source, verified true/false, correct figure, evidence) and staged corrections for every false claim. Do not soften a false claim into a true one.",
+    "title": "Re-audit the v6 launch copy and first newsletter claims",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-conversation-designer",
+    "prompt": "Design a second set of onboarding conversation flows for mem20, grounded in real tools from the live 527-tool surface: a first drift check flow and a memory-recall troubleshooting flow, each with exact tool names, expected responses, and fallback paths when a tool is missing or a stub. Verify each tool you script exists in the repo and flag any stub you encounter. Deliver the flows document as a written file.",
+    "title": "Second set of flows: drift check and recall troubleshooting",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-prompt-tester",
+    "prompt": "Build and run a second prompt test suite sampling 30 different real tool descriptions across the 135 domains, testing each for accuracy (does the tool do what its description says?), grounded-vs-simulated honesty, and completeness, and recording pass/fail with file/line evidence per tool. Pay special attention to the remaining empty stubs and the subsystems with no domain.py. Deliver a test report file with the suite, results table, and staged description fixes for every failure. Do not mark a test passed without evidence.",
+    "title": "Test the next 30 tool descriptions",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-video-producer",
+    "prompt": "Produce the storyboard and full script for Z Corps Episode 2, building on Episode 1 (22 minutes, 132 clips) and Pixel's Episode 2 visual brief: scene-by-scene storyboard with visuals, narration, and the real shots needed, plus a shot list and a narration script using only verified Episode 1 continuity. Note where footage still needs to be captured. Deliver the production file as a written document.",
+    "title": "Z Corps Episode 2 storyboard and script",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-podcast-producer",
+    "prompt": "Each month, write the script for the next mem20 podcast episode (20 minutes) using only verified facts from that month's shipped work: the live surface counts re-verified, the issues fixed, and what is still unfinished (remaining stubs, subsystems without a domain.py, starlette cap) stated honestly. Include a cold open, three segments with talking points tied to real capabilities, and show notes with links to docs.mem20.com. Do not invent guests, listener questions, or download numbers.",
+    "schedule": "0 10 5 * *",
+    "title": "Monthly podcast episode script from shipped work",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-newsletter-writer",
+    "prompt": "Each month, draft the next mem20 newsletter issue grounded only in verified facts from that month: version, live tool/domain counts re-verified, what shipped (verified items only), an honest what-is-still-unfinished section (remaining stubs, subsystems without a domain.py, starlette cap), and calls to action. Do not use the 272-tool figure and do not invent subscribers, dates, or releases. Deliver each issue as a written file.",
+    "schedule": "0 9 3 * *",
+    "title": "Monthly newsletter issue from verified facts",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-forum-moderator",
+    "prompt": "Each week, run a community moderation sweep: check the mem20 community spaces against the guidelines and FAQ you drafted, verify every FAQ answer still matches the current repo and docs, and update any answer that drift has made stale (for example a stub that has since been implemented, or a count that changed). Deliver a weekly sweep report listing what was checked, what was updated with file evidence, and any moderation action needed for the Reviewer.",
+    "schedule": "0 11 * * 5",
+    "title": "Weekly community moderation sweep and FAQ update",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-vendor-manager",
+    "prompt": "Produce a vendor risk review from your vendor inventory: for each critical vendor (model providers Groq, Gemini, Kilo, Pollinations; hosting for docs.mem20.com and shop.mem20.com; Stripe), record what breaks if it went away, the fallback option with its trade-off, and the risk rating, all with file or config evidence. Do not invent vendors, contracts, or prices; mark anything unconfirmed as unconfirmed. Deliver the review as a written file for the Reviewer.",
+    "title": "Vendor risk review: fallback for each critical vendor",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-procurement-agent",
+    "prompt": "Produce a procurement recommendation for the shop.mem20.com live deploy: inventory the hosting and services the deploy actually needs based on the repo, configs, and vendor inventory, compare at least two real options with publicly listed costs, and recommend one with a trade-off note and a total-cost summary that clearly separates known costs from unknowns. Do not invent quotes, invoices, or spending; no purchase is authorised by this job. Deliver the recommendation as a written file for the Reviewer.",
+    "title": "Procurement recommendation for the shop live deploy",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-finance-analyst",
+    "prompt": "Each month, produce mem20's P&L from the corrected finance model (reconciled to the live 527 tools / 135 domains) and the pricing tiers (Team $6k / Business $18k / Scale $36k / Enterprise $80k), showing the arithmetic, the model inputs used with their sources, and any input that has drifted since the previous month. Do not invent revenue, customers, or costs; mark every unknown as unknown. Deliver the monthly P&L as a written report file.",
+    "schedule": "0 10 2 * *",
+    "title": "Monthly P&L from the corrected finance model",
+    "type": "cron"
+  },
+  {
+    "agentId": "agent-risk-manager",
+    "prompt": "Update your mem20 risk register after the first round of fixes: re-score each known risk (starlette cap, unauthenticated transport, 19 stubs, 3 subsystems with no domain.py, workflows-permission block, finance model drift, launch copy) with its new likelihood, impact, and status, citing the file, commit, or staged patch behind each change. Add no risk without evidence; mark any unconfirmed item as unconfirmed. Deliver the revised register as a written file for the Reviewer.",
+    "title": "Update the risk register after the first fixes",
+    "type": "job"
+  },
+  {
+    "agentId": "agent-website-currency-agent",
+    "prompt": "Keep mem20.com current on an ongoing basis. Every 6 hours, check the homepage, docs/index.html, pricing, and the main docs pages against the LIVE mem20 surface (docs/surface.json, 527 tools / 135 domains, version 4.0.0 \u2014 verify it yourself, never trust a doc's claim) and the repo. Find stale numbers, claims, links, or outdated copy, verify each one from the file text itself, and stage the smallest correction with stage_patch via the governed path (the Reviewer approves before anything pushes). If nothing is verifiably wrong, report NO-CHANGE. Never push directly; never touch .github/, requirements.txt, secrets, or dated history records.",
+    "title": "Keep mem20.com current \u2014 recurring website currency check",
+    "type": "job"
+  }
+]

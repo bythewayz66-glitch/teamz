@@ -1,418 +1,422 @@
 [
- {
-  "id": "agent-mem20-assistant",
-  "name": "Mem20 Assistant"
- },
- {
-  "id": "agent-daily-planner",
-  "name": "Daily Planner"
- },
- {
-  "id": "agent-research-assistant",
-  "name": "Research Assistant"
- },
- {
-  "id": "agent-writing-assistant",
-  "name": "Writing Assistant"
- },
- {
-  "id": "agent-code-reviewer",
-  "name": "Code Reviewer"
- },
- {
-  "id": "agent-qa-tester",
-  "name": "QA Tester"
- },
- {
-  "id": "agent-bug-analysis-agent",
-  "name": "Bug Analysis Agent"
- },
- {
-  "id": "agent-frontend-developer",
-  "name": "Frontend Developer"
- },
- {
-  "id": "agent-backend-architect",
-  "name": "Backend Architect"
- },
- {
-  "id": "agent-data-engineer",
-  "name": "Data Engineer"
- },
- {
-  "id": "agent-ai-engineer",
-  "name": "AI Engineer"
- },
- {
-  "id": "agent-prompt-engineer",
-  "name": "Prompt Engineer"
- },
- {
-  "id": "agent-minimal-change-engineer",
-  "name": "Minimal Change Engineer"
- },
- {
-  "id": "agent-git-workflow-master",
-  "name": "Git Workflow Master"
- },
- {
-  "id": "agent-codebase-onboarding-engineer",
-  "name": "Codebase Onboarding Engineer"
- },
- {
-  "id": "agent-technical-writer",
-  "name": "Technical Writer"
- },
- {
-  "id": "agent-application-security-engineer",
-  "name": "Application Security Engineer"
- },
- {
-  "id": "agent-product-researcher",
-  "name": "Product Researcher"
- },
- {
-  "id": "agent-analytics-reporter",
-  "name": "Analytics Reporter"
- },
- {
-  "id": "agent-reading-companion",
-  "name": "Reading Companion"
- },
- {
-  "id": "agent-reality-checker",
-  "name": "Reality Checker"
- },
- {
-  "id": "agent-content-creator",
-  "name": "Content Creator"
- },
- {
-  "id": "agent-meeting-notes-specialist",
-  "name": "Meeting Notes Specialist"
- },
- {
-  "id": "agent-ceo-assistant",
-  "name": "CEO Assistant"
- },
- {
-  "id": "agent-senior-project-manager",
-  "name": "Senior Project Manager"
- },
- {
-  "id": "agent-personal-growth-mentor",
-  "name": "Personal Growth Mentor"
- },
- {
-  "id": "agent-reviewer",
-  "name": "Reviewer"
- },
- {
-  "id": "agent-orchestrator",
-  "name": "Orchestrator"
- },
- {
-  "id": "agent-provider-researcher",
-  "name": "Provider Researcher"
- },
- {
-  "id": "agent-keymaster",
-  "name": "Keymaster"
- },
- {
-  "id": "agent-atlas",
-  "name": "Atlas"
- },
- {
-  "id": "agent-scout",
-  "name": "Scout"
- },
- {
-  "id": "agent-pixel",
-  "name": "Pixel"
- },
- {
-  "id": "agent-sage",
-  "name": "Sage"
- },
- {
-  "id": "agent-pricing-strategist",
-  "name": "Pricing Strategist"
- },
- {
-  "id": "agent-sales-agent",
-  "name": "Sales Agent"
- },
- {
-  "id": "agent-customer-success",
-  "name": "Customer Success Agent"
- },
- {
-  "id": "agent-marketing-agent",
-  "name": "Marketing Agent"
- },
- {
-  "id": "agent-seo-specialist",
-  "name": "SEO Specialist"
- },
- {
-  "id": "agent-competitor-analyst",
-  "name": "Competitor Analyst"
- },
- {
-  "id": "agent-partnership-scout",
-  "name": "Partnership Scout"
- },
- {
-  "id": "agent-investor-relations",
-  "name": "Investor Relations Agent"
- },
- {
-  "id": "agent-legal-reviewer",
-  "name": "Legal Reviewer"
- },
- {
-  "id": "agent-billing-support",
-  "name": "Billing Support Agent"
- },
- {
-  "id": "agent-performance-engineer",
-  "name": "Performance Engineer"
- },
- {
-  "id": "agent-database-engineer",
-  "name": "Database Engineer"
- },
- {
-  "id": "agent-devops-engineer",
-  "name": "DevOps Engineer"
- },
- {
-  "id": "agent-security-auditor",
-  "name": "Security Auditor"
- },
- {
-  "id": "agent-test-automation-engineer",
-  "name": "Test Automation Engineer"
- },
- {
-  "id": "agent-documentation-engineer",
-  "name": "Documentation Engineer"
- },
- {
-  "id": "agent-api-designer",
-  "name": "API Designer"
- },
- {
-  "id": "agent-integration-engineer",
-  "name": "Integration Engineer"
- },
- {
-  "id": "agent-migration-engineer",
-  "name": "Migration Engineer"
- },
- {
-  "id": "agent-release-manager",
-  "name": "Release Manager"
- },
- {
-  "id": "agent-drift-monitor",
-  "name": "Drift Monitor"
- },
- {
-  "id": "agent-usage-analyst",
-  "name": "Usage Analyst"
- },
- {
-  "id": "agent-feedback-analyst",
-  "name": "Feedback Analyst"
- },
- {
-  "id": "agent-data-quality-engineer",
-  "name": "Data Quality Engineer"
- },
- {
-  "id": "agent-search-relevance-engineer",
-  "name": "Search Relevance Engineer"
- },
- {
-  "id": "agent-community-manager",
-  "name": "Community Manager"
- },
- {
-  "id": "agent-tutorial-creator",
-  "name": "Tutorial Creator"
- },
- {
-  "id": "agent-changelog-writer",
-  "name": "Changelog Writer"
- },
- {
-  "id": "agent-social-media-manager",
-  "name": "Social Media Manager"
- },
- {
-  "id": "agent-developer-advocate",
-  "name": "Developer Advocate"
- },
- {
-  "id": "agent-compliance-officer",
-  "name": "Compliance Officer"
- },
- {
-  "id": "agent-incident-responder",
-  "name": "Incident Responder"
- },
- {
-  "id": "agent-backup-recovery-engineer",
-  "name": "Backup & Recovery Engineer"
- },
- {
-  "id": "agent-cost-optimizer",
-  "name": "Cost Optimizer"
- },
- {
-  "id": "agent-onboarding-engineer",
-  "name": "Onboarding Engineer"
- },
- {
-  "id": "agent-memory-curator",
-  "name": "Memory Curator"
- },
- {
-  "id": "agent-skill-builder",
-  "name": "Skill Builder"
- },
- {
-  "id": "agent-prompt-librarian",
-  "name": "Prompt Librarian"
- },
- {
-  "id": "agent-ethics-reviewer",
-  "name": "Ethics Reviewer"
- },
- {
-  "id": "agent-roadmap-planner",
-  "name": "Roadmap Planner"
- },
- {
-  "id": "agent-growth-hacker",
-  "name": "Growth Hacker"
- },
- {
-  "id": "agent-market-researcher",
-  "name": "Market Researcher"
- },
- {
-  "id": "agent-customer-interviewer",
-  "name": "Customer Interviewer"
- },
- {
-  "id": "agent-retention-analyst",
-  "name": "Retention Analyst"
- },
- {
-  "id": "agent-affiliate-manager",
-  "name": "Affiliate Manager"
- },
- {
-  "id": "agent-grant-writer",
-  "name": "Grant Writer"
- },
- {
-  "id": "agent-mobile-developer",
-  "name": "Mobile Developer"
- },
- {
-  "id": "agent-frontend-performance-engineer",
-  "name": "Frontend Performance Engineer"
- },
- {
-  "id": "agent-accessibility-engineer",
-  "name": "Accessibility Engineer"
- },
- {
-  "id": "agent-localization-engineer",
-  "name": "Localization Engineer"
- },
- {
-  "id": "agent-infrastructure-engineer",
-  "name": "Infrastructure Engineer"
- },
- {
-  "id": "agent-observability-engineer",
-  "name": "Observability Engineer"
- },
- {
-  "id": "agent-chaos-engineer",
-  "name": "Chaos Engineer"
- },
- {
-  "id": "agent-tooling-engineer",
-  "name": "Tooling Engineer"
- },
- {
-  "id": "agent-model-evaluator",
-  "name": "Model Evaluator"
- },
- {
-  "id": "agent-data-annotator",
-  "name": "Data Annotator"
- },
- {
-  "id": "agent-embedding-engineer",
-  "name": "Embedding Engineer"
- },
- {
-  "id": "agent-knowledge-graph-engineer",
-  "name": "Knowledge Graph Engineer"
- },
- {
-  "id": "agent-privacy-engineer",
-  "name": "Privacy Engineer"
- },
- {
-  "id": "agent-bias-auditor",
-  "name": "Bias Auditor"
- },
- {
-  "id": "agent-conversation-designer",
-  "name": "Conversation Designer"
- },
- {
-  "id": "agent-prompt-tester",
-  "name": "Prompt Tester"
- },
- {
-  "id": "agent-video-producer",
-  "name": "Video Producer"
- },
- {
-  "id": "agent-podcast-producer",
-  "name": "Podcast Producer"
- },
- {
-  "id": "agent-newsletter-writer",
-  "name": "Newsletter Writer"
- },
- {
-  "id": "agent-forum-moderator",
-  "name": "Forum Moderator"
- },
- {
-  "id": "agent-vendor-manager",
-  "name": "Vendor Manager"
- },
- {
-  "id": "agent-procurement-agent",
-  "name": "Procurement Agent"
- },
- {
-  "id": "agent-finance-analyst",
-  "name": "Finance Analyst"
- },
- {
-  "id": "agent-risk-manager",
-  "name": "Risk Manager"
- }
+  {
+    "id": "agent-mem20-assistant",
+    "name": "Mem20 Assistant"
+  },
+  {
+    "id": "agent-daily-planner",
+    "name": "Daily Planner"
+  },
+  {
+    "id": "agent-research-assistant",
+    "name": "Research Assistant"
+  },
+  {
+    "id": "agent-writing-assistant",
+    "name": "Writing Assistant"
+  },
+  {
+    "id": "agent-code-reviewer",
+    "name": "Code Reviewer"
+  },
+  {
+    "id": "agent-qa-tester",
+    "name": "QA Tester"
+  },
+  {
+    "id": "agent-bug-analysis-agent",
+    "name": "Bug Analysis Agent"
+  },
+  {
+    "id": "agent-frontend-developer",
+    "name": "Frontend Developer"
+  },
+  {
+    "id": "agent-backend-architect",
+    "name": "Backend Architect"
+  },
+  {
+    "id": "agent-data-engineer",
+    "name": "Data Engineer"
+  },
+  {
+    "id": "agent-ai-engineer",
+    "name": "AI Engineer"
+  },
+  {
+    "id": "agent-prompt-engineer",
+    "name": "Prompt Engineer"
+  },
+  {
+    "id": "agent-minimal-change-engineer",
+    "name": "Minimal Change Engineer"
+  },
+  {
+    "id": "agent-git-workflow-master",
+    "name": "Git Workflow Master"
+  },
+  {
+    "id": "agent-codebase-onboarding-engineer",
+    "name": "Codebase Onboarding Engineer"
+  },
+  {
+    "id": "agent-technical-writer",
+    "name": "Technical Writer"
+  },
+  {
+    "id": "agent-application-security-engineer",
+    "name": "Application Security Engineer"
+  },
+  {
+    "id": "agent-product-researcher",
+    "name": "Product Researcher"
+  },
+  {
+    "id": "agent-analytics-reporter",
+    "name": "Analytics Reporter"
+  },
+  {
+    "id": "agent-reading-companion",
+    "name": "Reading Companion"
+  },
+  {
+    "id": "agent-reality-checker",
+    "name": "Reality Checker"
+  },
+  {
+    "id": "agent-content-creator",
+    "name": "Content Creator"
+  },
+  {
+    "id": "agent-meeting-notes-specialist",
+    "name": "Meeting Notes Specialist"
+  },
+  {
+    "id": "agent-ceo-assistant",
+    "name": "CEO Assistant"
+  },
+  {
+    "id": "agent-senior-project-manager",
+    "name": "Senior Project Manager"
+  },
+  {
+    "id": "agent-personal-growth-mentor",
+    "name": "Personal Growth Mentor"
+  },
+  {
+    "id": "agent-reviewer",
+    "name": "Reviewer"
+  },
+  {
+    "id": "agent-orchestrator",
+    "name": "Orchestrator"
+  },
+  {
+    "id": "agent-provider-researcher",
+    "name": "Provider Researcher"
+  },
+  {
+    "id": "agent-keymaster",
+    "name": "Keymaster"
+  },
+  {
+    "id": "agent-atlas",
+    "name": "Atlas"
+  },
+  {
+    "id": "agent-scout",
+    "name": "Scout"
+  },
+  {
+    "id": "agent-pixel",
+    "name": "Pixel"
+  },
+  {
+    "id": "agent-sage",
+    "name": "Sage"
+  },
+  {
+    "id": "agent-pricing-strategist",
+    "name": "Pricing Strategist"
+  },
+  {
+    "id": "agent-sales-agent",
+    "name": "Sales Agent"
+  },
+  {
+    "id": "agent-customer-success",
+    "name": "Customer Success Agent"
+  },
+  {
+    "id": "agent-marketing-agent",
+    "name": "Marketing Agent"
+  },
+  {
+    "id": "agent-seo-specialist",
+    "name": "SEO Specialist"
+  },
+  {
+    "id": "agent-competitor-analyst",
+    "name": "Competitor Analyst"
+  },
+  {
+    "id": "agent-partnership-scout",
+    "name": "Partnership Scout"
+  },
+  {
+    "id": "agent-investor-relations",
+    "name": "Investor Relations Agent"
+  },
+  {
+    "id": "agent-legal-reviewer",
+    "name": "Legal Reviewer"
+  },
+  {
+    "id": "agent-billing-support",
+    "name": "Billing Support Agent"
+  },
+  {
+    "id": "agent-performance-engineer",
+    "name": "Performance Engineer"
+  },
+  {
+    "id": "agent-database-engineer",
+    "name": "Database Engineer"
+  },
+  {
+    "id": "agent-devops-engineer",
+    "name": "DevOps Engineer"
+  },
+  {
+    "id": "agent-security-auditor",
+    "name": "Security Auditor"
+  },
+  {
+    "id": "agent-test-automation-engineer",
+    "name": "Test Automation Engineer"
+  },
+  {
+    "id": "agent-documentation-engineer",
+    "name": "Documentation Engineer"
+  },
+  {
+    "id": "agent-api-designer",
+    "name": "API Designer"
+  },
+  {
+    "id": "agent-integration-engineer",
+    "name": "Integration Engineer"
+  },
+  {
+    "id": "agent-migration-engineer",
+    "name": "Migration Engineer"
+  },
+  {
+    "id": "agent-release-manager",
+    "name": "Release Manager"
+  },
+  {
+    "id": "agent-drift-monitor",
+    "name": "Drift Monitor"
+  },
+  {
+    "id": "agent-usage-analyst",
+    "name": "Usage Analyst"
+  },
+  {
+    "id": "agent-feedback-analyst",
+    "name": "Feedback Analyst"
+  },
+  {
+    "id": "agent-data-quality-engineer",
+    "name": "Data Quality Engineer"
+  },
+  {
+    "id": "agent-search-relevance-engineer",
+    "name": "Search Relevance Engineer"
+  },
+  {
+    "id": "agent-community-manager",
+    "name": "Community Manager"
+  },
+  {
+    "id": "agent-tutorial-creator",
+    "name": "Tutorial Creator"
+  },
+  {
+    "id": "agent-changelog-writer",
+    "name": "Changelog Writer"
+  },
+  {
+    "id": "agent-social-media-manager",
+    "name": "Social Media Manager"
+  },
+  {
+    "id": "agent-developer-advocate",
+    "name": "Developer Advocate"
+  },
+  {
+    "id": "agent-compliance-officer",
+    "name": "Compliance Officer"
+  },
+  {
+    "id": "agent-incident-responder",
+    "name": "Incident Responder"
+  },
+  {
+    "id": "agent-backup-recovery-engineer",
+    "name": "Backup & Recovery Engineer"
+  },
+  {
+    "id": "agent-cost-optimizer",
+    "name": "Cost Optimizer"
+  },
+  {
+    "id": "agent-onboarding-engineer",
+    "name": "Onboarding Engineer"
+  },
+  {
+    "id": "agent-memory-curator",
+    "name": "Memory Curator"
+  },
+  {
+    "id": "agent-skill-builder",
+    "name": "Skill Builder"
+  },
+  {
+    "id": "agent-prompt-librarian",
+    "name": "Prompt Librarian"
+  },
+  {
+    "id": "agent-ethics-reviewer",
+    "name": "Ethics Reviewer"
+  },
+  {
+    "id": "agent-roadmap-planner",
+    "name": "Roadmap Planner"
+  },
+  {
+    "id": "agent-growth-hacker",
+    "name": "Growth Hacker"
+  },
+  {
+    "id": "agent-market-researcher",
+    "name": "Market Researcher"
+  },
+  {
+    "id": "agent-customer-interviewer",
+    "name": "Customer Interviewer"
+  },
+  {
+    "id": "agent-retention-analyst",
+    "name": "Retention Analyst"
+  },
+  {
+    "id": "agent-affiliate-manager",
+    "name": "Affiliate Manager"
+  },
+  {
+    "id": "agent-grant-writer",
+    "name": "Grant Writer"
+  },
+  {
+    "id": "agent-mobile-developer",
+    "name": "Mobile Developer"
+  },
+  {
+    "id": "agent-frontend-performance-engineer",
+    "name": "Frontend Performance Engineer"
+  },
+  {
+    "id": "agent-accessibility-engineer",
+    "name": "Accessibility Engineer"
+  },
+  {
+    "id": "agent-localization-engineer",
+    "name": "Localization Engineer"
+  },
+  {
+    "id": "agent-infrastructure-engineer",
+    "name": "Infrastructure Engineer"
+  },
+  {
+    "id": "agent-observability-engineer",
+    "name": "Observability Engineer"
+  },
+  {
+    "id": "agent-chaos-engineer",
+    "name": "Chaos Engineer"
+  },
+  {
+    "id": "agent-tooling-engineer",
+    "name": "Tooling Engineer"
+  },
+  {
+    "id": "agent-model-evaluator",
+    "name": "Model Evaluator"
+  },
+  {
+    "id": "agent-data-annotator",
+    "name": "Data Annotator"
+  },
+  {
+    "id": "agent-embedding-engineer",
+    "name": "Embedding Engineer"
+  },
+  {
+    "id": "agent-knowledge-graph-engineer",
+    "name": "Knowledge Graph Engineer"
+  },
+  {
+    "id": "agent-privacy-engineer",
+    "name": "Privacy Engineer"
+  },
+  {
+    "id": "agent-bias-auditor",
+    "name": "Bias Auditor"
+  },
+  {
+    "id": "agent-conversation-designer",
+    "name": "Conversation Designer"
+  },
+  {
+    "id": "agent-prompt-tester",
+    "name": "Prompt Tester"
+  },
+  {
+    "id": "agent-video-producer",
+    "name": "Video Producer"
+  },
+  {
+    "id": "agent-podcast-producer",
+    "name": "Podcast Producer"
+  },
+  {
+    "id": "agent-newsletter-writer",
+    "name": "Newsletter Writer"
+  },
+  {
+    "id": "agent-forum-moderator",
+    "name": "Forum Moderator"
+  },
+  {
+    "id": "agent-vendor-manager",
+    "name": "Vendor Manager"
+  },
+  {
+    "id": "agent-procurement-agent",
+    "name": "Procurement Agent"
+  },
+  {
+    "id": "agent-finance-analyst",
+    "name": "Finance Analyst"
+  },
+  {
+    "id": "agent-risk-manager",
+    "name": "Risk Manager"
+  },
+  {
+    "id": "agent-website-currency-agent",
+    "name": "Website Currency Agent"
+  }
 ]
