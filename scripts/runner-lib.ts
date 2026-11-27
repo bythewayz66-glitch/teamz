@@ -55,6 +55,7 @@ import { handleFor, parseMentions } from '../src/lib/mentions';
 import type { Agent } from '../src/types';
 import {
   createCronJob,
+  cronIntervalMinutes,
   recordCronRun,
   Schedule,
   tick as schedulerTick,
@@ -1128,7 +1129,20 @@ export async function processDue(
     return reply;
   };
 
-  const { dueJobs, dueTriggers } = schedulerTick(now, state.cronJobs, state.triggers);
+  const { dueJobs: dueJobsUnsorted, dueTriggers } = schedulerTick(now, state.cronJobs, state.triggers);
+  // Due crons fire most-frequent-first: the Orchestrator (every 15 min)
+  // is the coordinator for everything else, so it must not wait behind
+  // a whole hour of hourly crons when a catch-up tick makes them all due
+  // at once. Ties keep their state order (stable sort). Uncomputable
+  // intervals go last rather than breaking the tick.
+  const dueJobs = [...dueJobsUnsorted].sort((a, b) => {
+    const ia = cronIntervalMinutes(a.schedule, now);
+    const ib = cronIntervalMinutes(b.schedule, now);
+    if (ia === null && ib === null) return 0;
+    if (ia === null) return 1;
+    if (ib === null) return -1;
+    return ia - ib;
+  });
 
   for (const trigger of dueTriggers) {
     const agent = agentById.get(trigger.agentId);

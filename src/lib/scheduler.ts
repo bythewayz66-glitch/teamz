@@ -359,3 +359,22 @@ export function tick(now: Date, jobs: CronJob[], triggers: IntervalTrigger[]): T
     dueTriggers: dueTriggers(triggers, now.getTime()),
   };
 }
+
+/**
+ * Minutes between consecutive firings of a cron expression, measured
+ * from `from`. The Orchestrator (every 15 minutes) is 15, an hourly
+ * cron is 60, a daily cron is 1440. Returns null when the interval cannot
+ * (bad expression, or no second slot inside the lookahead). Used to
+ * order due crons most-frequent-first, so a 15-minute coordinator never
+ * waits behind a whole hour of hourly jobs.
+ */
+export function cronIntervalMinutes(expr: string, from: Date = new Date()): number | null {
+  try {
+    const schedule = new Schedule(expr);
+    const first = schedule.next(from);
+    const second = schedule.next(first);
+    return (second.getTime() - first.getTime()) / 60_000;
+  } catch {
+    return null;
+  }
+}

@@ -4,6 +4,7 @@ import {
   Schedule,
   createCronJob,
   createTrigger,
+  cronIntervalMinutes,
   dueTriggers,
   isCronJobDue,
   isTriggerDue,
@@ -283,5 +284,19 @@ describe('interval triggers', () => {
     expect(() => createTrigger({ channelId: 'c', agentId: 'a', prompt: ' ', everyMs: 1000 })).toThrow();
     expect(() => createTrigger({ channelId: '', agentId: 'a', prompt: 'x', everyMs: 1000 })).toThrow();
     expect(() => createTrigger({ channelId: 'c', agentId: 'a', prompt: 'x', everyMs: 999 })).toThrow();
+  });
+});
+
+describe('cronIntervalMinutes', () => {
+  it('measures the gap between firings: 15-min is 15, hourly is 60, daily is 1440', () => {
+    const from = at(2026, 11, 26, 10, 0);
+    expect(cronIntervalMinutes('*/15 * * * *', from)).toBe(15);
+    expect(cronIntervalMinutes('0 * * * *', from)).toBe(60);
+    expect(cronIntervalMinutes('0 7 * * *', from)).toBe(1440);
+    expect(cronIntervalMinutes('0 9 * * 1', from)).toBe(10080);
+  });
+
+  it('returns null for a bad expression instead of throwing', () => {
+    expect(cronIntervalMinutes('not a cron')).toBeNull();
   });
 });

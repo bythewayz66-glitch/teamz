@@ -1142,6 +1142,53 @@ describe('processDue — per-tick product-job cap', () => {
   });
 });
 
+describe('processDue — due crons fire most-frequent-first', () => {
+  it('the 15-min Orchestrator jumps ahead of the hourly crons listed before it', async () => {
+    // Live shape: the Orchestrator cron sits at index 26 in state, after
+    // 26 hourly crons. On a catch-up tick they are all due at once; if
+    // they fired in state order the Orchestrator would wait ~26 minutes
+    // behind the hourly backlog every hour. Most-frequent-first fixes it.
+    const hourly = {
+      ...createCronJob({
+        name: 'Hourly drift check',
+        schedule: '0 * * * *',
+        type: 'prompt',
+        target: 'Check drift.',
+        agentId: 'agent-atlas',
+        channelId: 'conv-build-room',
+      }),
+      lastRunAt: new Date(2026, 10, 26, 9, 0).getTime(),
+    };
+    const orchestrator = {
+      ...createCronJob({
+        name: 'Orchestrator triage',
+        schedule: '*/15 * * * *',
+        type: 'prompt',
+        target: 'Triage the Build Room.',
+        agentId: 'agent-orchestrator',
+        channelId: 'conv-build-room',
+      }),
+      lastRunAt: new Date(2026, 10, 26, 9, 0).getTime(),
+    };
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-orchestrator', 'Orchestrator')],
+      // Hourly listed FIRST, Orchestrator second — the sort must flip them.
+      cronJobs: [hourly, orchestrator],
+    };
+    const calls: string[] = [];
+    await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push(a.id);
+        return 'Nothing to assign.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls).toEqual(['agent-orchestrator', 'agent-atlas']);
+  });
+});
+
 describe('processDue — Playto suggestions to the Reviewer', () => {
   function gatedJob() {
     return createJob({
