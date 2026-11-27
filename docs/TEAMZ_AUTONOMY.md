@@ -102,16 +102,19 @@ panel shows them.
   One tick handles due triggers, due cron jobs, rate-limit rescues,
   then due product-job stages, sequentially. A failure in one item is
   recorded on that item and logged; it never aborts the rest.
-- **Slack updates** (`scripts/slack-poster.ts`, wired into the runner's
-  tick): when a product-job stage completes, a cron run finishes, or
-  the Reviewer decides a gated stage, one short message lands in
-  `#mem20updates` (agent, job/stage, outcome). Spacing, rescues,
-  parks, and retries stay in the runner log only. The webhook URL is
-  never hardcoded or logged — it comes from
-  `/etc/teamz-slack.env` (systemd `EnvironmentFile`, see
-  `deploy/teamz-runner.service.d/slack.conf`, same pattern as the
-  agent's `pollinations.conf`), with a direct read of the file as
-  fallback. Posting is best-effort and never breaks a tick.
+- **Slack updates** (`scripts/slack-poster.ts`, wired into the runner
+  via `RunnerDeps.onJobUpdate`): each time an agent finishes a unit
+  of work — a product-job stage, a cron run, a Reviewer decision — one
+  short message lands in `#mem20updates` (agent, job/stage, outcome).
+  Posts happen as the work completes, not batched at the end of the
+  tick, so a tick killed mid-flight by a restart still reports the
+  work it already finished. Spacing, rescues, parks, and retries stay
+  in the runner log only. The webhook URL is never hardcoded or
+  logged — it comes from `/etc/teamz-slack.env` (systemd
+  `EnvironmentFile`, see `deploy/teamz-runner.service.d/slack.conf`,
+  same pattern as the agent's `pollinations.conf`), with a direct
+  read of the file as fallback. Posting is best-effort and never
+  breaks a tick.
 - **Endpoint** (`scripts/agent-endpoint/agent.mjs`, on jnet1 as
   `teamz-agent.service`, port 8897): `POST /chat` (tool loop:
   calculator, wikipedia, weather, web_search, create_automation,
@@ -145,7 +148,7 @@ high-stakes alike; there are no carve-outs to anyone else. See
 
 ## Tests
 
-`npm test` — 363 tests, including the new suites:
+`npm test` — 371 tests, including the new suites:
 `src/lib/reviewer.test.ts`, `src/lib/orchestrator.test.ts`,
 `src/lib/runner-flows.test.ts` (Orchestrator mentions, Reviewer
 approve/deny/high-stakes/retry, rate-limit rescue through the real

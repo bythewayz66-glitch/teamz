@@ -1,13 +1,14 @@
 /**
  * teamz Slack poster — agent job updates to #mem20updates.
  *
- * The 24/7 runner is the source of truth for job results: every tick it
- * produces `fired` lines describing what happened (a product-job stage
- * completed, a cron run finished, the Reviewer decided a gated stage).
- * This module turns the lines worth telling Jesse about into one short
- * Slack message per tick and posts it to the #mem20updates incoming
- * webhook. Everything else (spacing, rescues, parks, retries) stays in
- * the runner log only — the channel is for completed work, not noise.
+ * Each time an agent finishes a unit of work (a product-job stage, a
+ * cron run, a Reviewer decision), the runner hands the human-readable
+ * line to `postJobUpdate`, which posts it to #mem20updates as one
+ * short Slack message. Posting happens as the work completes — not
+ * batched at the end of the tick — because a tick can run long and a
+ * restart can kill it mid-flight; work already finished must still
+ * reach the channel. Everything else (spacing, rescues, parks,
+ * retries) stays in the runner log only.
  *
  * The webhook URL is NEVER hardcoded and NEVER logged. It is read at
  * runtime from, in order:
@@ -67,27 +68,31 @@ export function resetSlackWebhookUrlCache(): void {
   cachedUrl = undefined;
 }
 
-// A fired line is worth a Slack post when it reports a completed unit of
-// agent work. The runner's `fired` lines are the contract — these patterns
-// match the strings processDue emits (see scripts/runner-lib.ts).
+// A runner line is worth a Slack post when it reports a completed unit
+// of agent work. These patterns match the strings processDue emits
+// (see scripts/runner-lib.ts).
 const POSTABLE_PATTERNS: RegExp[] = [
+  /^trigger → /, // scheduled dispatch completed
+  /^trigger → .*: FAILED /, // scheduled dispatch failed
   /^job .+ \/ .+ → /, // agent stage completed
   /^job .+ \/ .+: command (ok|failed|BLOCKED|REFUSED)/, // command stage result
   /^job .+ \/ .+: FAILED /, // agent stage failed
   /^job .+ \/ .+: (APPROVED|DENIED) by Reviewer/, // Reviewer decision
+  /^job .+ \/ .+: unknown agent /, // agent missing, run failed
   /^cron .+ → /, // cron run completed
   /^cron .+: FAILED /, // cron run failed
 ];
 
-function isPostable(line: string): boolean {
+/** True when a runner line reports completed job work worth posting. */
+export function isSlackPostable(line: string): boolean {
   return POSTABLE_PATTERNS.some((pattern) => pattern.test(line));
 }
 
 function isFailure(line: string): boolean {
-  return /FAILED|DENIED|command failed|BLOCKED|REFUSED/.test(line);
+  return /FAILED|DENIED|command failed|BLOCKED|REFUSED|unknown agent/.test(line);
 }
 
-/** Collapse a fired line to one short, single-line Slack bullet. */
+/** Collapse a runner line to one short, single-line Slack bullet. */
 export function formatSlackLine(line: string): string {
   const oneLine = line.replace(/\s+/g, ' ').trim();
   const trimmed =
@@ -95,22 +100,6 @@ export function formatSlackLine(line: string): string {
       ? `${oneLine.slice(0, MAX_LINE_LENGTH - 1)}…`
       : oneLine;
   return `${isFailure(line) ? '❌' : '✅'} ${trimmed}`;
-}
-
-/**
- * Filter a tick's fired lines to the ones worth posting, formatted as
- * Slack bullets. Returns an empty array when nothing is worth posting.
- */
-export function slackLinesForTick(fired: string[]): string[] {
-  return fired.filter(isPostable).map(formatSlackLine);
-}
-
-/** Format the tick's updates as a single Slack message, or null. */
-export function formatTickMessage(fired: string[]): string | null {
-  const lines = slackLinesForTick(fired);
-  if (lines.length === 0) return null;
-  const header = lines.length === 1 ? '*Teamz update*' : `*Teamz — ${lines.length} updates*`;
-  return [header, ...lines].join('\n');
 }
 
 type LogFn = (message: string) => void;
@@ -145,17 +134,19 @@ export async function postToSlack(text: string, log: LogFn = () => {}): Promise<
 }
 
 /**
- * The runner's per-tick hook: post the tick's completed-job updates to
- * Slack. Best-effort — a missing URL or a failed post is logged and the
- * tick continues. Never throws.
+ * The runner's per-completion hook: post one completed unit of agent
+ * work to Slack as its own message. Best-effort — a non-postable line
+ * is ignored, a missing URL or a failed post is logged, and the tick
+ * continues. Never throws. Callers do not await this; the post runs
+ * in the background while the tick moves on.
  */
-export async function postTickUpdates(fired: string[], log: LogFn): Promise<void> {
-  const message = formatTickMessage(fired);
-  if (!message) return;
+export async function postJobUpdate(line: string, log: LogFn): Promise<void> {
+  if (!isSlackPostable(line)) return;
+  const message = `*Teamz update*\n${formatSlackLine(line)}`;
   try {
     const ok = await postToSlack(message, log);
     if (ok) {
-      log(`slack: posted ${slackLinesForTick(fired).length} job update(s) to #mem20updates`);
+      log('slack: posted job update to #mem20updates');
     }
   } catch (err) {
     log(`slack: post failed — ${err instanceof Error ? err.message : String(err)}`);

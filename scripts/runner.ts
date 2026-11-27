@@ -35,7 +35,7 @@ import {
   type RateLimitEvent,
   type RunnerState,
 } from './runner-lib';
-import { postTickUpdates } from './slack-poster';
+import { postJobUpdate } from './slack-poster';
 
 interface CliOptions {
   statePath: string;
@@ -133,6 +133,14 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     // window and then fail. The tick gets longer; the service skips
     // ticks while one is still running (tick guard in main()).
     minDispatchGapMs: 50_000,
+    // Post each completed unit of agent work to #mem20updates as it
+    // finishes (see scripts/slack-poster.ts). Fire-and-forget: the
+    // poster never throws and a failed post never breaks the tick, and
+    // posting per completion (not batched at end of tick) means a tick
+    // killed mid-flight by a restart still reports the work it did.
+    onJobUpdate: (line) => {
+      void postJobUpdate(line, log);
+    },
   });
   if (fired.length > 0) {
     try {
@@ -142,9 +150,6 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
       return state;
     }
   }
-  // Best-effort Slack post of this tick's completed-job updates.
-  // postTickUpdates never throws and a failed post never breaks the tick.
-  await postTickUpdates(fired, log);
   return state;
 }
 

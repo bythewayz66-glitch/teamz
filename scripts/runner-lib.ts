@@ -699,6 +699,17 @@ export interface RunnerDeps {
    */
   onBeforeCommand?: (state: RunnerState) => Promise<void>;
   /**
+   * Called with each human-readable line processDue produces, as it is
+   * produced. The live runner hands completed-job lines to the Slack
+   * poster here, so a tick killed mid-flight (a restart) still posts
+   * the work it already finished instead of losing it with the tick.
+   * Optional; fire-and-forget — a failure must never break the tick.
+   * The callback decides which lines are worth acting on; runner-lib
+   * itself stays free of any notification logic (and of Node-only
+   * imports, so the in-tab runner still bundles).
+   */
+  onJobUpdate?: (line: string) => void;
+  /**
    * Minimum milliseconds between the END of one dispatch and the START
    * of the next (default 0 — tests). The live runner passes 50_000:
    * the endpoint enforces a 50s gap between upstream calls inside
@@ -762,6 +773,21 @@ export async function processDue(
   const state: RunnerState = structuredClone(input);
   const nowMs = now.getTime();
   const fired: string[] = [];
+  /**
+   * Record a tick line and hand it to the poster's callback as it is
+   * produced. The callback (live runner: Slack) decides which lines
+   * are worth acting on. Posting as work completes — rather than
+   * batching at the end of the tick — means a tick killed mid-flight
+   * by a restart still reports the work it already finished.
+   */
+  const emit = (line: string): void => {
+    fired.push(line);
+    try {
+      deps.onJobUpdate?.(line);
+    } catch {
+      // A poster failure never breaks the tick.
+    }
+  };
   const agentById = new Map(state.agents.map((a) => [a.id, a]));
 
   // Gap-spaced dispatch: every prompt in this tick goes through here,
@@ -792,14 +818,14 @@ export async function processDue(
       t.id === trigger.id ? { ...t, lastRunAt: nowMs } : t,
     );
     if (!agent) {
-      fired.push(`trigger ${trigger.id}: unknown agent ${trigger.agentId}, skipped`);
+      emit(`trigger ${trigger.id}: unknown agent ${trigger.agentId}, skipped`);
       continue;
     }
     try {
       const reply = await dispatch(agent, trigger.prompt, trigger.channelId);
-      fired.push(`trigger → ${agent.name} in ${trigger.channelId}: ${reply.slice(0, 120)}`);
+      emit(`trigger → ${agent.name} in ${trigger.channelId}: ${reply.slice(0, 120)}`);
     } catch (err) {
-      fired.push(`trigger → ${agent.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
+      emit(`trigger → ${agent.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -815,7 +841,7 @@ export async function processDue(
         { ts: nowMs, ok: false, detail: 'command cron jobs are refused: no per-job allowlist — use a product-job command stage' },
       );
       state.cronJobs = state.cronJobs.map((j) => (j.id === cron.id ? updated : j));
-      fired.push(`cron ${cron.name}: command refused (no allowlist)`);
+      emit(`cron ${cron.name}: command refused (no allowlist)`);
       continue;
     }
     const agent = cron.agentId ? agentById.get(cron.agentId) : undefined;
@@ -825,7 +851,7 @@ export async function processDue(
         { ts: nowMs, ok: false, detail: 'no agent/channel for this prompt job' },
       );
       state.cronJobs = state.cronJobs.map((j) => (j.id === cron.id ? updated : j));
-      fired.push(`cron ${cron.name}: no agent/channel, skipped`);
+      emit(`cron ${cron.name}: no agent/channel, skipped`);
       continue;
     }
     try {
@@ -842,7 +868,7 @@ export async function processDue(
         kind: cron.agentId === 'agent-orchestrator' ? 'orchestrator' : 'cron',
         text: reply,
       });
-      fired.push(`cron ${cron.name} → ${agent.name}: ${reply.slice(0, 120)}`);
+      emit(`cron ${cron.name} → ${agent.name}: ${reply.slice(0, 120)}`);
       // Orchestrator mention flow: the Orchestrator assigns work by
       // @mentioning agents in its reply. Dispatch each mentioned agent
       // once, one level only (max 8) — the same bounds as the UI's
@@ -862,15 +888,15 @@ export async function processDue(
               kind: 'mention',
               text: targetReply,
             });
-            fired.push(`orchestrator → @${target.name}: ${targetReply.slice(0, 120)}`);
+            emit(`orchestrator → @${target.name}: ${targetReply.slice(0, 120)}`);
           } catch (err) {
-            fired.push(
+            emit(
               `orchestrator → @${target.name}: FAILED ${err instanceof Error ? err.message : String(err)}`,
             );
           }
         }
         if (mentioned.length === 0) {
-          fired.push('orchestrator: no @mentions in reply — nothing assigned this run');
+          emit('orchestrator: no @mentions in reply — nothing assigned this run');
         }
       }
     } catch (err) {
@@ -879,7 +905,7 @@ export async function processDue(
         { ts: nowMs, ok: false, detail: err instanceof Error ? err.message : String(err) },
       );
       state.cronJobs = state.cronJobs.map((j) => (j.id === cron.id ? updated : j));
-      fired.push(`cron ${cron.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
+      emit(`cron ${cron.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -898,7 +924,7 @@ export async function processDue(
     try {
       events = await deps.rateLimitEvents();
     } catch (err) {
-      fired.push(`rate-limit check FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      emit(`rate-limit check FAILED: ${err instanceof Error ? err.message : String(err)}`);
     }
     // Providers already logged as backing off this tick (one line per provider).
     const backedOffProviders = new Set<string>();
@@ -912,7 +938,7 @@ export async function processDue(
       if (backoff && nowMs < backoff.nextAllowedTs) {
         if (!backedOffProviders.has(event.provider)) {
           backedOffProviders.add(event.provider);
-          fired.push(
+          emit(
             `rate-limit rescue: backing off for provider "${event.provider}" — next attempt ${new Date(backoff.nextAllowedTs).toISOString()} (${backoff.consecutiveFailures} consecutive failures)`,
           );
         }
@@ -981,7 +1007,7 @@ export async function processDue(
             agentById.set(updated.id, updated);
           }
         } catch (err) {
-          fired.push(`rate-limit rescue: could not reload agents — ${err instanceof Error ? err.message : String(err)}`);
+          emit(`rate-limit rescue: could not reload agents — ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       let resent = false;
@@ -998,14 +1024,14 @@ export async function processDue(
             kind: 'resend',
             text: resendReply,
           });
-          fired.push(`rate-limit rescue: resent @${resendAgent.name}'s request on ${resendAgent.provider ?? 'default provider'} — completed`);
+          emit(`rate-limit rescue: resent @${resendAgent.name}'s request on ${resendAgent.provider ?? 'default provider'} — completed`);
         } catch (err) {
           resent = true;
           if (isRateLimitError(err)) rescueRateLimited = true;
-          fired.push(`rate-limit rescue: resend FAILED — ${err instanceof Error ? err.message : String(err)}`);
+          emit(`rate-limit rescue: resend FAILED — ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
-        fired.push(`rate-limit rescue: unknown agent ${event.agentId}, cannot resend`);
+        emit(`rate-limit rescue: unknown agent ${event.agentId}, cannot resend`);
       }
       const rescue: RateLimitRescue = {
         eventId: event.id,
@@ -1040,7 +1066,7 @@ export async function processDue(
           lastFailedTs: nowMs,
           nextAllowedTs: nowMs + delay,
         };
-        fired.push(
+        emit(
           `rate-limit rescue: provider "${event.provider}" rate-limited again — backing off ${Math.round(delay / 60000)} min (failure ${consecutive})`,
         );
       }
@@ -1048,7 +1074,7 @@ export async function processDue(
         try {
           await deps.acknowledgeRateLimitEvents([event.id]);
         } catch (err) {
-          fired.push(`rate-limit rescue: acknowledge FAILED — ${err instanceof Error ? err.message : String(err)}`);
+          emit(`rate-limit rescue: acknowledge FAILED — ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -1085,12 +1111,12 @@ export async function processDue(
     if (!started.ok) {
       const blockedReason = started.reason;
       if (!started.needsApproval) {
-        fired.push(`job ${job.name}: stage not started — ${blockedReason}`);
+        emit(`job ${job.name}: stage not started — ${blockedReason}`);
         continue;
       }
       if (findPendingApproval(state.approvals, job.id, plan.stage)) {
         state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-        fired.push(`job ${job.name} / ${plan.stage}: still awaiting approval`);
+        emit(`job ${job.name} / ${plan.stage}: still awaiting approval`);
         continue;
       }
       // Every gated stage goes to the Reviewer — routine AND high-stakes
@@ -1107,7 +1133,7 @@ export async function processDue(
         // The job is retried on a later tick (see the transient-park
         // resume at the top of the job loop) once a Reviewer is configured.
         state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-        fired.push(
+        emit(
           `job ${job.name} / ${plan.stage}: NO REVIEWER CONFIGURED — a gated stage cannot be decided without the Reviewer agent; job parked (config error, no approval filed)`,
         );
         continue;
@@ -1145,18 +1171,18 @@ export async function processDue(
             decideApprovalByReviewer(req, 'denied', verdict.reason, nowMs),
           ];
           state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-          fired.push(`job ${job.name} / ${plan.stage}: DENIED by Reviewer — ${verdict.reason}`);
+          emit(`job ${job.name} / ${plan.stage}: DENIED by Reviewer — ${verdict.reason}`);
           continue;
         }
         state.approvals = [
           ...state.approvals,
           decideApprovalByReviewer(req, 'approved', verdict.reason, nowMs),
         ];
-        fired.push(`job ${job.name} / ${plan.stage}: APPROVED by Reviewer — ${verdict.reason}`);
+        emit(`job ${job.name} / ${plan.stage}: APPROVED by Reviewer — ${verdict.reason}`);
         const retry = startStage(job, state.approvals, nowMs);
         if (!retry.ok) {
           state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-          fired.push(`job ${job.name} / ${plan.stage}: still blocked after Reviewer approval — ${retry.reason}`);
+          emit(`job ${job.name} / ${plan.stage}: still blocked after Reviewer approval — ${retry.reason}`);
           continue;
         }
         started = retry;
@@ -1167,7 +1193,7 @@ export async function processDue(
         // silently approve, and never fall back to anyone else — there is
         // nobody else to fall back to.
         state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
-        fired.push(
+        emit(
           `job ${job.name} / ${plan.stage}: Reviewer unavailable or unreadable (${err instanceof Error ? err.message : String(err)}) — job parked, will retry the Reviewer on a later tick`,
         );
         continue;
@@ -1193,7 +1219,7 @@ export async function processDue(
             Date.now(),
           );
           state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
-          fired.push(`job ${job.name} / ${plan.stage}: command REFUSED (state persist failed)`);
+          emit(`job ${job.name} / ${plan.stage}: command REFUSED (state persist failed)`);
           continue;
         }
       }
@@ -1209,7 +1235,7 @@ export async function processDue(
         );
         state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
         state.approvals = nextApprovals;
-        fired.push(`job ${job.name} / ${plan.stage}: command BLOCKED — ${result.blockedReason}`);
+        emit(`job ${job.name} / ${plan.stage}: command BLOCKED — ${result.blockedReason}`);
         continue;
       }
       const output = result.timedOut
@@ -1225,11 +1251,11 @@ export async function processDue(
       );
       state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
       state.approvals = nextApprovals;
-      fired.push(
+      emit(
         `job ${job.name} / ${plan.stage}: command ${result.ok ? 'ok' : 'failed'} (exit ${result.exitCode})`,
       );
       if (reset) {
-        fired.push(
+        emit(
           `job ${job.name}: cycle ${nextJob.cyclesCompleted} complete — auto-reset to stage 0, next run on schedule`,
         );
       }
@@ -1246,7 +1272,7 @@ export async function processDue(
         Date.now(),
       );
       state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
-      fired.push(`job ${job.name} / ${plan.stage}: unknown agent ${started.run.agentId}, run failed`);
+      emit(`job ${job.name} / ${plan.stage}: unknown agent ${started.run.agentId}, run failed`);
       continue;
     }
     try {
@@ -1261,9 +1287,9 @@ export async function processDue(
       );
       state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
       state.approvals = nextApprovals;
-      fired.push(`job ${job.name} / ${plan.stage} → ${agent.name}: ${reply.slice(0, 120)}`);
+      emit(`job ${job.name} / ${plan.stage} → ${agent.name}: ${reply.slice(0, 120)}`);
       if (reset) {
-        fired.push(
+        emit(
           `job ${job.name}: cycle ${nextJob.cyclesCompleted} complete — auto-reset to stage 0, next run on schedule`,
         );
       }
@@ -1277,7 +1303,7 @@ export async function processDue(
         Date.now(),
       );
       state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
-      fired.push(`job ${job.name} / ${plan.stage}: FAILED ${err instanceof Error ? err.message : String(err)}`);
+      emit(`job ${job.name} / ${plan.stage}: FAILED ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
