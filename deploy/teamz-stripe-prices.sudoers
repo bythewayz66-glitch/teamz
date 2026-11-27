@@ -1,0 +1,18 @@
+# Teamz governed Stripe price creation (shop a-la-carte pricing job).
+#
+# The teamz-runner service (user teamz) may run ONLY the price-creation
+# script, as root, without a password. The script is root-owned and not
+# writable by teamz; it reads the Stripe secret key (root-only
+# /opt/mem20/secrets/.env) and creates LIVE Stripe Prices ONLY for the
+# fifteen known a-la-carte SKUs, ONLY from a price table the Reviewer has
+# approved (the job's design-stage output). It validates every entry
+# (known SKU, kind matches the catalog, amount $1..$100,000) before
+# creating anything, reuses an existing Price instead of duplicating one,
+# and refuses loudly on any mismatch. It never touches the tier SKUs,
+# never prints the secret key, and never edits the catalog — catalog
+# changes go through the governed push path (push-mem20.py).
+#
+# Install: cp deploy/teamz-stripe-prices.sudoers /etc/sudoers.d/teamz-stripe-prices
+#          chmod 0440 /etc/sudoers.d/teamz-stripe-prices
+#          visudo -cf /etc/sudoers.d/teamz-stripe-prices
+teamz ALL=(root) NOPASSWD: /opt/teamz-runner/create-stripe-prices.py
