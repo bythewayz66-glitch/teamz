@@ -638,7 +638,7 @@
   },
   {
     "agentId": "agent-website-currency-agent",
-    "prompt": "Keep mem20.com current on an ongoing basis. Every 6 hours, check the homepage, docs/index.html, pricing, and the main docs pages against the LIVE mem20 surface (docs/surface.json, 527 tools / 135 domains, version 4.0.0 \u2014 verify it yourself, never trust a doc's claim) and the repo. Find stale numbers, claims, links, or outdated copy, verify each one from the file text itself, and stage the smallest correction with stage_patch via the governed path (the Reviewer approves before anything pushes). If nothing is verifiably wrong, report NO-CHANGE. Never push directly; never touch .github/, requirements.txt, secrets, or dated history records.",
+    "prompt": "Check mem20.com currency. Use the repo_read tool ONLY - do NOT use web_search. You have a short time budget, so be surgical: use repo_read with the find parameter to locate claims, do NOT read whole large files. Steps: (1) repo_read docs/surface.json to get the true live tool/domain counts. (2) repo_read docs/index.html with find 272 to check for the stale old count, and find 527 to confirm the current count. (3) repo_read docs/pricing/README.md with find 272 and find 527 the same way. Then write a SHORT report (under 600 chars): the live counts from surface.json, and for each file whether it is current or stale, quoting the exact stale text if any. Say NO-CHANGE if nothing is verifiably wrong. Do not push anything; report only.",
     "title": "Keep mem20.com current \u2014 recurring website currency check",
     "type": "job"
   }
