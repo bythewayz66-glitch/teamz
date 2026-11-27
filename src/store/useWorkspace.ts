@@ -17,7 +17,7 @@ import { parseMentions } from '../lib/mentions';
 import { runMentionChain } from '../lib/mentionFlow';
 import { sendToAgent } from '../api/agents';
 import { getSettings } from '../api/settings';
-import { fetchRunnerState } from '../api/runnerState';
+import { fetchRunnerState, type RunnerAgentSummary } from '../api/runnerState';
 
 const STORAGE_KEY = 'teamz:workspace:v1';
 
@@ -130,6 +130,73 @@ export interface UseWorkspace {
   resetWorkspace: () => void;
 }
 
+/**
+ * The runner's agents point at its own localhost agent endpoint
+ * (http://127.0.0.1:8897/chat), which is unreachable from a browser on
+ * another device. Rewrite a localhost/loopback host to the host this UI
+ * was loaded from, so the agent is reachable from here. Any other host
+ * is left alone.
+ */
+function browserEndpointUrl(serverUrl: string): string {
+  try {
+    const u = new URL(serverUrl);
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1') {
+      u.hostname = window.location.hostname || '127.0.0.1';
+    }
+    return u.toString();
+  } catch {
+    return serverUrl;
+  }
+}
+
+/**
+ * Merge the server runner's agents into the workspace, so the agents the
+ * 24/7 runner actually runs are the ones this tab shows — and so a fix
+ * on the server (a fake agent replaced with a real one, a provider
+ * moved) reaches the UI without anyone having to reset demo data.
+ * Server is the source of truth for the operational fields (name,
+ * endpoint, model). Local-only fields (emoji, accent, status, prompt,
+ * skills) are left alone, and agents that only exist locally are kept.
+ */
+function mergeRunnerAgents(prev: WorkspaceState, serverAgents: RunnerAgentSummary[]): WorkspaceState {
+  if (serverAgents.length === 0) return prev;
+  let changed = false;
+  const byId = new Map(prev.agents.map((a) => [a.id, a]));
+  const agents = [...prev.agents];
+  for (const s of serverAgents) {
+    if (!s.id) continue;
+    const endpointUrl = s.endpointUrl ? browserEndpointUrl(s.endpointUrl) : '';
+    const existing = byId.get(s.id);
+    if (existing) {
+      const patch: Partial<Agent> = {};
+      if (s.name && s.name !== existing.name) patch.name = s.name;
+      if (endpointUrl && endpointUrl !== existing.endpointUrl) patch.endpointUrl = endpointUrl;
+      if (s.model && s.model !== existing.model) patch.model = s.model;
+      if (Object.keys(patch).length > 0) {
+        const idx = agents.findIndex((a) => a.id === s.id);
+        agents[idx] = { ...agents[idx], ...patch };
+        changed = true;
+      }
+    } else {
+      const index = Math.floor(Math.random() * ACCENT_PALETTE.length);
+      agents.push({
+        id: s.id,
+        name: s.name || s.id,
+        emoji: EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)],
+        accent: ACCENT_PALETTE[index],
+        status: 'online',
+        endpointUrl: endpointUrl || `http://${window.location.hostname || '127.0.0.1'}:8897/chat`,
+        model: s.model || 'openai-fast',
+        systemPrompt: `You are ${s.name || s.id}.`,
+        skills: [],
+        createdAt: Date.now(),
+      });
+      changed = true;
+    }
+  }
+  return changed ? { ...prev, agents } : prev;
+}
+
 export function useWorkspace(): UseWorkspace {
   const [state, setState] = useState<WorkspaceState>(loadState);
   const [typing, setTyping] = useState<Record<string, string[]>>({});
@@ -176,50 +243,63 @@ export function useWorkspace(): UseWorkspace {
     return () => window.removeEventListener('storage', handler);
   }, []);
 
-  // Server runner dispatches: the headless runner on jnet1 records the
-  // real dispatches (hourly agents, Orchestrator mentions, rate-limit
-  // rescues) in its channelMessages, but this tab's workspace comes from
-  // localStorage/seed and never sees them — so the Build Room only ever
-  // showed its seed messages. Merge the runner's recorded messages into
-  // the matching conversations once on mount, deduped by id, so the room
-  // shows the agents actually working. Read-only fetch: if the runner is
-  // unreachable the local messages are untouched. Only conversations
-  // this workspace already has receive messages — a stale workspace
-  // without the Build Room is a separate problem (see the Jobs panel).
+  // Server runner sync: the headless runner on jnet1 is the source of
+  // truth for the 24/7 agents, jobs and dispatches, but this tab's
+  // workspace comes from localStorage/seed and never saw them — so the
+  // Build Room only ever showed its seed messages, and a fake seed
+  // agent stayed fake in the UI even after the server fixed it. On
+  // mount and every 60s, merge the runner's recorded channel messages
+  // (deduped by id) and its agent list (server wins for name, endpoint
+  // and model; new server agents are added; local-only agents are
+  // kept) into the workspace, so server fixes reach the UI with no
+  // manual reset. Read-only fetch: if the runner is unreachable the
+  // local workspace is untouched. Only conversations this workspace
+  // already has receive messages — a stale workspace without the Build
+  // Room is a separate problem (see the Jobs panel).
   useEffect(() => {
     let cancelled = false;
-    fetchRunnerState()
-      .then((s) => {
-        if (cancelled || s.channelMessages.length === 0) return;
-        setState((prev) => {
-          let changed = false;
-          const messages: Record<string, Message[]> = { ...prev.messages };
-          for (const m of s.channelMessages) {
-            if (!prev.conversations.some((c) => c.id === m.channelId)) continue;
-            const existing = messages[m.channelId] ?? [];
-            if (existing.some((x) => x.id === m.id)) continue;
-            const incoming: Message = {
-              id: m.id,
-              conversationId: m.channelId,
-              authorType: 'agent',
-              authorId: m.agentId || undefined,
-              text: m.text,
-              createdAt: m.ts,
-              status: 'sent',
-            };
-            messages[m.channelId] = [...existing, incoming].sort(
-              (a, b) => a.createdAt - b.createdAt,
-            );
-            changed = true;
-          }
-          return changed ? { ...prev, messages } : prev;
+    const sync = () => {
+      fetchRunnerState()
+        .then((s) => {
+          if (cancelled) return;
+          setState((prev) => {
+            let next = prev;
+            if (s.channelMessages.length > 0) {
+              let changed = false;
+              const messages: Record<string, Message[]> = { ...next.messages };
+              for (const m of s.channelMessages) {
+                if (!next.conversations.some((c) => c.id === m.channelId)) continue;
+                const existing = messages[m.channelId] ?? [];
+                if (existing.some((x) => x.id === m.id)) continue;
+                const incoming: Message = {
+                  id: m.id,
+                  conversationId: m.channelId,
+                  authorType: 'agent',
+                  authorId: m.agentId || undefined,
+                  text: m.text,
+                  createdAt: m.ts,
+                  status: 'sent',
+                };
+                messages[m.channelId] = [...existing, incoming].sort(
+                  (a, b) => a.createdAt - b.createdAt,
+                );
+                changed = true;
+              }
+              if (changed) next = { ...next, messages };
+            }
+            next = mergeRunnerAgents(next, s.agents);
+            return next;
+          });
+        })
+        .catch(() => {
+          // Server runner unreachable — the local workspace is unaffected.
         });
-      })
-      .catch(() => {
-        // Server runner unreachable — the local workspace is unaffected.
-      });
+    };
+    sync();
+    const timer = setInterval(sync, 60000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, []);
 
