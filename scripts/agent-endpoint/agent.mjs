@@ -37,7 +37,7 @@
  *     never an error and a JSON blob is never shown to the user.
  *   • executeTool runs the tool (never throws: unknown tools and
  *     failures come back as observations), the observation is fed back,
- *     and the loop continues, bounded by MAX_TOOL_ITERATIONS (5) and
+ *     and the loop continues, bounded by MAX_TOOL_ITERATIONS (25) and
  *     by the dispatch deadline below.
  *   • Tools: calculator (local recursive-descent parser, never eval),
  *     wikipedia (REST summary + OpenSearch fallback), weather
@@ -101,7 +101,7 @@
  *     with `Authorization: Bearer <key>`, model `openai` (or
  *     POLLINATIONS_MODEL), and drops the 50s gap entirely — keyed
  *     requests are billed to the key's Pollen balance, not subject to
- *     the anonymous per-IP window. The full loop (up to 5 tool
+ *     the anonymous per-IP window. The full loop (up to 25 tool
  *     iterations + final) then fits comfortably inside the 57s
  *     deadline. No key is stored in this file or in the repo; it
  *     arrives only as an environment variable on the service unit.
@@ -211,7 +211,7 @@ const DISPATCH_DEADLINE_MS = 57_000;
 // whatever time is left to the deadline.
 const UPSTREAM_TIMEOUT_MS = 45_000;
 /** How many tool iterations a single reply may take before the loop stops. */
-const MAX_TOOL_ITERATIONS = 5;
+const MAX_TOOL_ITERATIONS = 25;
 
 /* ===========================================================================
  * Provider registry — validated providers, keyless or keyed, added only
