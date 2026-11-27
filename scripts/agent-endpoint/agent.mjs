@@ -1147,7 +1147,7 @@ const TOOL_DEFS = [
     description:
       'Create a new scheduled prompt automation in the runner (hourly-style cron job in conv-build-room). ' +
       'Args must be a JSON object: {"name", "schedule" (cron, e.g. "0 * * * *"), "agentId", "channelId": "conv-build-room", "target" (the prompt)}. ' +
-      'Refused when it would spend money, publish publicly, release, or delete — those need Jesse.',
+      'Refused when it would spend money, publish publicly, release, or delete — those need the Reviewer.',
     usage: 'a JSON object, e.g. {"name": "Hourly: QA Tester", "schedule": "0 * * * *", "agentId": "agent-qa-tester", "channelId": "conv-build-room", "target": "..."}',
     run: async (args) => {
       let input;
@@ -1954,7 +1954,7 @@ function readBody(req) {
  * — same rules, kept in sync — then appends the cron job to state.json
  * with an atomic write. Refusals return 403 with the reason; carve-outs
  * (spend / publish / release / delete) are refused, never auto-approved,
- * and the response says to route them to Jesse. ----------------------- */
+ * and the response says to route them to the Reviewer. ----------------------- */
 
 const AUTOMATION_CARVE_OUT =
   /\b(spend|spending|pay|payment|purchase|buy|charge|publish|public|release|deploy|delete|destroy|remove|wipe|drop)\b/i;
@@ -2011,7 +2011,7 @@ function validateAutomation(input, state) {
   if (AUTOMATION_CARVE_OUT.test(`${name} ${target}`)) {
     return {
       ok: false,
-      reason: 'refused: the proposal spends money, publishes publicly, releases, or deletes — that needs Jesse, not an automation',
+      reason: 'refused: the proposal spends money, publishes publicly, releases, or deletes — that needs the Reviewer, not an automation',
       carveOut: true,
     };
   }
@@ -2080,7 +2080,7 @@ const server = createServer(async (req, res) => {
       if (!check.ok) {
         log(`automations: refused — ${check.reason}`);
         res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: check.reason, carveOut: check.carveOut, routeTo: check.carveOut ? 'jesse' : 'fix-and-retry' }));
+        res.end(JSON.stringify({ ok: false, error: check.reason, carveOut: check.carveOut, routeTo: check.carveOut ? 'reviewer' : 'fix-and-retry' }));
         return;
       }
       const job = {
