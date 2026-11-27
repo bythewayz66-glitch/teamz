@@ -922,13 +922,34 @@ export async function processDue(
       const failedAgent = agentById.get(event.agentId);
       let researcherReply = 'no Provider Researcher agent configured';
       if (researcher) {
+        // Providers already programmed (from the agents in state) and
+        // which are currently rate-limited (backed off). The Researcher
+        // checks these FIRST — it does not need a brand-new provider
+        // every time; moving the work to an existing healthy provider
+        // is the right move, and only if every programmed provider is
+        // rate-limited should it search for a new one.
+        const programmedProviders = [
+          ...new Set(state.agents.map((a) => a.provider).filter((p): p is string => Boolean(p))),
+        ];
+        const healthyProviders = programmedProviders.filter((p) => {
+          const b = state.rateLimitBackoff[p];
+          return !b || nowMs >= b.nextAllowedTs;
+        });
+        const limitedProviders = programmedProviders.filter((p) => {
+          const b = state.rateLimitBackoff[p];
+          return b && nowMs < b.nextAllowedTs;
+        });
+        const providerStatus =
+          `Already-programmed providers: ${programmedProviders.join(', ') || 'none'}. ` +
+          `Healthy right now (not rate-limited): ${healthyProviders.join(', ') || 'none'}. ` +
+          `Rate-limited right now: ${limitedProviders.join(', ') || 'none'}.`;
         const wakePrompt =
           `RATE-LIMIT RESCUE — wake up. Agent @${event.agentName} hit a rate limit on provider ` +
           `"${event.provider}" in channel ${event.channelId} (${event.error}). ` +
-          `Use your tools: search for a new keyless provider, validate it with a live test call, ` +
-          `provision it with add_provider, and reassign @${event.agentName} to it with reassign_agent ` +
-          `(record the change with the reason "rate limit"). If no new provider validates, say so ` +
-          `plainly — do not invent one. The runner will resend the agent's original request after you reply. ` +
+          `${providerStatus} ` +
+          `FIRST: check the already-programmed providers above for one that is healthy (not rate-limited) and reassign @${event.agentName} to it with reassign_agent (record the change with the reason "rate limit"). ` +
+          `ONLY if every already-programmed provider is rate-limited should you search for a brand-new keyless provider, validate it with a live test call, provision it with add_provider, and reassign to it. ` +
+          `If no provider (existing or new) is available, say so plainly — do not invent one. The runner will resend the agent's original request after you reply. ` +
           `Then return to standby.`;
         try {
           researcherReply = await dispatch(researcher, wakePrompt, event.channelId);
