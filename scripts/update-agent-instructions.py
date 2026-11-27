@@ -106,7 +106,7 @@ PROVIDER_MOVES = {
     "agent-provider-researcher": ("pollinations", "openai"),
     "agent-drift-monitor": ("pollinations", "openai"),
     "agent-website-currency-agent": ("pollinations", "openai"),
-    # The 9 providerless agents -> pollinations (explicit)
+    # The 10 providerless agents -> pollinations (explicit)
     "agent-writing-assistant": ("pollinations", "openai"),
     "agent-prompt-engineer": ("pollinations", "openai"),
     "agent-minimal-change-engineer": ("pollinations", "openai"),
@@ -116,6 +116,7 @@ PROVIDER_MOVES = {
     "agent-reality-checker": ("pollinations", "openai"),
     "agent-senior-project-manager": ("pollinations", "openai"),
     "agent-keymaster": ("pollinations", "openai"),
+    "agent-ceo-assistant": ("pollinations", "openai"),
     # Kilo agents (empty content) -> pollinations
     "agent-ai-engineer": ("pollinations", "openai"),
     "agent-atlas": ("pollinations", "openai"),
