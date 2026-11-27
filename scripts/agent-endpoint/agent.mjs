@@ -1486,6 +1486,7 @@ const upstreamQueues = new Map();
 
 function providerGapMs(providerId) {
   if (providerId === 'pollinations') return MIN_GAP_MS;
+  if (providerId === 'ovh') return 30_000; // OVH anonymous lane: 2 req/min per IP.
   return 5000; // Other providers: a small courtesy gap, not a limit we know.
 }
 
