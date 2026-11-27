@@ -271,7 +271,10 @@ describe('processDue — one headless tick', () => {
     };
     out = await processDue(withReviewer, new Date(T0 + 123_000), deps);
     expect(calls).toEqual(['agent-atlas', 'agent-reviewer', 'agent-atlas']);
-    expect(out.state.jobs[0].status).toBe('done');
+    // Interval-scheduled: finishing auto-resets to a fresh cycle.
+    expect(out.state.jobs[0].status).toBe('active');
+    expect(out.state.jobs[0].currentStageIndex).toBe(0);
+    expect(out.state.jobs[0].cyclesCompleted).toBe(1);
     expect(out.state.approvals).toHaveLength(1);
     expect(out.state.approvals[0].status).toBe('approved');
     expect(out.state.approvals[0].decidedBy).toBe('reviewer');
@@ -331,9 +334,12 @@ describe('processDue — one headless tick', () => {
     expect(out.state.jobs[0].runs[2].kind).toBe('command');
     expect(out.state.jobs[0].runs[2].output).toContain('NOTHING-TO-PUSH');
     expect(out.state.jobs[0].currentStageIndex).toBe(3);
-    // Tick 4: document records the push (or its absence) and the job ends.
+    // Tick 4: document records the push (or its absence) and the cycle
+    // ends — the interval-scheduled job auto-resets to a fresh cycle.
     out = await processDue(out.state, new Date(T0 + 183_000), deps);
-    expect(out.state.jobs[0].status).toBe('done');
+    expect(out.state.jobs[0].status).toBe('active');
+    expect(out.state.jobs[0].currentStageIndex).toBe(0);
+    expect(out.state.jobs[0].cyclesCompleted).toBe(1);
   });
 
   it('a failed prompt dispatch is recorded as a failed run and retried next tick', async () => {

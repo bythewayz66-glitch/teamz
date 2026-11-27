@@ -7,10 +7,12 @@ import {
   deserializeJob,
   isCommandAllowed,
   isJobDue,
+  isRecurringJob,
   parkForApproval,
   pauseJob,
   publishDocsTemplate,
   repoCheckTemplate,
+  resetJobCycle,
   resumeJob,
   serializeJob,
   shipReleaseTemplate,
@@ -462,5 +464,153 @@ describe('serialisation', () => {
       ],
     };
     expect(() => deserializeJob(unknown)).toThrow(/unknown stage/);
+  });
+});
+
+describe('recurring job auto-reset', () => {
+  type RecurringSchedule = { kind: 'cron'; expr: string } | { kind: 'interval'; everyMs: number };
+
+  function recurringJob(schedule: RecurringSchedule): ProductJob {
+    return createJob(
+      {
+        name: 'Recurring',
+        channelId: CHANNEL,
+        stages: [
+          { stage: 'design', agentId: 'a', prompt: 'Design.', expectedOutput: 'A design.' },
+          {
+            stage: 'implement',
+            agentId: 'a',
+            prompt: 'Implement.',
+            expectedOutput: 'An implementation.',
+            contextStages: ['design'],
+          },
+        ],
+        schedule,
+      },
+      T0,
+    );
+  }
+
+  /** Run the job's current stage once; returns the job and whether it auto-reset. */
+  function runStage(
+    job: ProductJob,
+    t: number,
+    ok = true,
+    output = 'ok',
+  ): { job: ProductJob; reset: boolean } {
+    const started = startStage(job, [], t);
+    if (!started.ok) throw new Error('stage would not start');
+    const done = completeStageRun(started.job, started.run.id, output, ok, [], t + 1000);
+    return { job: done.job, reset: done.reset };
+  }
+
+  it('isRecurringJob is true for cron/interval and false for manual', () => {
+    expect(isRecurringJob(twoStageJob())).toBe(false);
+    expect(isRecurringJob(recurringJob({ kind: 'cron', expr: '0 */6 * * *' }))).toBe(true);
+    expect(isRecurringJob(recurringJob({ kind: 'interval', everyMs: 3_600_000 }))).toBe(true);
+  });
+
+  it('a cron job auto-resets to stage 0 when its last stage completes', () => {
+    let job = recurringJob({ kind: 'cron', expr: '0 */6 * * *' });
+    // First stage completes normally — no reset mid-cycle.
+    const first = runStage(job, T0, true, 'designed');
+    expect(first.reset).toBe(false);
+    expect(first.job.status).toBe('active');
+    expect(currentStage(first.job)?.stage).toBe('implement');
+    // Last stage completes — the cycle auto-resets.
+    const last = runStage(first.job, T0 + 2000, true, 'implemented');
+    expect(last.reset).toBe(true);
+    job = last.job;
+    expect(job.status).toBe('active');
+    expect(job.currentStageIndex).toBe(0);
+    expect(currentStage(job)?.stage).toBe('design');
+    expect(job.runs).toHaveLength(0); // fresh cycle, no stale context
+    expect(job.cyclesCompleted).toBe(1);
+    expect(job.lastResetAt).toBe(T0 + 3000);
+    // Not due immediately after the reset — the next fire is the next
+    // 6-hour boundary, not right now.
+    expect(isJobDue(job, new Date(T0 + 3000))).toBe(false);
+    // And a second cycle can start.
+    expect(startStage(job, [], T0 + 4000).ok).toBe(true);
+  });
+
+  it('an interval job auto-resets when its last stage completes', () => {
+    let job = recurringJob({ kind: 'interval', everyMs: 3_600_000 });
+    const first = runStage(job, T0, true, 'designed');
+    expect(first.reset).toBe(false);
+    const last = runStage(first.job, T0 + 2000, true, 'implemented');
+    expect(last.reset).toBe(true);
+    job = last.job;
+    expect(job.status).toBe('active');
+    expect(job.currentStageIndex).toBe(0);
+    expect(job.cyclesCompleted).toBe(1);
+    expect(job.runs).toHaveLength(0);
+  });
+
+  it('a second full cycle increments the counter again', () => {
+    let job = recurringJob({ kind: 'cron', expr: '0 */6 * * *' });
+    const c1a = runStage(job, T0, true, 'designed');
+    const c1b = runStage(c1a.job, T0 + 2000, true, 'implemented');
+    expect(c1b.reset).toBe(true);
+    expect(c1b.job.cyclesCompleted).toBe(1);
+    const c2a = runStage(c1b.job, T0 + 4000, true, 'designed again');
+    expect(c2a.reset).toBe(false);
+    const c2b = runStage(c2a.job, T0 + 6000, true, 'implemented again');
+    expect(c2b.reset).toBe(true);
+    expect(c2b.job.cyclesCompleted).toBe(2);
+    expect(c2b.job.runs).toHaveLength(0);
+  });
+
+  it('a manual (one-off) job stays done and never resets', () => {
+    let job = twoStageJob();
+    const first = runStage(job, T0, true, 'designed');
+    expect(first.reset).toBe(false);
+    const last = runStage(first.job, T0 + 2000, true, 'built');
+    expect(last.reset).toBe(false);
+    job = last.job;
+    expect(job.status).toBe('done');
+    expect(job.cyclesCompleted).toBe(0);
+    expect(job.lastResetAt).toBeNull();
+    expect(job.runs).toHaveLength(2); // one-off history is kept
+    expect(currentStage(job)).toBeNull();
+    expect(startStage(job, [], T0 + 5000).ok).toBe(false);
+  });
+
+  it('a failed last stage does not reset — the stage retries on the next tick', () => {
+    let job = recurringJob({ kind: 'cron', expr: '0 */6 * * *' });
+    const first = runStage(job, T0, true, 'designed');
+    const last = runStage(first.job, T0 + 2000, false, 'endpoint timed out');
+    expect(last.reset).toBe(false);
+    job = last.job;
+    expect(job.status).toBe('active');
+    expect(currentStage(job)?.stage).toBe('implement'); // same stage, retries
+    expect(job.cyclesCompleted).toBe(0);
+    expect(job.runs).toHaveLength(2); // failed run recorded, not cleared
+    expect(startStage(job, [], T0 + 4000).ok).toBe(true);
+  });
+
+  it('resetJobCycle is a pure fresh-cycle reset', () => {
+    const job = recurringJob({ kind: 'cron', expr: '0 */6 * * *' });
+    const reset = resetJobCycle({ ...job, currentStageIndex: 2, status: 'done', runs: job.runs }, T0 + 9000);
+    expect(reset.currentStageIndex).toBe(0);
+    expect(reset.status).toBe('active');
+    expect(reset.runs).toHaveLength(0);
+    expect(reset.cyclesCompleted).toBe(1);
+    expect(reset.lastResetAt).toBe(T0 + 9000);
+  });
+
+  it('deserializeJob preserves the cycle counter and reset time', () => {
+    let job = recurringJob({ kind: 'cron', expr: '0 */6 * * *' });
+    const first = runStage(job, T0, true, 'designed');
+    const last = runStage(first.job, T0 + 2000, true, 'implemented');
+    expect(last.reset).toBe(true);
+    const restored = deserializeJob(JSON.parse(serializeJob(last.job)));
+    expect(restored.cyclesCompleted).toBe(1);
+    expect(restored.lastResetAt).toBe(T0 + 3000);
+    expect(restored.currentStageIndex).toBe(0);
+    expect(restored.status).toBe('active');
+    expect(restored.runs).toHaveLength(0);
+    // The restored job can run its next cycle.
+    expect(startStage(restored, [], T0 + 4000).ok).toBe(true);
   });
 });

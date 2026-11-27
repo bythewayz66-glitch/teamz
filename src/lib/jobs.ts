@@ -150,6 +150,15 @@ export interface ProductJob {
   createdAt: number;
   updatedAt: number;
   /**
+   * How many full cycles this job has completed. Only recurring jobs
+   * (cron/interval) auto-reset to a fresh cycle when the last stage
+   * completes, so this counts those cycles. A one-off job finishes once
+   * and stays `done` with 0 cycles.
+   */
+  cyclesCompleted: number;
+  /** Epoch ms of the last auto-reset to a fresh cycle, or null if never reset. */
+  lastResetAt: number | null;
+  /**
    * Working directory command stages run in — a checked-out repo on the
    * server runner. Prompt stages ignore it. Empty means "the runner's own
    * working directory".
@@ -285,6 +294,8 @@ export function createJob(input: CreateJobInput, nowMs: number = Date.now()): Pr
     runs: [],
     createdAt: nowMs,
     updatedAt: nowMs,
+    cyclesCompleted: 0,
+    lastResetAt: null,
     workdir: input.workdir,
     allowedCommands: allowlist.length > 0 ? allowlist.map((a) => [...a]) : undefined,
   };
@@ -394,6 +405,36 @@ export function startStage(
 }
 
 /**
+ * Is this job recurring — does it run on a schedule (cron or interval)
+ * rather than once by hand? Only recurring jobs auto-reset to a fresh
+ * cycle when they finish; a manual job is a one-off and stays `done`.
+ */
+export function isRecurringJob(job: ProductJob): boolean {
+  return job.schedule.kind === 'cron' || job.schedule.kind === 'interval';
+}
+
+/**
+ * Reset a finished recurring job to a fresh cycle: back to stage 0,
+ * active, with a clean run history. A new cycle builds its own context
+ * chain — a later stage must never inherit a previous cycle's output,
+ * and a failed stage in the new cycle must not fall back to stale output
+ * from the old one — so the runs are cleared, not carried over. The
+ * cycle counter and reset time are kept so the reset is visible in state.
+ * Callers must only reset a job that just completed its last stage.
+ */
+export function resetJobCycle(job: ProductJob, nowMs: number = Date.now()): ProductJob {
+  return {
+    ...job,
+    currentStageIndex: 0,
+    status: 'active',
+    runs: [],
+    cyclesCompleted: (job.cyclesCompleted ?? 0) + 1,
+    lastResetAt: nowMs,
+    updatedAt: nowMs,
+  };
+}
+
+/**
  * Complete a dispatched stage run with the agent's reply.
  *
  * On success the output is recorded as that stage's output (provenance:
@@ -403,6 +444,10 @@ export function startStage(
  * failed and the stage does NOT advance, so the next scheduled tick retries
  * the same stage; the approval is not consumed, so a retry does not need
  * the Reviewer to approve twice.
+ *
+ * A recurring job (cron/interval) does not park as `done` when its last
+ * stage completes — it auto-resets to a fresh cycle (`reset: true`) so it
+ * runs again on its next scheduled fire with no manual intervention.
  */
 export function completeStageRun(
   job: ProductJob,
@@ -411,7 +456,7 @@ export function completeStageRun(
   ok: boolean,
   approvals: ApprovalRequest[],
   nowMs: number = Date.now(),
-): { job: ProductJob; approvals: ApprovalRequest[] } {
+): { job: ProductJob; approvals: ApprovalRequest[]; reset: boolean } {
   const run = job.runs.find((r) => r.id === runId);
   if (!run) throw new Error(`no run ${runId} on job "${job.name}"`);
   if (run.status !== 'dispatched') {
@@ -439,13 +484,24 @@ export function completeStageRun(
       }
     }
     const nextIndex = job.currentStageIndex + 1;
+    if (nextIndex >= job.stages.length && isRecurringJob(job)) {
+      // Recurring job finished a full cycle — start a fresh one instead
+      // of parking it as `done` and waiting for a manual reset. One-off
+      // jobs still end as `done`. The reset is reported so the runner
+      // can log the cycle boundary.
+      return {
+        job: resetJobCycle({ ...nextJob, currentStageIndex: nextIndex }, nowMs),
+        approvals: nextApprovals,
+        reset: true,
+      };
+    }
     nextJob = {
       ...nextJob,
       currentStageIndex: nextIndex,
       status: nextIndex >= job.stages.length ? 'done' : job.status === 'awaiting_approval' ? 'active' : job.status,
     };
   }
-  return { job: nextJob, approvals: nextApprovals };
+  return { job: nextJob, approvals: nextApprovals, reset: false };
 }
 
 /** Park a job in `awaiting_approval` (governance-blocked start). */
@@ -553,6 +609,8 @@ export function deserializeJob(raw: unknown): ProductJob {
     lastRunAt: typeof d.lastRunAt === 'number' ? d.lastRunAt : null,
     runs: Array.isArray(d.runs) ? (d.runs as StageRun[]) : [],
     updatedAt: typeof d.updatedAt === 'number' ? d.updatedAt : job.createdAt,
+    cyclesCompleted: typeof d.cyclesCompleted === 'number' ? Math.max(0, d.cyclesCompleted) : 0,
+    lastResetAt: typeof d.lastResetAt === 'number' ? d.lastResetAt : null,
   };
 }
 

@@ -1215,7 +1215,7 @@ export async function processDue(
       const output = result.timedOut
         ? `${result.output}\n[command timed out]`
         : result.output || `(exit ${result.exitCode}, no output)`;
-      const { job: nextJob, approvals: nextApprovals } = completeStageRun(
+      const { job: nextJob, approvals: nextApprovals, reset } = completeStageRun(
         started.job,
         started.run.id,
         output,
@@ -1228,6 +1228,11 @@ export async function processDue(
       fired.push(
         `job ${job.name} / ${plan.stage}: command ${result.ok ? 'ok' : 'failed'} (exit ${result.exitCode})`,
       );
+      if (reset) {
+        fired.push(
+          `job ${job.name}: cycle ${nextJob.cyclesCompleted} complete — auto-reset to stage 0, next run on schedule`,
+        );
+      }
       continue;
     }
     const agent = agentById.get(started.run.agentId);
@@ -1246,7 +1251,7 @@ export async function processDue(
     }
     try {
       const reply = await dispatch(agent, started.run.prompt, job.channelId);
-      const { job: nextJob, approvals: nextApprovals } = completeStageRun(
+      const { job: nextJob, approvals: nextApprovals, reset } = completeStageRun(
         started.job,
         started.run.id,
         reply,
@@ -1257,6 +1262,11 @@ export async function processDue(
       state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
       state.approvals = nextApprovals;
       fired.push(`job ${job.name} / ${plan.stage} → ${agent.name}: ${reply.slice(0, 120)}`);
+      if (reset) {
+        fired.push(
+          `job ${job.name}: cycle ${nextJob.cyclesCompleted} complete — auto-reset to stage 0, next run on schedule`,
+        );
+      }
     } catch (err) {
       const { job: nextJob } = completeStageRun(
         started.job,

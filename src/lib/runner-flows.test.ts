@@ -149,8 +149,11 @@ describe('processDue — Reviewer approval flow', () => {
     expect(out.approvals).toHaveLength(1);
     expect(out.approvals[0].status).toBe('approved');
     expect(out.approvals[0].decidedBy).toBe('reviewer');
-    expect(out.jobs[0].status).toBe('done');
-    expect(out.jobs[0].currentStageIndex).toBe(1);
+    // The job is interval-scheduled, so finishing its only stage
+    // auto-resets it to a fresh cycle instead of parking as `done`.
+    expect(out.jobs[0].status).toBe('active');
+    expect(out.jobs[0].currentStageIndex).toBe(0);
+    expect(out.jobs[0].cyclesCompleted).toBe(1);
   });
 
   it('a Reviewer denial parks the job and never runs the stage', async () => {
@@ -201,7 +204,10 @@ describe('processDue — Reviewer approval flow', () => {
     expect(out.approvals).toHaveLength(1);
     expect(out.approvals[0].status).toBe('approved');
     expect(out.approvals[0].decidedBy).toBe('reviewer');
-    expect(out.jobs[0].status).toBe('done');
+    // Interval-scheduled: finishing auto-resets to a fresh cycle.
+    expect(out.jobs[0].status).toBe('active');
+    expect(out.jobs[0].currentStageIndex).toBe(0);
+    expect(out.jobs[0].cyclesCompleted).toBe(1);
     // The dispatch tells the Reviewer it is the sole decision-maker, that
     // this is high-stakes, and what standing rules to apply.
     expect(reviewerPrompts[0]).toContain('SOLE decision-maker');
@@ -300,7 +306,10 @@ describe('processDue — Reviewer approval flow', () => {
     expect(second.state.approvals).toHaveLength(1);
     expect(second.state.approvals[0].status).toBe('approved');
     expect(second.state.approvals[0].decidedBy).toBe('reviewer');
-    expect(second.state.jobs[0].status).toBe('done');
+    // Interval-scheduled: finishing auto-resets to a fresh cycle.
+    expect(second.state.jobs[0].status).toBe('active');
+    expect(second.state.jobs[0].currentStageIndex).toBe(0);
+    expect(second.state.jobs[0].cyclesCompleted).toBe(1);
   });
 
   it('no Reviewer configured parks the job as a config error — no approval filed, retried once a Reviewer exists', async () => {
@@ -331,7 +340,10 @@ describe('processDue — Reviewer approval flow', () => {
     });
     expect(second.state.approvals).toHaveLength(1);
     expect(second.state.approvals[0].decidedBy).toBe('reviewer');
-    expect(second.state.jobs[0].status).toBe('done');
+    // Interval-scheduled: finishing auto-resets to a fresh cycle.
+    expect(second.state.jobs[0].status).toBe('active');
+    expect(second.state.jobs[0].currentStageIndex).toBe(0);
+    expect(second.state.jobs[0].cyclesCompleted).toBe(1);
   });
 
   it('the Reviewer request carries completed stage outputs, so it judges the actual change', async () => {
@@ -441,7 +453,10 @@ describe('processDue — Reviewer approval flow', () => {
     expect(order).toEqual(['persist', 'execute']);
     expect(persistedApprovals).toHaveLength(1);
     expect((persistedApprovals as Array<{ id: string }>)[0].id).toBe('appr-live');
-    expect(out.jobs[0].status).toBe('done');
+    // Interval-scheduled: finishing auto-resets to a fresh cycle.
+    expect(out.jobs[0].status).toBe('active');
+    expect(out.jobs[0].currentStageIndex).toBe(0);
+    expect(out.jobs[0].cyclesCompleted).toBe(1);
     expect(out.approvals[0].consumedAt).not.toBeNull();
   });
 
