@@ -38,23 +38,46 @@ const TEAMLY_26 = [
 ];
 
 describe('roster — runner-agents.json is the single source of truth', () => {
-  it('has 31 records: 26 Teamily agents + Reviewer + Orchestrator + Provider Researcher + Keymaster + Atlas', () => {
-    expect(roster).toHaveLength(31);
+  it('has 32 records: 26 Teamily agents + Reviewer + Orchestrator + Provider Researcher + Keymaster + Atlas + Triage Agent', () => {
+    expect(roster).toHaveLength(32);
     const ids = roster.map((a: { id: string }) => a.id);
-    expect(new Set(ids).size).toBe(31);
+    expect(new Set(ids).size).toBe(32);
     for (const id of TEAMLY_26) expect(ids).toContain(id);
-    for (const id of ['agent-reviewer', 'agent-orchestrator', 'agent-provider-researcher', 'agent-keymaster', 'agent-atlas']) {
+    for (const id of ['agent-reviewer', 'agent-orchestrator', 'agent-provider-researcher', 'agent-keymaster', 'agent-atlas', 'agent-triage']) {
       expect(ids).toContain(id);
     }
   });
 
-  it('every agent points at the teamz-agent endpoint with the anonymous-tier model', () => {
+  it('every agent points at the teamz-agent endpoint; agents without a provider use the anonymous-tier model', () => {
     for (const a of roster) {
       expect(a.endpointUrl).toBe('http://127.0.0.1:8897/chat');
-      expect(a.model).toBe('openai-fast');
       expect(typeof a.systemPrompt).toBe('string');
       expect(a.systemPrompt.length).toBeGreaterThan(50);
+      if (a.provider) {
+        // A provider-carrying agent names its own model (e.g. Triage on Gemini).
+        expect(['kilo', 'gemini', 'groq', 'pollinations']).toContain(a.provider);
+        expect(typeof a.model).toBe('string');
+        expect(a.model.length).toBeGreaterThan(0);
+      } else {
+        expect(a.model).toBe('openai-fast');
+      }
     }
+  });
+
+  it('the Triage Agent is on Gemini and answers with a reassignment, never bypassing review', () => {
+    const triage = roster.find((a: { id: string }) => a.id === 'agent-triage');
+    expect(triage.provider).toBe('gemini');
+    expect(triage.model).toBe('gemini-3.5-flash-lite');
+    expect(triage.systemPrompt).toContain('REASSIGN: @<agent-id>');
+    expect(triage.systemPrompt).toContain('never bypass review');
+  });
+
+  it('the Reviewer carries its core drive first: mem20 success is the only thing that matters', () => {
+    const reviewer = roster.find((a: { id: string }) => a.id === 'agent-reviewer');
+    expect(reviewer.systemPrompt.startsWith('CORE DRIVE')).toBe(true);
+    expect(reviewer.systemPrompt).toContain("mem20's success and livelihood");
+    expect(reviewer.systemPrompt).toContain('best product of its kind');
+    expect(reviewer.systemPrompt).toContain('actively making money');
   });
 
   it('the Orchestrator carries the mission directive', () => {
@@ -78,11 +101,11 @@ describe('roster — runner-agents.json is the single source of truth', () => {
 });
 
 describe('UI seed — mock.ts matches the roster exactly', () => {
-  it('defines all 34 seed agents: 4 original + 30 new', () => {
-    // The 4 original agents use id constants (AGENT_SCOUT, …); the 30 new
+  it('defines all 35 seed agents: 4 original + 31 new', () => {
+    // The 4 original agents use id constants (AGENT_SCOUT, …); the 31 new
     // agents use literal ids. Both forms count.
     const literalDefs = mockText.match(/id: 'agent-[a-z0-9-]+',/g) ?? [];
-    expect(literalDefs.length).toBe(30);
+    expect(literalDefs.length).toBe(31);
     for (const c of ['AGENT_SCOUT', 'AGENT_ATLAS', 'AGENT_PIXEL', 'AGENT_SAGE']) {
       expect(mockText).toContain(`id: ${c},`);
     }
@@ -95,17 +118,17 @@ describe('UI seed — mock.ts matches the roster exactly', () => {
     }
   });
 
-  it('the Build Room holds all 34 agents', () => {
+  it('the Build Room holds all 35 agents', () => {
     const m = /name: 'Build Room',\s+agentIds: \[([\s\S]*?)\],/.exec(mockText);
     expect(m).not.toBeNull();
     const members = (m![1].match(/'agent-[a-z0-9-]+'/g) ?? []).map((s) => s.replace(/'/g, ''));
-    expect(members).toHaveLength(30);
+    expect(members).toHaveLength(31);
     // Plus the 4 original agents, listed by constant — Atlas is one of
     // them, so it appears as AGENT_ATLAS, not as the literal id.
     for (const c of ['AGENT_SCOUT', 'AGENT_ATLAS', 'AGENT_PIXEL', 'AGENT_SAGE']) {
       expect(m![1]).toContain(c);
     }
-    expect(new Set(members).size).toBe(30);
+    expect(new Set(members).size).toBe(31);
     for (const a of roster) {
       if (a.id === 'agent-atlas') continue;
       expect(members).toContain(a.id);
@@ -130,7 +153,7 @@ describe('UI seed — mock.ts matches the roster exactly', () => {
 });
 
 describe('build-runner-state.mjs — the automation inventory', () => {
-  it('builds 31 agents and 29 cron jobs and preserves existing product jobs', () => {
+  it('builds 32 agents and 29 cron jobs and preserves existing product jobs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'teamz-roster-'));
     try {
       const inPath = join(dir, 'in.json');
@@ -151,10 +174,10 @@ describe('build-runner-state.mjs — the automation inventory', () => {
         [join(ROOT, 'scripts/build-runner-state.mjs'), '--agents', join(ROOT, 'runner-agents.json'), '--in', inPath, '--out', outPath],
         { encoding: 'utf-8' },
       );
-      expect(out).toContain('31 agents');
+      expect(out).toContain('32 agents');
       expect(out).toContain('29 cron jobs');
       const state = JSON.parse(readFileSync(outPath, 'utf-8'));
-      expect(state.agents).toHaveLength(31);
+      expect(state.agents).toHaveLength(32);
       expect(state.cronJobs).toHaveLength(29);
       expect(state.jobs).toHaveLength(1);
       expect(state.jobs[0].id).toBe('job-nightly-repo-check');

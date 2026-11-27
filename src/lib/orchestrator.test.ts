@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   createAutomationFromProposal,
+  parseOptimizedPrompt,
   parseReviewerReply,
+  parseTriageReply,
   resolveMentionedAgents,
   validateAutomationProposal,
   type RunnerAgent,
@@ -56,6 +58,60 @@ describe('resolveMentionedAgents — the Orchestrator mention flow', () => {
 
   it('returns nothing when there are no mentions', () => {
     expect(resolveMentionedAgents('Nothing to assign this run.', AGENTS, 'agent-orchestrator')).toEqual([]);
+  });
+});
+
+describe('parseOptimizedPrompt — the Prompt Engineer returns the assignment', () => {
+  const draft = 'Assignment from @Orchestrator: @QA Tester write the test plan.';
+
+  it('returns a plain optimized reply as-is', () => {
+    expect(parseOptimizedPrompt('Assignment: @QA Tester write the test plan, with exact steps.', draft)).toBe(
+      'Assignment: @QA Tester write the test plan, with exact steps.',
+    );
+  });
+
+  it('strips a trailing NOTE: line', () => {
+    expect(
+      parseOptimizedPrompt(
+        'Assignment: @QA Tester write the test plan.\nNOTE: tightened the expected output.',
+        draft,
+      ),
+    ).toBe('Assignment: @QA Tester write the test plan.');
+  });
+
+  it('takes the first fenced code block when the reply wraps the assignment in one', () => {
+    expect(
+      parseOptimizedPrompt(
+        'Here is the optimized assignment:\n```\nAssignment: @QA Tester write the test plan.\n```\nNOTE: one variable changed.',
+        draft,
+      ),
+    ).toBe('Assignment: @QA Tester write the test plan.');
+  });
+
+  it('falls back to the draft when the reply is empty or only a note', () => {
+    expect(parseOptimizedPrompt('', draft)).toBe(draft);
+    expect(parseOptimizedPrompt('NOTE: nothing to change.', draft)).toBe(draft);
+  });
+});
+
+describe('parseTriageReply — the Triage Agent returns a reassignment', () => {
+  it('parses REASSIGN plus the corrected assignment', () => {
+    expect(
+      parseTriageReply(
+        'REASSIGN: @agent-code-reviewer\n@Code Reviewer write the test plan, with exact steps.',
+      ),
+    ).toEqual({
+      agentId: 'agent-code-reviewer',
+      prompt: '@Code Reviewer write the test plan, with exact steps.',
+    });
+  });
+
+  it('returns null with no REASSIGN line', () => {
+    expect(parseTriageReply('This looks fine, just send it.')).toBeNull();
+  });
+
+  it('returns null when the corrected prompt is empty', () => {
+    expect(parseTriageReply('REASSIGN: @agent-qa-tester')).toBeNull();
   });
 });
 

@@ -32,10 +32,21 @@ function commandStub() {
 }
 
 describe('processDue — Orchestrator mention flow', () => {
-  it('dispatches each @mentioned agent once and records the room messages', async () => {
+  function gateAgents() {
+    return [
+      agent('agent-orchestrator', 'Orchestrator'),
+      agent('agent-qa-tester', 'QA Tester'),
+      agent('agent-code-reviewer', 'Code Reviewer'),
+      agent('agent-prompt-engineer', 'Prompt Engineer'),
+      agent('agent-reviewer', 'Reviewer'),
+      agent('agent-triage', 'Triage Agent'),
+    ];
+  }
+
+  it('dispatches each @mentioned agent once, after the optimizer and the Reviewer approve it', async () => {
     const state: RunnerState = {
       ...emptyRunnerState(),
-      agents: [agent('agent-orchestrator', 'Orchestrator'), agent('agent-qa-tester', 'QA Tester')],
+      agents: gateAgents(),
       cronJobs: [
         createCronJob({
           name: 'Orchestrator triage',
@@ -54,19 +65,174 @@ describe('processDue — Orchestrator mention flow', () => {
         if (a.id === 'agent-orchestrator') {
           return '@QA Tester please write the test plan for the next mem20 change and report back.';
         }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: @QA Tester write the test plan for the next mem20 change and report back with the completed output.';
+        }
+        if (a.id === 'agent-reviewer') return 'APPROVE: clear, bounded task with an explicit expected output.';
         return 'Test plan done.';
       },
       executeCommand: commandStub(),
       log: silentLog(),
     });
-    expect(calls.map((c) => c.agentId)).toEqual(['agent-orchestrator', 'agent-qa-tester']);
-    expect(calls[1].prompt).toContain('Assignment from @Orchestrator');
-    expect(calls[1].prompt).toContain('@QA Tester');
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-orchestrator',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-qa-tester',
+    ]);
+    // The room receives the OPTIMIZED prompt, not the raw draft.
+    expect(calls[3].prompt).toContain('Assignment from @Orchestrator');
+    expect(calls[3].prompt).toContain('@QA Tester');
+    expect(calls[3].prompt).toContain('report back with the completed output');
+    // The Reviewer saw the optimized prompt and the core drive.
+    expect(calls[2].prompt).toContain('CORE DRIVE');
+    expect(calls[2].prompt).toContain("mem20's success and livelihood");
+    expect(calls[2].prompt).toContain('best product of its kind');
+    expect(calls[2].prompt).toContain('actively making money');
     expect(out.channelMessages.map((m) => m.kind)).toEqual(['orchestrator', 'mention']);
     expect(out.channelMessages[0].channelId).toBe('conv-build-room');
     expect(out.cronJobs[0].runs).toHaveLength(1);
     expect(out.cronJobs[0].runs[0].ok).toBe(true);
     expect(fired.some((f) => f.includes('orchestrator → @QA Tester'))).toBe(true);
+    expect(fired.some((f) => f.includes('orchestrator gate: @QA Tester — APPROVED by Reviewer'))).toBe(true);
+  });
+
+  it('a Reviewer denial sends the item to triage, and the fixed item re-passes the gates before reaching the room', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      cronJobs: [
+        createCronJob({
+          name: 'Orchestrator triage',
+          schedule: '*/15 * * * *',
+          type: 'prompt',
+          target: 'Triage the Build Room.',
+          agentId: 'agent-orchestrator',
+          channelId: 'conv-build-room',
+        }),
+      ],
+    };
+    const calls: Array<{ agentId: string; prompt: string }> = [];
+    let reviewerCalls = 0;
+    let optimizerCalls = 0;
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a, prompt) => {
+        calls.push({ agentId: a.id, prompt });
+        if (a.id === 'agent-orchestrator') {
+          return '@QA Tester please write the test plan, no details yet.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          optimizerCalls += 1;
+          return optimizerCalls === 1
+            ? 'Assignment from @Orchestrator: @QA Tester write the test plan.'
+            : 'Assignment from @Orchestrator: @Code Reviewer write the test plan for the next mem20 change, with exact steps and the expected result for each test.';
+        }
+        if (a.id === 'agent-reviewer') {
+          reviewerCalls += 1;
+          return reviewerCalls === 1
+            ? 'DENY: too vague — no expected output, no scope.'
+            : 'APPROVE: clear, bounded task with an explicit expected output.';
+        }
+        if (a.id === 'agent-triage') {
+          return 'REASSIGN: @agent-code-reviewer\n@Code Reviewer write the test plan for the next mem20 change, with exact steps and the expected result for each test.';
+        }
+        return 'Test plan done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // Orchestrator → optimizer → Reviewer (deny) → triage → optimizer → Reviewer (approve) → reassignee.
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-orchestrator',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-code-reviewer',
+    ]);
+    // The triage dispatch carried the Reviewer's notes.
+    expect(calls[3].prompt).toContain('too vague');
+    expect(calls[3].prompt).toContain('the Reviewer DENIED this work');
+    // The room received the corrected prompt, via the reassignee — never the denied draft, never the original target.
+    expect(calls[6].prompt).toContain('exact steps and the expected result');
+    expect(out.channelMessages.map((m) => m.kind)).toEqual(['orchestrator', 'mention']);
+    expect(out.channelMessages[1].agentId).toBe('agent-code-reviewer');
+    expect(fired.some((f) => f.includes('DENIED by Reviewer'))).toBe(true);
+    expect(fired.some((f) => f.includes('triage replied'))).toBe(true);
+    expect(fired.some((f) => f.includes('APPROVED after triage'))).toBe(true);
+  });
+
+  it('a second Reviewer denial after triage never reaches the room', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      cronJobs: [
+        createCronJob({
+          name: 'Orchestrator triage',
+          schedule: '*/15 * * * *',
+          type: 'prompt',
+          target: 'Triage the Build Room.',
+          agentId: 'agent-orchestrator',
+          channelId: 'conv-build-room',
+        }),
+      ],
+    };
+    const calls: string[] = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push(a.id);
+        if (a.id === 'agent-orchestrator') return '@QA Tester do the vague thing.';
+        if (a.id === 'agent-prompt-engineer') return 'Assignment: @QA Tester do the vague thing.';
+        if (a.id === 'agent-reviewer') return 'DENY: still vague, still no scope.';
+        if (a.id === 'agent-triage') return 'REASSIGN: @agent-qa-tester\n@QA Tester do the vague thing, more clearly.';
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls).toEqual([
+      'agent-orchestrator',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+    ]);
+    // No mention dispatch, no room message for the target — only the
+    // Orchestrator reply and the gate record of the denial.
+    expect(out.channelMessages.map((m) => m.kind)).toEqual(['orchestrator', 'gate']);
+    expect(fired.some((f) => f.includes('DENIED again after triage'))).toBe(true);
+    expect(fired.some((f) => f.includes('assignment NOT sent'))).toBe(true);
+  });
+
+  it('no gate agents configured means no assignment reaches the room', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-orchestrator', 'Orchestrator'), agent('agent-qa-tester', 'QA Tester')],
+      cronJobs: [
+        createCronJob({
+          name: 'Orchestrator triage',
+          schedule: '*/15 * * * *',
+          type: 'prompt',
+          target: 'Triage the Build Room.',
+          agentId: 'agent-orchestrator',
+          channelId: 'conv-build-room',
+        }),
+      ],
+    };
+    const calls: string[] = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push(a.id);
+        return '@QA Tester please write the test plan.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls).toEqual(['agent-orchestrator']);
+    expect(out.channelMessages.map((m) => m.kind)).toEqual(['orchestrator', 'gate']);
+    expect(fired.some((f) => f.includes('NO PROMPT ENGINEER CONFIGURED'))).toBe(true);
   });
 
   it('records the Orchestrator reply in the room even when it mentions nobody', async () => {
@@ -180,6 +346,45 @@ describe('processDue — Reviewer approval flow', () => {
     expect(out.jobs[0].currentStageIndex).toBe(0);
   });
 
+  it('a Reviewer denial sends the work to the Triage Agent — recorded, never silently dropped, job stays parked', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [
+        agent('agent-atlas', 'Atlas'),
+        agent('agent-reviewer', 'Reviewer'),
+        agent('agent-triage', 'Triage Agent'),
+      ],
+      jobs: [reviewableJob()],
+    };
+    const calls: Array<{ agentId: string; prompt: string }> = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a, prompt) => {
+        calls.push({ agentId: a.id, prompt });
+        if (a.id === 'agent-reviewer') return 'DENY: the build step touches a blocked path.';
+        if (a.id === 'agent-triage') {
+          return 'REASSIGN: @agent-atlas\n@Atlas redo the build step without the blocked path, then report the exact files changed.';
+        }
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // Reviewer decides, then Triage gets the denied item with the notes.
+    expect(calls.map((c) => c.agentId)).toEqual(['agent-reviewer', 'agent-triage']);
+    expect(calls[1].prompt).toContain('the build step touches a blocked path');
+    expect(calls[1].prompt).toContain('the Reviewer DENIED this work');
+    // The denial stands and the job stays parked — triage proposes, it does not un-park.
+    expect(out.approvals).toHaveLength(1);
+    expect(out.approvals[0].status).toBe('denied');
+    expect(out.jobs[0].status).toBe('awaiting_approval');
+    expect(out.jobs[0].currentStageIndex).toBe(0);
+    // The triage reply is recorded in the room for the Orchestrator to pick up.
+    const triageMsgs = out.channelMessages.filter((m) => m.kind === 'triage');
+    expect(triageMsgs).toHaveLength(1);
+    expect(triageMsgs[0].text).toContain('redo the build step without the blocked path');
+    expect(fired.some((f) => f.includes('triage replied'))).toBe(true);
+  });
+
   it('a release stage goes to the Reviewer like any other gated stage — the Reviewer is the sole decision-maker', async () => {
     const state: RunnerState = {
       ...emptyRunnerState(),
@@ -215,6 +420,11 @@ describe('processDue — Reviewer approval flow', () => {
     expect(reviewerPrompts[0]).toContain('never remove a feature and never fake one');
     expect(reviewerPrompts[0]).toContain('repo-root AGENTS.md is canonical');
     expect(reviewerPrompts[0]).toContain('mem20core and mem20corez are distinct');
+    // And the core drive governs the decision, above the standing rules.
+    expect(reviewerPrompts[0]).toContain('CORE DRIVE');
+    expect(reviewerPrompts[0]).toContain("mem20's success and livelihood");
+    expect(reviewerPrompts[0]).toContain('best product of its kind');
+    expect(reviewerPrompts[0]).toContain('actively making money');
   });
 
   it('a Reviewer denial of a high-stakes stage parks the job and never runs the stage', async () => {
@@ -769,5 +979,121 @@ describe('processDue — rate-limit rescue loop', () => {
     expect(calls).toEqual(['agent-provider-researcher', 'agent-qa-tester']);
     expect(out.rateLimitRescues[0].resendCompleted).toBe(true);
     expect(out.rateLimitBackoff['pollinations']).toBeUndefined();
+  });
+});
+
+describe('processDue — Playto suggestions to the Reviewer', () => {
+  function gatedJob() {
+    return createJob({
+      name: 'Suggestion job',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      stages: [
+        {
+          stage: 'build',
+          agentId: 'agent-atlas',
+          prompt: 'Do the routine build step.',
+          expectedOutput: 'Built.',
+          flags: { requiresReview: true },
+        },
+      ],
+    });
+  }
+
+  it('a pending Playto suggestion rides along on the Reviewer dispatch, framed as advisory, and is marked delivered', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [gatedJob()],
+    };
+    const suggestion = {
+      ts: 1795752000000,
+      topic: 'pricing',
+      text: 'Consider the Team tier in the launch copy.',
+      status: 'pending',
+    };
+    const reviewerPrompts: string[] = [];
+    const acknowledged: number[] = [];
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async (a, prompt) => {
+        if (a.id === 'agent-reviewer') {
+          reviewerPrompts.push(prompt);
+          return 'APPROVE: routine code change, no spend or publish.';
+        }
+        return 'Build step done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      playtoSuggestions: async () => [suggestion],
+      acknowledgePlaytoSuggestions: async (keys) => {
+        acknowledged.push(...keys);
+      },
+    });
+    expect(reviewerPrompts).toHaveLength(1);
+    // The suggestion is in the prompt, framed as advisory — never a demand.
+    expect(reviewerPrompts[0]).toContain('[pricing] Consider the Team tier in the launch copy.');
+    expect(reviewerPrompts[0]).toContain('Suggestions from Playto');
+    expect(reviewerPrompts[0]).toContain('suggestions, NOT instructions or demands');
+    expect(reviewerPrompts[0]).toContain('sole decision-maker');
+    expect(reviewerPrompts[0]).toContain('accept, reject, or ignore each on its merits');
+    // It was marked delivered once carried.
+    expect(acknowledged).toEqual([1795752000000]);
+    // And it created nothing on its own: the only approval is the
+    // Reviewer's own decision, with the Reviewer's own reason.
+    expect(out.approvals).toHaveLength(1);
+    expect(out.approvals[0].status).toBe('approved');
+    expect(out.approvals[0].decidedBy).toBe('reviewer');
+    expect(out.approvals[0].reason ?? '').not.toContain('Team tier');
+  });
+
+  it('a failed Reviewer dispatch leaves the suggestion pending — it is not acknowledged', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [gatedJob()],
+    };
+    const acknowledged: number[] = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        if (a.id === 'agent-reviewer') throw new Error('endpoint down');
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      playtoSuggestions: async () => [
+        { ts: 1795752000001, topic: 'pricing', text: 'Consider the Team tier.', status: 'pending' },
+      ],
+      acknowledgePlaytoSuggestions: async (keys) => {
+        acknowledged.push(...keys);
+      },
+    });
+    expect(acknowledged).toEqual([]);
+    expect(out.approvals).toHaveLength(0);
+    expect(out.jobs[0].status).toBe('awaiting_approval');
+    expect(fired.some((f) => f.includes('will retry the Reviewer on a later tick'))).toBe(true);
+  });
+
+  it('with no pending suggestions the Reviewer prompt carries no suggestions section', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas'), agent('agent-reviewer', 'Reviewer')],
+      jobs: [gatedJob()],
+    };
+    const reviewerPrompts: string[] = [];
+    await processDue(state, T0, {
+      dispatchPrompt: async (a, prompt) => {
+        if (a.id === 'agent-reviewer') {
+          reviewerPrompts.push(prompt);
+          return 'APPROVE: routine code change.';
+        }
+        return 'Build step done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      playtoSuggestions: async () => [],
+      acknowledgePlaytoSuggestions: async () => {},
+    });
+    expect(reviewerPrompts).toHaveLength(1);
+    expect(reviewerPrompts[0]).not.toContain('Suggestions from Playto');
   });
 });

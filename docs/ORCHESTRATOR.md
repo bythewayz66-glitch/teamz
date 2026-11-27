@@ -43,6 +43,44 @@ Bounds — the same shape as the UI's mention flow
 - a failed mention dispatch is recorded and logged; it never aborts
   the rest of the tick.
 
+## Pre-send gates: no prompt reaches the room unreviewed
+
+Before an assignment prompt goes to the room, it passes two gates
+(`gateOrchestratorAssignment` in `scripts/runner-lib.ts`):
+
+1. **Prompt Engineer** (`agent-prompt-engineer`) optimizes the
+   Orchestrator's draft — shortest prompt that reliably produces the
+   behaviour, system prompts / examples / output format kept
+   separate. The room receives the OPTIMIZED prompt, never the raw
+   draft.
+2. **Reviewer** (`agent-reviewer`) reviews the optimized prompt with
+   the same `APPROVE: <reason>` / `DENY: <reason>` one-line verdict
+   as a stage review. Its prompt carries the core drive: mem20's
+   success and livelihood is the only thing that matters, the only
+   goal is making mem20 the best product of its kind and getting it
+   actively making money.
+
+- **Approve** → the prompt returns to the Orchestrator and is sent to
+  the room as the @-mention, exactly as the room would have seen it.
+- **Deny** → the prompt does NOT reach the room. The denied item plus
+  the Reviewer's notes go to the **Triage Agent**
+  (`agent-triage`, Gemini), which replies `REASSIGN: @<agent-id>`
+  with a corrected prompt. The fixed item re-passes both gates once
+  (optimizer → Reviewer); a second denial means it is not sent — it
+  is recorded as a `kind: 'gate'` channel message and returns to the
+  Orchestrator's next triage run. Nothing is ever silently dropped
+  and nothing reaches the room unreviewed.
+- **Fail closed**: if the Prompt Engineer, the Reviewer, or the
+  Triage Agent is missing or unreachable, the assignment is not
+  sent. Gate dispatches are prefixed `orchestrator gate:` in the
+  runner log so they do not match the Slack poster's postable
+  patterns — pipeline internals stay in the log, completed work
+  still posts to `#mem20updates`.
+
+The same deny → triage path applies to product-job stages: a
+Reviewer-denied stage dispatches the Triage Agent and records its
+reply as a `kind: 'triage'` channel message; the job stays parked.
+
 ## The Orchestrator's output reaches the room
 
 Every cron reply is recorded as a channel message in the runner state
@@ -78,5 +116,7 @@ keep them in sync. A proposal the endpoint refuses is never written.
 ## Tests
 
 `src/lib/orchestrator.test.ts` (mention resolution and caps,
-automation validation) and `src/lib/runner-flows.test.ts` (the real
-`processDue` mention flow end to end, with the channel record).
+automation validation, gate prompt parsing) and
+`src/lib/runner-flows.test.ts` (the real `processDue` mention flow
+end to end, with the channel record — including the gated flow:
+approve, deny → triage → approve, deny twice, missing gate agents).

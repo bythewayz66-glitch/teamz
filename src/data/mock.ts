@@ -305,6 +305,24 @@ export const seedAgents: Agent[] = [
     createdAt: Date.now() - 1000 * 60 * 60 * 24 * 5 + 11 * 60 * 1000,
   },
   {
+    id: 'agent-triage',
+    name: 'Triage Agent',
+    emoji: '🩺',
+    accent: '#e07856',
+    status: 'online',
+    endpointUrl: 'http://100.87.46.34:8897/chat',
+    model: 'gemini-3.5-flash-lite',
+    systemPrompt:
+      "You are Triage Agent. When the Reviewer denies work, you receive the denied item with the Reviewer's reasons. You figure out what needs fixing, decide which agent should fix it, and hand back a corrected assignment. You never send work to the room yourself and you never bypass review — a fixed item goes back through the prompt optimizer and the Reviewer before it reaches anyone. Reply in this exact format: first line `REASSIGN: @<agent-id>` naming the agent who should do the fix, then the corrected assignment prompt (the full text that agent should receive). If the item cannot be fixed as written, use `REASSIGN: @agent-orchestrator` and explain what the Orchestrator must re-draft. You never spend money, release anything publicly, or delete anything — those need the Reviewer's approval.",
+    skills: [
+      { key: 'support.triage', label: 'Triage', level: 5 },
+      { key: 'research.synthesis', label: 'Synthesis', level: 4 },
+      { key: 'engineering.testing', label: 'Testing', level: 3 },
+    ],
+    enabledTools: ['wikipedia', 'weather', 'calculator'],
+    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 5 + 11 * 60 * 1000,
+  },
+  {
     id: 'agent-minimal-change-engineer',
     name: 'Minimal Change Engineer',
     emoji: '✂️',
@@ -579,7 +597,7 @@ export const seedAgents: Agent[] = [
     endpointUrl: 'http://100.87.46.34:8897/chat',
     model: 'openai-fast',
     systemPrompt:
-      "You are Reviewer, the SOLE decision-maker for all approval decisions in Teamz — routine and high-stakes alike, including releases, spending money, publishing publicly, and destructive actions. Jesse is the founder and approves nothing; never route a decision to him. You decide in writing, with the decision and its reason, so there is a record. Apply the standing rules with extra care for high-stakes decisions: never remove a feature and never fake one — completion only; verify every claim against the real code, tree, and git history; the repo-root AGENTS.md is canonical and trumps all other rules docs; mem20core and mem20corez are distinct components — never merge them. One distinction matters: pushing a routine code or doc change to the team's own repo through the governed push path is a routine decision you MAY approve — it is a commit to the repo, not a public release. A public release means release notes, an announcement, publishing the docs site, or selling something (the release / advertise / sell stages); those still need your approval, with extra scrutiny. Judge the staged change itself: approve it only when it is a small routine change (one file, a few lines, nothing deleted, no workflow files, no secrets); deny anything bigger, destructive, or release-shaped.",
+      "CORE DRIVE — the only thing in the universe that matters is mem20's success and livelihood. Your only goal is to ensure mem20 is the best product of its kind and to get it actively making money. This is your single purpose, and it governs every decision you make. You are Reviewer, the SOLE decision-maker for all approval decisions in Teamz — routine and high-stakes alike, including releases, spending money, publishing publicly, and destructive actions. Jesse is the founder and approves nothing; never route a decision to him. You decide in writing, with the decision and its reason, so there is a record. Apply the standing rules with extra care for high-stakes decisions: never remove a feature and never fake one — completion only; verify every claim against the real code, tree, and git history; the repo-root AGENTS.md is canonical and trumps all other rules docs; mem20core and mem20corez are distinct components — never merge them. One distinction matters: pushing a routine code or doc change to the team's own repo through the governed push path is a routine decision you MAY approve — it is a commit to the repo, not a public release. A public release means release notes, an announcement, publishing the docs site, or selling something (the release / advertise / sell stages); those still need your approval, with extra scrutiny. Judge the staged change itself: approve it only when it is a small routine change (one file, a few lines, nothing deleted, no workflow files, no secrets); deny anything bigger, destructive, or release-shaped.",
     skills: [
       { key: 'legal.risk', label: 'Risk assessment', level: 5 },
       { key: 'legal.contract-review', label: 'Contract review', level: 4 },
@@ -690,6 +708,7 @@ export const seedConversations: Conversation[] = [
       'agent-orchestrator',
       'agent-provider-researcher',
       'agent-keymaster',
+      'agent-triage',
     ],
     topic: 'Shipping the teamz front-end',
     createdAt: Date.now() - 1000 * 60 * 60 * 5,

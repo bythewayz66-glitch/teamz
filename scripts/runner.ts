@@ -113,6 +113,13 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     log: (message) => log(`  ${message}`),
     rateLimitEvents: async () => readRateLimitEvents(),
     acknowledgeRateLimitEvents: async (ids) => acknowledgeRateLimitEvents(ids),
+    // Playto suggestions (advisory only): the founder's Chief of Staff
+    // appends suggestions to the inbox file (see
+    // /usr/local/bin/suggest-to-reviewer); pending ones ride along on
+    // Reviewer dispatches, framed as suggestions, and are marked
+    // delivered once carried. A suggestion never decides anything.
+    playtoSuggestions: async () => readPlaytoSuggestions(),
+    acknowledgePlaytoSuggestions: async (keys) => acknowledgePlaytoSuggestions(keys),
     // Before a gated command stage runs, persist the state (with the live
     // approval) so the governed push script can verify the approval on
     // disk. The tick's normal save-after still happens.
@@ -209,6 +216,75 @@ function acknowledgeRateLimitEvents(ids: string[]): void {
   } catch {
     // A failed ack only means the event may be seen again; processDue
     // de-dupes by its rescue records, so this is safe.
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Playto suggestions — the inbox file Playto appends to, and the runner
+ * reads. One JSON object per line: {ts, topic, text, status}. A
+ * suggestion is 'pending' until the runner has included it in a
+ * Reviewer dispatch, then 'delivered'. Suggestions are advisory only:
+ * the Reviewer may accept, reject, or ignore each on its merits, and a
+ * suggestion never approves, denies, or changes anything by itself.
+ * ------------------------------------------------------------------------- */
+
+const PLAYTO_SUGGESTIONS_PATH =
+  process.env.PLAYTO_SUGGESTIONS_PATH ?? '/var/lib/teamz-runner/playto-suggestions.jsonl';
+
+interface PlaytoSuggestionLine {
+  ts: number;
+  topic: string;
+  text: string;
+  status: string;
+}
+
+function readPlaytoSuggestions(): PlaytoSuggestionLine[] {
+  try {
+    if (!existsSync(PLAYTO_SUGGESTIONS_PATH)) return [];
+    const out: PlaytoSuggestionLine[] = [];
+    for (const line of readFileSync(PLAYTO_SUGGESTIONS_PATH, 'utf-8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const s = JSON.parse(line) as Partial<PlaytoSuggestionLine>;
+        if (typeof s.ts === 'number' && typeof s.topic === 'string' && typeof s.text === 'string') {
+          out.push({ ts: s.ts, topic: s.topic, text: s.text, status: typeof s.status === 'string' ? s.status : 'pending' });
+        }
+      } catch {
+        // A corrupt line is skipped, never fatal to the tick.
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function acknowledgePlaytoSuggestions(keys: number[]): void {
+  try {
+    if (!existsSync(PLAYTO_SUGGESTIONS_PATH)) return;
+    const lines = readFileSync(PLAYTO_SUGGESTIONS_PATH, 'utf-8').split('\n');
+    const wanted = new Set(keys);
+    let changed = false;
+    const next = lines.map((line) => {
+      if (!line.trim()) return line;
+      try {
+        const s = JSON.parse(line) as Partial<PlaytoSuggestionLine>;
+        if (typeof s.ts === 'number' && wanted.has(s.ts) && s.status !== 'delivered') {
+          changed = true;
+          return JSON.stringify({ ...s, status: 'delivered' });
+        }
+      } catch {
+        // Corrupt lines pass through untouched.
+      }
+      return line;
+    });
+    if (!changed) return;
+    const tmp = `${PLAYTO_SUGGESTIONS_PATH}.tmp`;
+    writeFileSync(tmp, next.join('\n'), 'utf-8');
+    renameSync(tmp, PLAYTO_SUGGESTIONS_PATH);
+  } catch {
+    // A failed ack only means the suggestion stays pending and will be
+    // re-included on a later Reviewer dispatch; it is never fatal.
   }
 }
 

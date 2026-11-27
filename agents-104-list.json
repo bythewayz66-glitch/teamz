@@ -418,5 +418,9 @@
   {
     "id": "agent-website-currency-agent",
     "name": "Website Currency Agent"
+  },
+  {
+    "id": "agent-triage",
+    "name": "Triage Agent"
   }
 ]

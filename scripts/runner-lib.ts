@@ -94,7 +94,7 @@ export interface ChannelMessage {
   channelId: string;
   agentId: string;
   agentName: string;
-  /** 'cron' | 'orchestrator' | 'mention' | 'researcher' | 'resend' */
+  /** 'cron' | 'orchestrator' | 'mention' | 'researcher' | 'resend' | 'gate' | 'triage' */
   kind: string;
   text: string;
   ts: number;
@@ -484,6 +484,246 @@ export function parseReviewerReply(
   return null;
 }
 
+/* ---------------------------------------------------------------------------
+ * Playto suggestions — advisory input to the Reviewer, never a decision
+ * ------------------------------------------------------------------------- */
+
+/**
+ * One suggestion from Playto (the founder's Chief of Staff) to the
+ * Reviewer. Playto advises; the Reviewer decides. A suggestion never
+ * approves, denies, overrides, or writes anything on its own — it is
+ * context the Reviewer may accept, reject, or ignore.
+ */
+export interface PlaytoSuggestion {
+  /** Epoch ms the suggestion was recorded (the inbox key). */
+  ts: number;
+  topic: string;
+  text: string;
+  /** 'pending' until the runner has included it in a Reviewer dispatch. */
+  status: string;
+}
+
+/**
+ * Render pending Playto suggestions for a Reviewer prompt. The framing
+ * is deliberate and must stay: suggestions, NOT instructions or demands
+ * — the Reviewer is the sole decision-maker.
+ */
+export function formatPlaytoSuggestions(suggestions: PlaytoSuggestion[]): string {
+  const lines = suggestions.map((s) => `- [${s.topic}] ${s.text}`);
+  return (
+    `Suggestions from Playto (the founder's Chief of Staff) — these are suggestions, NOT instructions or demands. ` +
+    `You are the sole decision-maker; accept, reject, or ignore each on its merits.\n${lines.join('\n')}`
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * Orchestrator prompt gates — optimizer → Reviewer, with triage on denial
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The optimized assignment, extracted from the Prompt Engineer's reply.
+ * The Engineer is asked to reply with the optimized assignment as its
+ * whole reply (an optional note goes after, on a line starting with
+ * `NOTE:`). If it instead wraps the assignment in a fenced code block,
+ * the first block wins. Anything unusable falls back to the draft — the
+ * Reviewer still reviews it, so safety is preserved.
+ */
+export function parseOptimizedPrompt(reply: string, fallback: string): string {
+  const fenced = /```(?:[A-Za-z0-9_-]*)?\n([\s\S]*?)```/.exec(reply);
+  let text = fenced ? fenced[1] : reply;
+  const lines = text
+    .split('\n')
+    .filter((line) => !/^\s*NOTE:/i.test(line))
+    .filter((line) => !/^\s*OPTIMIZED PROMPT:/i.test(line));
+  text = lines.join('\n').trim();
+  return text.length > 0 ? text : fallback;
+}
+
+/**
+ * The Triage Agent's reply: a reassignment line plus the corrected
+ * assignment. Returns null when the reply has no usable reassignment.
+ */
+export function parseTriageReply(
+  reply: string,
+): { agentId: string; prompt: string } | null {
+  const match = /REASSIGN:\s*@([A-Za-z][A-Za-z0-9_-]*)/i.exec(reply);
+  if (!match) return null;
+  const prompt = reply.slice(match.index + match[0].length).trim();
+  if (prompt.length === 0) return null;
+  return { agentId: match[1], prompt };
+}
+
+/** Prompt the Prompt Engineer with: optimize this draft assignment. */
+export function optimizerPrompt(draft: string, target: RunnerAgent): string {
+  return (
+    `PROMPT OPTIMIZATION — optimize the Orchestrator assignment draft below and return ONLY the optimized assignment.\n` +
+    `Rules: keep the @mention, the task, and the expected output exactly; make it shorter and more reliable — one clear task, ` +
+    `explicit expected output, no extra work, no new scope. Keep system prompts, examples, and output format separate (there are none here — just the assignment).\n` +
+    `Reply with the optimized assignment as your whole reply. If you want to add a note, put it AFTER the assignment on its own line starting with "NOTE:".\n` +
+    `---\nDRAFT ASSIGNMENT for @${target.name}:\n${draft}`
+  );
+}
+
+/** The Reviewer's core drive — the governing purpose above every standing rule. */
+export const REVIEWER_CORE_DRIVE =
+  `CORE DRIVE — the only thing in the universe that matters is mem20's success and livelihood. ` +
+  `Your only goal is to ensure mem20 is the best product of its kind and to get it actively making money. ` +
+  `This is your single purpose, and it governs every decision you make.`;
+
+/** Prompt the Reviewer with: may this assignment go to the room? */
+export function assignmentReviewPrompt(optimized: string, target: RunnerAgent): string {
+  return (
+    `REVIEW REQUEST — you are the SOLE decision-maker for this prompt. There is no other approver: no human approval, no escalation, no one else to route this to. Decide it yourself.\n` +
+    `${REVIEWER_CORE_DRIVE}\n` +
+    `This is an Orchestrator assignment prompt. If approved, it will be sent to @${target.name} in the Build Room as their assignment. ` +
+    `Judge it on its merits: is it a clear, bounded task with an explicit expected output? Does it ask for anything high-stakes ` +
+    `(spending money, publishing publicly, releasing, deleting)? Deny anything vague, unbounded, high-stakes, or that removes a feature or fakes a result.\n` +
+    `Assignment prompt:\n${optimized}\n` +
+    `Standing rules you must apply: never remove a feature and never fake one — completion only. Verify every claim against the real code, tree, and git history. ` +
+    `The repo-root AGENTS.md is canonical and trumps all other rules docs. mem20core and mem20corez are distinct components — never merge them.\n` +
+    `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". Your decision and its reason are recorded.`
+  );
+}
+
+/** Prompt the Triage Agent with: this work was denied — fix and reassign it. */
+export function triagePrompt(deniedPrompt: string, reason: string): string {
+  return (
+    `TRIAGE — the Reviewer DENIED this work. It must not be dropped and must not go to the room unreviewed.\n` +
+    `Denied item:\n${deniedPrompt}\n` +
+    `Reviewer's reason: ${reason}\n` +
+    `Your job: figure out what needs fixing, decide which agent should fix it, and hand back a corrected assignment. ` +
+    `Reply in this exact format:\n` +
+    `First line: REASSIGN: @<agent-id> — the agent who should do the fix.\n` +
+    `Then the corrected assignment prompt (the full text that agent should receive).\n` +
+    `If the item cannot be fixed as written, use REASSIGN: @agent-orchestrator and explain what the Orchestrator must re-draft.`
+  );
+}
+
+export interface AssignmentGateDeps {
+  dispatch: (agent: RunnerAgent, prompt: string, channelId: string) => Promise<string>;
+  /** Dispatch to the Reviewer (includes any pending Playto suggestions). */
+  dispatchReview: (prompt: string, channelId: string) => Promise<string>;
+  agentsById: Map<string, RunnerAgent>;
+  channelId: string;
+  emit: (line: string) => void;
+}
+
+export interface AssignmentGateResult {
+  ok: boolean;
+  /** The prompt to send to the room (optimized, possibly triage-corrected). */
+  prompt?: string;
+  /** The agent it goes to (the triage round may reassign it). */
+  agentId?: string;
+  /** Why it did not pass (for the log / record). */
+  reason?: string;
+  /** True when the prompt passed only after a triage round. */
+  viaTriage?: boolean;
+}
+
+/**
+ * One gate round: optimize the draft, then put it to the Reviewer.
+ * Returns `{ denied: true }` on a Reviewer denial (the caller decides
+ * about triage); any other failure is a hard stop, never a send.
+ */
+async function gateRound(
+  draft: string,
+  target: RunnerAgent,
+  deps: AssignmentGateDeps,
+): Promise<AssignmentGateResult & { denied?: boolean }> {
+  const optimizer = deps.agentsById.get('agent-prompt-engineer');
+  const reviewer = deps.agentsById.get('agent-reviewer');
+  if (!optimizer) {
+    deps.emit(`orchestrator gate: @${target.name} — NO PROMPT ENGINEER CONFIGURED — assignment NOT sent`);
+    return { ok: false, reason: 'no Prompt Engineer configured' };
+  }
+  if (!reviewer) {
+    deps.emit(`orchestrator gate: @${target.name} — NO REVIEWER CONFIGURED — assignment NOT sent`);
+    return { ok: false, reason: 'no Reviewer configured' };
+  }
+  let optimized: string;
+  try {
+    const optReply = await deps.dispatch(optimizer, optimizerPrompt(draft, target), deps.channelId);
+    optimized = parseOptimizedPrompt(optReply, draft);
+    deps.emit(`orchestrator gate: @${target.name} — prompt optimized (${optimized.length} chars)`);
+  } catch (err) {
+    deps.emit(
+      `orchestrator gate: @${target.name} — optimizer dispatch FAILED (${err instanceof Error ? err.message : String(err)}) — assignment NOT sent`,
+    );
+    return { ok: false, reason: 'optimizer unavailable' };
+  }
+  let verdict;
+  try {
+    const reply = await deps.dispatchReview(assignmentReviewPrompt(optimized, target), deps.channelId);
+    verdict = parseReviewerReply(reply);
+    if (!verdict) throw new Error(`unreadable Reviewer reply: ${reply.slice(0, 200)}`);
+  } catch (err) {
+    deps.emit(
+      `orchestrator gate: @${target.name} — Reviewer unavailable or unreadable (${err instanceof Error ? err.message : String(err)}) — assignment NOT sent`,
+    );
+    return { ok: false, reason: 'reviewer unavailable' };
+  }
+  if (verdict.decision === 'deny') {
+    return { ok: false, denied: true, reason: verdict.reason };
+  }
+  deps.emit(`orchestrator gate: @${target.name} — APPROVED by Reviewer — ${verdict.reason}`);
+  return { ok: true, prompt: optimized, agentId: target.id };
+}
+
+/**
+ * Gate an Orchestrator assignment before it reaches the room:
+ * Prompt Engineer optimizes → Reviewer reviews → back to the
+ * Orchestrator → room. On a Reviewer denial the item goes to the
+ * Triage Agent with the Reviewer's notes; a fixed item goes back
+ * through the gates once. A second denial (or any gate failure) means
+ * the assignment is NOT sent — it is logged and recorded, never
+ * silently dropped and never sent unreviewed.
+ */
+export async function gateOrchestratorAssignment(
+  draft: string,
+  target: RunnerAgent,
+  deps: AssignmentGateDeps,
+): Promise<AssignmentGateResult> {
+  const first = await gateRound(draft, target, deps);
+  if (first.ok) return first;
+  if (!first.denied) return first;
+  deps.emit(`orchestrator gate: @${target.name} — DENIED by Reviewer — ${first.reason} → Triage Agent`);
+  const triage = deps.agentsById.get('agent-triage');
+  if (!triage) {
+    deps.emit(`orchestrator gate: @${target.name} — NO TRIAGE AGENT CONFIGURED — assignment NOT sent`);
+    return { ok: false, reason: first.reason };
+  }
+  let triageReply: string;
+  try {
+    triageReply = await deps.dispatch(triage, triagePrompt(draft, first.reason ?? ''), deps.channelId);
+  } catch (err) {
+    deps.emit(
+      `orchestrator gate: @${target.name} — triage dispatch FAILED (${err instanceof Error ? err.message : String(err)}) — assignment NOT sent`,
+    );
+    return { ok: false, reason: first.reason };
+  }
+  deps.emit(`orchestrator gate: @${target.name} — triage replied — ${triageReply.slice(0, 120)}`);
+  const parsed = parseTriageReply(triageReply);
+  if (!parsed) {
+    deps.emit(`orchestrator gate: @${target.name} — triage reply unreadable — assignment NOT sent`);
+    return { ok: false, reason: first.reason };
+  }
+  const reassignee = deps.agentsById.get(parsed.agentId);
+  if (!reassignee) {
+    deps.emit(`orchestrator gate: @${target.name} — triage named unknown agent ${parsed.agentId} — assignment NOT sent`);
+    return { ok: false, reason: first.reason };
+  }
+  // The fixed item goes back through the normal gates, once.
+  const second = await gateRound(parsed.prompt, reassignee, deps);
+  if (second.ok) {
+    deps.emit(`orchestrator gate: @${reassignee.name} — APPROVED after triage — ready for the room`);
+    return { ...second, viaTriage: true };
+  }
+  if (second.denied) {
+    deps.emit(`orchestrator gate: @${reassignee.name} — DENIED again after triage — assignment NOT sent`);
+  }
+  return { ok: false, reason: second.reason ?? first.reason };
+}
+
 /** A proposed automation, as the Orchestrator (or the endpoint) submits it. */
 export interface AutomationProposal {
   name: string;
@@ -687,6 +927,15 @@ export interface RunnerDeps {
   /** Mark events handled after a rescue attempt (success or exhausted). */
   acknowledgeRateLimitEvents?: (ids: string[]) => Promise<void>;
   /**
+   * Pending suggestions from Playto (the founder's Chief of Staff) for
+   * the Reviewer. Advisory only — a suggestion never approves, denies,
+   * or changes anything on its own; the Reviewer may accept, reject, or
+   * ignore each on its merits. Empty when the caller has none.
+   */
+  playtoSuggestions?: () => Promise<PlaytoSuggestion[]>;
+  /** Mark suggestions delivered after they were included in a Reviewer dispatch. */
+  acknowledgePlaytoSuggestions?: (keys: number[]) => Promise<void>;
+  /**
    * Re-read the agent address book from disk — the Provider
    * Researcher's tools may have reassigned an agent in state.json while
    * this tick was running, and a resend must use the NEW assignment.
@@ -813,6 +1062,44 @@ export async function processDue(
     }
   };
 
+  // Playto suggestions (advisory only): pending suggestions from the
+  // founder's Chief of Staff ride along on Reviewer dispatches, framed
+  // as suggestions — never instructions, never a decision. Fetched once
+  // per tick; marked delivered only after a Reviewer dispatch actually
+  // carried them. A failed Reviewer dispatch leaves them pending, and
+  // the surrounding flow proceeds exactly as if there were none.
+  let pendingSuggestions: PlaytoSuggestion[] | null = null;
+  const getPendingSuggestions = async (): Promise<PlaytoSuggestion[]> => {
+    if (pendingSuggestions !== null) return pendingSuggestions;
+    try {
+      pendingSuggestions = deps.playtoSuggestions
+        ? (await deps.playtoSuggestions()).filter((s) => s.status === 'pending')
+        : [];
+    } catch {
+      pendingSuggestions = [];
+    }
+    return pendingSuggestions;
+  };
+  const dispatchToReviewer = async (
+    reviewer: RunnerAgent,
+    prompt: string,
+    channelId: string,
+  ): Promise<string> => {
+    const pending = await getPendingSuggestions();
+    const fullPrompt =
+      pending.length > 0 ? `${prompt}\n\n${formatPlaytoSuggestions(pending)}` : prompt;
+    const reply = await dispatch(reviewer, fullPrompt, channelId);
+    if (pending.length > 0 && deps.acknowledgePlaytoSuggestions) {
+      try {
+        await deps.acknowledgePlaytoSuggestions(pending.map((s) => s.ts));
+        pendingSuggestions = [];
+      } catch {
+        // Best-effort: stays pending and will be re-included next time.
+      }
+    }
+    return reply;
+  };
+
   const { dueJobs, dueTriggers } = schedulerTick(now, state.cronJobs, state.triggers);
 
   for (const trigger of dueTriggers) {
@@ -876,25 +1163,56 @@ export async function processDue(
       // @mentioning agents in its reply. Dispatch each mentioned agent
       // once, one level only (max 8) — the same bounds as the UI's
       // mention flow (depth 4, max 8 replies) in runner form.
+      //
+      // No assignment reaches the room without passing both gates:
+      // the Prompt Engineer optimizes the draft, the Reviewer reviews
+      // it, and only then does it go out. A Reviewer denial sends the
+      // item to the Triage Agent with the Reviewer's notes; a fixed
+      // item goes back through the gates once. A second denial (or any
+      // gate failure) means the assignment is NOT sent — it is logged
+      // and recorded as a 'gate' message, never silently dropped and
+      // never sent unreviewed.
       if (cron.agentId === 'agent-orchestrator') {
         const mentioned = resolveMentionedAgents(reply, state.agents, agent.id);
         for (const target of mentioned) {
-          const assignment =
+          const draft =
             `Assignment from @Orchestrator in the Build Room (conv-build-room):\n\n${reply}\n\n` +
             `Do the part addressed to you (@${target.name}) and reply with the completed output. Keep it to one reply.`;
-          try {
-            const targetReply = await dispatch(target, assignment, cron.channelId);
+          const gated = await gateOrchestratorAssignment(draft, target, {
+            dispatch,
+            dispatchReview: (prompt, channelId) =>
+              dispatchToReviewer(agentById.get('agent-reviewer')!, prompt, channelId),
+            agentsById: agentById,
+            channelId: cron.channelId,
+            emit,
+          });
+          if (!gated.ok) {
             recordChannelMessage(state, {
               channelId: cron.channelId,
-              agentId: target.id,
-              agentName: target.name,
+              agentId: agent.id,
+              agentName: agent.name,
+              kind: 'gate',
+              text:
+                `Orchestrator assignment for @${target.name} did NOT reach the room: ${gated.reason ?? 'gated'}` +
+                `${gated.viaTriage ? ' (after a triage round)' : ''}. ` +
+                `The item was not dropped — it returns to the Orchestrator's next triage run.`,
+            });
+            continue;
+          }
+          const finalTarget = gated.agentId ? (agentById.get(gated.agentId) ?? target) : target;
+          try {
+            const targetReply = await dispatch(finalTarget, gated.prompt ?? draft, cron.channelId);
+            recordChannelMessage(state, {
+              channelId: cron.channelId,
+              agentId: finalTarget.id,
+              agentName: finalTarget.name,
               kind: 'mention',
               text: targetReply,
             });
-            emit(`orchestrator → @${target.name}: ${targetReply.slice(0, 120)}`);
+            emit(`orchestrator → @${finalTarget.name}: ${targetReply.slice(0, 120)}`);
           } catch (err) {
             emit(
-              `orchestrator → @${target.name}: FAILED ${err instanceof Error ? err.message : String(err)}`,
+              `orchestrator → @${finalTarget.name}: FAILED ${err instanceof Error ? err.message : String(err)}`,
             );
           }
         }
@@ -1145,6 +1463,7 @@ export async function processDue(
         const highStakes = isHighStakes(plan.stage, plan.flags);
         const reviewerPrompt =
           `REVIEW REQUEST — you are the SOLE decision-maker for this stage. There is no other approver: no human approval, no escalation, no one else to route this to. Decide it yourself.\n` +
+          `${REVIEWER_CORE_DRIVE}\n` +
           `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}${highStakes ? ' — HIGH-STAKES: this stage releases, spends money, publishes publicly, or destroys something. Apply extra scrutiny and deny unless the evidence below actually supports it.' : ''}\n` +
           `Stage prompt: ${plan.prompt}\nExpected output: ${plan.expectedOutput}\n` +
           `What has happened so far in this job (completed stage outputs — judge the actual change, not just the description):\n${reviewContext(job) || '(nothing yet)'}\n` +
@@ -1156,7 +1475,7 @@ export async function processDue(
           `change (one file, a few lines, nothing deleted, no workflow files). Judge the staged change in ` +
           `the context above: approve it only if it is that kind of small routine change; deny anything ` +
           `bigger, destructive, or release-shaped.`;
-        const reply = await dispatch(reviewer, reviewerPrompt, job.channelId);
+        const reply = await dispatchToReviewer(reviewer, reviewerPrompt, job.channelId);
         const verdict = parseReviewerReply(reply);
         if (!verdict) {
           throw new Error(`unreadable Reviewer reply: ${reply.slice(0, 200)}`);
@@ -1175,6 +1494,38 @@ export async function processDue(
           ];
           state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
           emit(`job ${job.name} / ${plan.stage}: DENIED by Reviewer — ${verdict.reason}`);
+          // Denied work goes to the Triage Agent — never silently
+          // dropped. The triage reply is a fix proposal, recorded in
+          // the room so the Orchestrator can pick it up on its next
+          // triage run and re-submit it through the gates. The job
+          // itself stays parked; a denied stage never re-runs on its own.
+          const triage = agentById.get('agent-triage');
+          if (!triage) {
+            emit(`job ${job.name} / ${plan.stage}: NO TRIAGE AGENT CONFIGURED — denial stands, job parked`);
+          } else {
+            try {
+              const triageReply = await dispatch(
+                triage,
+                triagePrompt(
+                  `Stage "${plan.stage}" of job "${job.name}": ${plan.prompt}\nExpected output: ${plan.expectedOutput}`,
+                  verdict.reason,
+                ),
+                job.channelId,
+              );
+              recordChannelMessage(state, {
+                channelId: job.channelId,
+                agentId: triage.id,
+                agentName: triage.name,
+                kind: 'triage',
+                text: `Triage for denied ${plan.stage} of "${job.name}" (Reviewer: ${verdict.reason}): ${triageReply.slice(0, 2000)}`,
+              });
+              emit(`job ${job.name} / ${plan.stage}: triage replied — ${triageReply.slice(0, 120)}`);
+            } catch (err) {
+              emit(
+                `job ${job.name} / ${plan.stage}: triage dispatch FAILED (${err instanceof Error ? err.message : String(err)}) — denial stands, job parked`,
+              );
+            }
+          }
           continue;
         }
         state.approvals = [

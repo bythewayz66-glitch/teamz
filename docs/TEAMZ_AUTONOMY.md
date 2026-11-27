@@ -1,7 +1,7 @@
 # Teamz autonomy — the 24/7 runner, the agents, and the Build Room
 
 This is the overview for the autonomous half of Teamz: the headless
-runner on jnet1, the 31 agents it drives, their automations, the
+runner on jnet1, the 32 agents it drives, their automations, the
 Reviewer gate, the Orchestrator, the Provider Researcher, and the
 Keymaster. The detail docs are:
 
@@ -14,11 +14,13 @@ Keymaster. The detail docs are:
 - `docs/KEYMASTER.md` — the credential inventory and the secrets
   store (`docs/credential-inventory.json`).
 
-## The roster (31 runner agents)
+## The roster (32 runner agents)
 
-`runner-agents.json` is the single source of truth. All 31 point at
-`http://127.0.0.1:8897/chat` (the teamz-agent endpoint on jnet1) with
-model `openai-fast`, and every system prompt there is identical to
+`runner-agents.json` is the single source of truth. All 32 point at
+`http://127.0.0.1:8897/chat` (the teamz-agent endpoint on jnet1);
+most use model `openai-fast`, and an agent with a `provider` names
+its own model (the Triage Agent is on Gemini
+`gemini-3.5-flash-lite`). Every system prompt there is identical to
 the one in the UI seed (`src/data/mock.ts`) — tested in
 `src/lib/roster.test.ts`.
 
@@ -37,9 +39,19 @@ the one in the UI seed (`src/data/mock.ts`) — tested in
   the governed push path's read/stage half — see
   `docs/PUSH_PATH.md`).
 - **Reviewer** (`agent-reviewer`): the approval gate for routine
-  operational decisions. See `docs/REVIEWER_POLICY.md`.
+  operational decisions — and the sole decision-maker for every
+  approval, driven by one core drive: mem20's success and livelihood
+  is the only thing that matters, the only goal is making mem20 the
+  best product of its kind and getting it actively making money.
+  See `docs/REVIEWER_POLICY.md`.
 - **Orchestrator** (`agent-orchestrator`): triage and assignment in
-  the Build Room, every 15 minutes. See `docs/ORCHESTRATOR.md`.
+  the Build Room, every 15 minutes. Its assignments pass the Prompt
+  Engineer and the Reviewer before reaching the room. See
+  `docs/ORCHESTRATOR.md`.
+- **Triage Agent** (`agent-triage`, Gemini): takes any work the
+  Reviewer denies, with the Reviewer's reasons, and reassigns it
+  with a corrected prompt. The fix re-passes the gates before it can
+  reach the room.
 - **Provider Researcher** (`agent-provider-researcher`): keyless
   provider research, load balancing, rate-limit rescue. See
   `docs/PROVIDER_RESEARCHER.md`.
@@ -85,8 +97,8 @@ reports `NOTHING-TO-PUSH`.
 
 ## The Build Room (`conv-build-room`)
 
-The channel where the whole team works: all 34 seed agents (4
-original: Scout, Atlas, Pixel, Sage; 30 new) are members, so Jesse
+The channel where the whole team works: all 35 seed agents (4
+original: Scout, Atlas, Pixel, Sage; 31 new) are members, so Jesse
 can see them communicate. The Orchestrator's standing orders are
 posted there as a seed message, and the runner records its agents'
 replies as channel messages in the state (`state.channelMessages`),
@@ -143,16 +155,28 @@ Gated stages (`release` / `advertise` / `sell`, or any stage flagged
 `spendsMoney` / `publishesPublic` / `destructive`) never execute
 without a live approval record (`src/lib/governance.ts`,
 `canExecuteStage`). All gated stages go to the Reviewer — routine and
-high-stakes alike; there are no carve-outs to anyone else. See
+high-stakes alike; there are no carve-outs to anyone else. The
+Reviewer also reviews every Orchestrator assignment prompt before it
+reaches the room (Prompt Engineer optimizes, Reviewer approves or
+denies — see `docs/ORCHESTRATOR.md`). A denial sends the work to the
+Triage Agent, never to the void. Playto may suggest things to the
+Reviewer through the suggestions inbox
+(`/var/lib/teamz-runner/playto-suggestions.jsonl`) — advisory only,
+the Reviewer decides. The Reviewer's core drive governs every
+decision: mem20's success and livelihood is the only thing that
+matters; the only goal is making mem20 the best product of its kind
+and getting it actively making money. See
 `docs/REVIEWER_POLICY.md`.
 
 ## Tests
 
-`npm test` — 371 tests, including the new suites:
+`npm test` — 392 tests, including the new suites:
 `src/lib/reviewer.test.ts`, `src/lib/orchestrator.test.ts`,
-`src/lib/runner-flows.test.ts` (Orchestrator mentions, Reviewer
-approve/deny/high-stakes/retry, rate-limit rescue through the real
-`processDue`), `src/lib/roster.test.ts` (roster/UI parity, Build Room
-membership, automation inventory), `src/lib/keymaster.test.ts`
+`src/lib/runner-flows.test.ts` (Orchestrator mentions and the
+pre-send gates — approve, deny → triage → approve, deny twice,
+missing gate agents; Reviewer approve/deny/high-stakes/retry;
+denial-to-triage; Playto suggestions; rate-limit rescue through the
+real `processDue`), `src/lib/roster.test.ts` (roster/UI parity, Build
+Room membership, automation inventory), `src/lib/keymaster.test.ts`
 (inventory contains no credential values), `src/lib/slack-poster.test.ts`
 (tick filtering/formatting: only completed job work posts to Slack).
