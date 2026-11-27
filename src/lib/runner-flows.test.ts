@@ -7,6 +7,7 @@ import {
   optimizerPrompt,
   processDue,
   recordChannelMessage,
+  resetDispatchThrottle,
   RESCUE_BACKOFF_BASE_MS,
   stageReviewPrompt,
   triagePrompt,
@@ -103,6 +104,53 @@ describe('processDue — Orchestrator mention flow', () => {
     expect(out.cronJobs[0].runs[0].ok).toBe(true);
     expect(fired.some((f) => f.includes('orchestrator → @QA Tester'))).toBe(true);
     expect(fired.some((f) => f.includes('orchestrator gate: @QA Tester — APPROVED by Reviewer'))).toBe(true);
+  });
+
+  it('assigns at most 2 mentioned agents per Orchestrator run — the rest stay in the room for the next run (Nov 27, 2026 fleet slowdown)', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [...gateAgents(), agent('agent-scout', 'Scout')],
+      cronJobs: [
+        createCronJob({
+          name: 'Orchestrator triage',
+          schedule: '*/15 * * * *',
+          type: 'prompt',
+          target: 'Triage the Build Room.',
+          agentId: 'agent-orchestrator',
+          channelId: 'conv-build-room',
+        }),
+      ],
+    };
+    const calls: Array<{ agentId: string }> = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push({ agentId: a.id });
+        if (a.id === 'agent-orchestrator') {
+          return '@QA Tester write the test plan. @Code Reviewer write the review checklist. @Scout scout the next change.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: do the addressed part and report back.';
+        }
+        if (a.id === 'agent-reviewer') return 'APPROVE: clear, bounded task.';
+        return 'Done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // Two mentions assigned (each: optimizer + Reviewer + target);
+    // the third is deferred, not dropped — the Orchestrator's reply
+    // is recorded in the room, so the next run can pick it up.
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-orchestrator',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-qa-tester',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-code-reviewer',
+    ]);
+    expect(fired.some((f) => f.includes('@Scout not assigned this tick'))).toBe(true);
+    expect(out.channelMessages.filter((m) => m.kind === 'mention')).toHaveLength(2);
   });
 
   it('a Reviewer denial sends the item to triage, and the fixed item re-passes the gates before reaching the room', async () => {
@@ -800,6 +848,47 @@ describe('processDue — inter-dispatch spacing', () => {
     });
     expect(Date.now() - t0).toBeLessThan(5000);
   });
+
+  it('the gap persists across ticks — the next tick still waits the full gap (Nov 27, 2026 fleet slowdown)', async () => {
+    resetDispatchThrottle();
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-qa-tester', 'QA Tester')],
+      cronJobs: [
+        createCronJob({
+          name: 'Every minute: QA Tester',
+          schedule: '* * * * *',
+          type: 'prompt',
+          target: 'Write the test plan.',
+          agentId: 'agent-qa-tester',
+          channelId: 'conv-build-room',
+        }),
+      ],
+    };
+    const starts: number[] = [];
+    const ends: number[] = [];
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent) => {
+        starts.push(Date.now());
+        await new Promise((r) => setTimeout(r, 10));
+        ends.push(Date.now());
+        return `${a.name} done.`;
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      minDispatchGapMs: 150,
+    };
+    // Tick 1 fires the every-minute cron. Tick 2, a minute later, has
+    // the same cron due again (new minute slot) — but its first
+    // dispatch must still wait the full gap after tick 1's dispatch
+    // ended. The gap is global, not per-tick.
+    const first = await processDue(state, T0, deps);
+    expect(starts).toHaveLength(1);
+    await processDue(first.state, new Date(T0.getTime() + 60_000), deps);
+    expect(starts).toHaveLength(2);
+    expect(starts[1] - ends[0]).toBeGreaterThanOrEqual(120);
+    resetDispatchThrottle();
+  });
 });
 
 describe('processDue — rate-limit rescue loop', () => {
@@ -1054,16 +1143,13 @@ describe('processDue — rate-limit rescue loop', () => {
       acknowledgeRateLimitEvents: async () => {},
       reloadAgents: async () => [qa, researcher],
     });
-    // 5 attempts (the cap), each a Researcher wake + a resend.
-    expect(calls).toHaveLength(10);
-    expect(out.rateLimitRescues).toHaveLength(5);
-    // Newest first: the 5 newest events (rl-cap-6 down to rl-cap-2).
+    // 2 attempts (the cap), each a Researcher wake + a resend.
+    expect(calls).toHaveLength(4);
+    expect(out.rateLimitRescues).toHaveLength(2);
+    // Newest first: the 2 newest events (rl-cap-6, rl-cap-5).
     expect(out.rateLimitRescues.map((r) => r.eventId)).toEqual([
       'rl-cap-6',
       'rl-cap-5',
-      'rl-cap-4',
-      'rl-cap-3',
-      'rl-cap-2',
     ]);
   });
 });
@@ -1143,10 +1229,10 @@ describe('processDue — per-tick product-job cap', () => {
       executeCommand: commandStub(),
       log: silentLog(),
     });
-    // Default cap (6): 6 of 10 start; the other 4 stay due.
-    expect(calls).toHaveLength(6);
-    expect(out.jobs.filter((j) => j.cyclesCompleted === 1)).toHaveLength(6);
-    expect(out.jobs.filter((j) => j.cyclesCompleted === 0)).toHaveLength(4);
+    // Default cap (1): 1 of 10 starts; the other 9 stay due.
+    expect(calls).toHaveLength(1);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 1)).toHaveLength(1);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 0)).toHaveLength(9);
   });
 });
 
@@ -1194,6 +1280,46 @@ describe('processDue — due crons fire most-frequent-first', () => {
       log: silentLog(),
     });
     expect(calls).toEqual(['agent-orchestrator', 'agent-atlas']);
+  });
+});
+
+describe('processDue — per-tick cron cap (Nov 27, 2026 fleet slowdown)', () => {
+  it('fires at most 2 due crons per tick — the rest stay due and drain on later ticks, nothing dropped', async () => {
+    const hourly = (name: string) => ({
+      ...createCronJob({
+        name,
+        schedule: '0 * * * *',
+        type: 'prompt',
+        target: 'Check drift.',
+        agentId: 'agent-atlas',
+        channelId: 'conv-build-room',
+      }),
+      lastRunAt: new Date(2026, 10, 26, 9, 0).getTime(),
+    });
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas')],
+      cronJobs: [hourly('Hourly one'), hourly('Hourly two'), hourly('Hourly three')],
+    };
+    const calls: string[] = [];
+    const deps = {
+      dispatchPrompt: async () => {
+        calls.push('agent-atlas');
+        return 'Checked.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    };
+    // Tick 1: only the first two fire; the third stays due — its
+    // lastRunAt is untouched, so the catch-up rule keeps it due.
+    const first = await processDue(state, T0, deps);
+    expect(calls).toHaveLength(2);
+    expect(first.state.cronJobs[2].lastRunAt).toBe(new Date(2026, 10, 26, 9, 0).getTime());
+    // Tick 2 (one minute later): the third fires. Nothing was dropped.
+    const second = await processDue(first.state, new Date(T0.getTime() + 60_000), deps);
+    expect(calls).toHaveLength(3);
+    expect(second.state.cronJobs[2].runs).toHaveLength(1);
+    expect(second.state.cronJobs[2].runs[0].ok).toBe(true);
   });
 });
 

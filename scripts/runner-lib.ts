@@ -1233,28 +1233,31 @@ export interface RunnerDeps {
   onJobUpdate?: (line: string) => void;
   /**
    * Minimum milliseconds between the END of one dispatch and the START
-   * of the next (default 0 — tests). The live runner passes 50_000:
-   * the endpoint enforces a 50s gap between upstream calls inside
-   * each dispatch's 330s budget, so a second dispatch in the same tick
-   * would burn ~50s of its budget waiting and then fail with "did not
-   * respond in the time left" (observed live Nov 26, 2026). Waiting
-   * BETWEEN dispatches — outside any dispatch's budget — keeps every
-   * dispatch's model call inside its 330s. The tick gets longer (the
-   * hourly batch drains over ~22 min); the service skips ticks while
-   * one is still running (see scripts/runner.ts).
+   * of the next (default 0 — tests). The live runner passes 900_000
+   * (15 min — Nov 27, 2026 fleet slowdown, was 50_000): the gap is
+   * the fleet's master throttle and applies ACROSS ticks (see the
+   * module-level throttle in processDue), so it sets the dispatch
+   * rate at ~1 per 16 minutes whatever the tick interval or the
+   * per-tick caps say. Waiting BETWEEN dispatches — outside any
+   * dispatch's 330s budget — also keeps every dispatch's model call
+   * inside its 330s (the original reason for the gap, observed live
+   * Nov 26, 2026). The tick gets longer; the service skips ticks
+   * while one is still running (see scripts/runner.ts).
    */
   minDispatchGapMs?: number;
   /**
-   * Maximum product jobs started per tick (default 6). A tick that
-   * starts every due product job takes hours — with ~160 active jobs
-   * the 30s tick interval is skipped while one is in flight, so the
-   * Orchestrator (15-min) and hourly crons miss their 1-minute
-   * windows and never fire (observed live Nov 26, 2026: hourly last
-   * ran 17:00, Orchestrator 18:45). Capping the product work per tick
-   * bounds the tick to minutes, so crons are checked often and fire
-   * on schedule (via the catch-up due check in lib/scheduler.ts).
-   * Due jobs that are not started stay due and drain on later ticks —
-   * nothing is dropped. Crons, triggers, and rescues are never capped.
+   * Maximum product jobs started per tick (default 1 — Nov 27, 2026
+   * fleet slowdown, was 6). A tick that starts every due product job
+   * takes hours — with ~160 active jobs the 30s tick interval is
+   * skipped while one is in flight, so the Orchestrator (15-min) and
+   * hourly crons miss their 1-minute windows and never fire (observed
+   * live Nov 26, 2026: hourly last ran 17:00, Orchestrator 18:45).
+   * Capping the product work per tick bounds the tick, so crons are
+   * checked often and fire on schedule (via the catch-up due check in
+   * lib/scheduler.ts). Due jobs that are not started stay due and
+   * drain on later ticks — nothing is dropped. Crons have their own
+   * per-tick cap (MAX_CRONS_PER_TICK), rescues theirs
+   * (MAX_RESCUE_EVENTS_PER_TICK); triggers are never capped.
    */
   maxJobsPerTick?: number;
   /**
@@ -1271,6 +1274,26 @@ export interface ProcessDueResult {
   state: RunnerState;
   /** Human-readable lines of what this tick did, for the log. */
   fired: string[];
+}
+
+/**
+ * Fleet slowdown (Jesse, Nov 27, 2026 — "slow them down a lot, don't
+ * stop them"): the inter-dispatch gap is GLOBAL, not per-tick. Every
+ * model call the fleet makes flows through `dispatch()` inside
+ * `processDue`, so the timestamp of the last dispatch ending lives at
+ * module scope and survives across ticks in the long-lived runner —
+ * a tick that starts right after the previous one still waits the full
+ * gap before its first dispatch. A restart resets it (the first
+ * dispatch after a restart is immediate). At the live 15-minute gap
+ * this caps the whole fleet at ~1 dispatch per 16 minutes (~3-4/hour,
+ * ~800 model calls/day at ~10 calls per dispatch), down from ~3,100.
+ * No agent or job is exempt — the Reviewer, triage, and rescue flow
+ * through the same `dispatch()` and slow down at the same pace.
+ */
+let lastDispatchEndedAtMs = 0;
+/** Reset the cross-tick dispatch throttle (tests only). */
+export function resetDispatchThrottle(): void {
+  lastDispatchEndedAtMs = 0;
 }
 
 /**
@@ -1302,11 +1325,16 @@ export function rescueBackoffDelayMs(consecutiveFailures: number): number {
  * `strandedSweeps`), and hands the stranded list to the Provider
  * Researcher, who reassigns each one with reassign_agent.
  */
+/** Stranded-agent sweep: at most 3 agents per sweep dispatch (one
+ * dispatch per tick at most, however many agents it names — the cap
+ * counts agents, not dispatches, so it does not throttle the fleet
+ * and is left alone by the Nov 27 slowdown). */
 export const MAX_STRANDED_PER_TICK = 3; // agents per sweep dispatch
 export const STRANDED_SWEEP_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24h per agent
 
-/** Parked-job triage recovery: at most 2 recovery attempts per tick. */
-export const MAX_TRIAGE_RECOVERIES_PER_TICK = 2;
+/** Parked-job triage recovery: at most 1 recovery attempt per tick
+ * (was 2 — Nov 27, 2026 fleet slowdown). */
+export const MAX_TRIAGE_RECOVERIES_PER_TICK = 1;
 /** Parked-job triage recovery: at most once per job per cooldown. */
 export const TRIAGE_RECOVERY_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
@@ -1336,11 +1364,39 @@ export function findStrandedAgents(
  * for hours and the recent Kilo 429s at the end of the file were never
  * reached. Capped and newest-first, the urgent recent events are
  * handled promptly and the stale ones are skipped cheaply (see below).
+ * Nov 27, 2026 fleet slowdown: 5 → 2. Each attempt is a Researcher
+ * wake plus a resend, so this bounds rescue dispatches per tick.
  */
-export const MAX_RESCUE_EVENTS_PER_TICK = 5;
+export const MAX_RESCUE_EVENTS_PER_TICK = 2;
 
-/** Default product jobs started per tick (see RunnerDeps.maxJobsPerTick). */
-export const DEFAULT_MAX_JOBS_PER_TICK = 6;
+/** Default product jobs started per tick (see RunnerDeps.maxJobsPerTick).
+ * Nov 27, 2026 fleet slowdown: 6 → 1. Due jobs stay due and drain on
+ * later ticks; nothing is dropped. */
+export const DEFAULT_MAX_JOBS_PER_TICK = 1;
+
+/**
+ * Cron jobs: at most 2 prompt-cron dispatches per tick (was uncapped —
+ * Nov 27, 2026 fleet slowdown). Crons are ~94% of all dispatches
+ * (49 hourly crons); without a cap one catch-up tick fires the whole
+ * hourly batch at once. Due crons stay due (catch-up) and drain on
+ * later ticks — the most-frequent-first sort still puts the
+ * Orchestrator ahead of the hourly batch, so it gets one of the two
+ * slots whenever it is due. Refused/skipped crons (command type, no
+ * agent) do not count against the cap.
+ */
+export const MAX_CRONS_PER_TICK = 2;
+
+/**
+ * Orchestrator mention fan-out: at most 2 mentioned agents assigned
+ * per Orchestrator run per tick (was up to 8 — Nov 27, 2026 fleet
+ * slowdown). Each mention costs up to 3 gated dispatches (Prompt
+ * Engineer + Reviewer + target); an 8-mention run would otherwise
+ * hold the tick for hours at the 15-minute dispatch gap. The
+ * unassigned mentions stay in the Orchestrator's recorded reply in
+ * the room, so the next Orchestrator run can pick them up — nothing
+ * is dropped.
+ */
+export const MAX_ORCHESTRATOR_MENTIONS_PER_TICK = 2;
 
 /** True when an error is a rate-limit failure (402/429 / FREE_LIMIT). */
 export function isRateLimitError(err: unknown): boolean {
@@ -1386,12 +1442,17 @@ export async function processDue(
 
   // Gap-spaced dispatch: every prompt in this tick goes through here,
   // so the wait between dispatches happens OUTSIDE any dispatch's 330s
-  // budget (see RunnerDeps.minDispatchGapMs).
+  // budget (see RunnerDeps.minDispatchGapMs). The gap is GLOBAL across
+  // ticks (module-level lastDispatchEndedAtMs, Nov 27, 2026 fleet
+  // slowdown): a tick that starts right after the previous one still
+  // waits the full gap before its first dispatch, so the gap — not the
+  // tick interval or the per-tick caps — sets the fleet's dispatch
+  // rate. The timestamp is only recorded when a gap is configured, so
+  // gap-0 callers (tests, in-tab runner) never perturb it.
   const minGapMs = deps.minDispatchGapMs ?? 0;
-  let lastDispatchEndedAt = 0;
   const dispatch = async (agent: RunnerAgent, prompt: string, channelId: string): Promise<string> => {
     if (minGapMs > 0) {
-      const wait = minGapMs - (Date.now() - lastDispatchEndedAt);
+      const wait = minGapMs - (Date.now() - lastDispatchEndedAtMs);
       if (wait > 0) {
         deps.log(`spacing: waiting ${Math.ceil(wait / 1000)}s before dispatch to ${agent.name}`);
         await new Promise((resolve) => setTimeout(resolve, wait));
@@ -1400,7 +1461,7 @@ export async function processDue(
     try {
       return await deps.dispatchPrompt(agent, prompt, channelId);
     } finally {
-      lastDispatchEndedAt = Date.now();
+      if (minGapMs > 0) lastDispatchEndedAtMs = Date.now();
     }
   };
 
@@ -1474,7 +1535,18 @@ export async function processDue(
     }
   }
 
+  // Per-tick cron cap (Nov 27, 2026 fleet slowdown — MAX_CRONS_PER_TICK):
+  // a catch-up tick can make dozens of hourly crons due at once, and
+  // without a cap it fires the whole batch. Only prompt crons that
+  // would actually dispatch count, and only those stop the loop — a
+  // refused or skipped cron is still marked and never blocks the tick.
+  // Crons past the cap are NOT marked run, so they stay due (catch-up)
+  // and drain on later ticks; nothing is dropped.
+  let cronsDispatched = 0;
   for (const cron of dueJobs) {
+    const cronAgent = cron.agentId ? agentById.get(cron.agentId) : undefined;
+    const wouldDispatch = cron.type !== 'command' && cronAgent && cron.channelId;
+    if (wouldDispatch && cronsDispatched >= MAX_CRONS_PER_TICK) break;
     state.cronJobs = state.cronJobs.map((j) =>
       j.id === cron.id ? { ...j, lastRunAt: nowMs } : j,
     );
@@ -1500,6 +1572,7 @@ export async function processDue(
       continue;
     }
     try {
+      cronsDispatched += 1;
       const reply = await dispatch(agent, cron.target, cron.channelId);
       const updated = recordCronRun(
         { ...cron, lastRunAt: nowMs },
@@ -1529,7 +1602,22 @@ export async function processDue(
       // never sent unreviewed.
       if (cron.agentId === 'agent-orchestrator') {
         const mentioned = resolveMentionedAgents(reply, state.agents, agent.id);
+        // Mention fan-out cap (Nov 27, 2026 fleet slowdown —
+        // MAX_ORCHESTRATOR_MENTIONS_PER_TICK): each mention costs up
+        // to 3 gated dispatches, so an 8-mention run would hold the
+        // tick for hours at the 15-minute dispatch gap. Mentions past
+        // the cap are NOT assigned this tick and NOT dropped — the
+        // Orchestrator's reply is already recorded in the room, so
+        // the next Orchestrator run can pick them up.
+        let mentionsHandled = 0;
         for (const target of mentioned) {
+          if (mentionsHandled >= MAX_ORCHESTRATOR_MENTIONS_PER_TICK) {
+            emit(
+              `orchestrator: @${target.name} not assigned this tick — mention cap (${MAX_ORCHESTRATOR_MENTIONS_PER_TICK}) reached; the assignment stays in the room for the next Orchestrator run`,
+            );
+            continue;
+          }
+          mentionsHandled += 1;
           const draft =
             `Assignment from @Orchestrator in the Build Room (conv-build-room):\n\n${reply}\n\n` +
             `Do the part addressed to you (@${target.name}) and reply with the completed output. Keep it to one reply.`;
