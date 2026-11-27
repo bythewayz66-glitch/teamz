@@ -65,6 +65,12 @@ LIMITS = {
 # The original 4 providers (before OVH/Gemini/Groq were added).
 ORIGINAL = ["pollinations", "kilo", "freeai", "apisfreellm"]
 
+# FIXED known operating point for Model A: z=34 agents ran on y=4
+# providers. This baseline NEVER moves — Model A scales from it, not from
+# the current agent count (using the current count would double-count
+# every expansion). max_a = KNOWN_Z * (x_new / x_old).
+KNOWN_Z = 34
+
 # Upstream calls per dispatch (tool-loop rounds). A simple hourly job is
 # usually 1-2 calls; complex work is more. 3 = conservative, 2 = optimistic.
 CALLS_PER_DISPATCH = 3
@@ -115,9 +121,11 @@ def main():
     x_old = agg_rpm(ORIGINAL)
     x_new = agg_rpm(all_providers)
     x_new_regular = agg_rpm(regular)
-    max_a = z_now * (x_new / x_old) if x_old else 0
-    max_a_regular = z_now * (x_new_regular / x_old) if x_old else 0
-    max_a_count = z_now * (y_new / y_old) if y_old else 0
+    # Model A scales from the FIXED known point (KNOWN_Z on ORIGINAL),
+    # not from the current agent count.
+    max_a = KNOWN_Z * (x_new / x_old) if x_old else 0
+    max_a_regular = KNOWN_Z * (x_new_regular / x_old) if x_old else 0
+    max_a_count = KNOWN_Z * (y_new / y_old) if y_old else 0
 
     # ================= Model B: daily capacity =============================
     cron_jobs = state.get("cronJobs", [])
@@ -157,11 +165,12 @@ def main():
           f"dispatches/day: {dispatches_per_day:,}")
     print()
     print("--- Model A: RPM scaling (Jesse)  x = aggregated RPM ---")
-    print(f"Known point: z={z_now} on y={y_old} {ORIGINAL}")
+    print(f"Known point (fixed): z={KNOWN_Z} on y={y_old} {ORIGINAL}")
+    print(f"Agents now: z={z_now} (baseline stays {KNOWN_Z} — do not rescale from current z)")
     print(f"x_old (original {y_old}): {x_old:.1f} RPM | "
           f"x_new (all {y_new}): {x_new:.1f} RPM | "
           f"x regular (no OVH): {x_new_regular:.1f} RPM")
-    print(f"MAX AGENTS (A): z * (x_new / x_old) = {z_now} * ({x_new:.1f}/{x_old:.1f}) = {max_a:.0f}")
+    print(f"MAX AGENTS (A): z * (x_new / x_old) = {KNOWN_Z} * ({x_new:.1f}/{x_old:.1f}) = {max_a:.0f}")
     print(f"MAX AGENTS (A, regular only): {max_a_regular:.0f}")
     print(f"MAX AGENTS (A, count scaling z * y_new/y_old): {max_a_count:.0f} (floor)")
     print()
