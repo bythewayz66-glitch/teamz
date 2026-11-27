@@ -43,10 +43,10 @@
  *     wikipedia (REST summary + OpenSearch fallback), weather
  *     (Open-Meteo geocoding + forecast), web_search (keyless DuckDuckGo
  *     Lite — real results, never faked), create_automation (governed
- *     POST /automations), add_provider (validate-then-add, keyless only),
- *     reassign_agent (LLM-field-only reassignment, recorded). Same core
- *     tools as the UI, plus the provider/automation tools the runner's
- *     Orchestrator and Provider Researcher need.
+ *     POST /automations), add_provider (validate-then-add, keyless or
+ *     keyed via keyEnv), reassign_agent (LLM-field-only reassignment,
+ *     recorded). Same core tools as the UI, plus the provider/automation
+ *     tools the runner's Orchestrator and Provider Researcher need.
  *   • Two model behaviours the first live tests exposed, both handled:
  *     (a) GPT-OSS emits NATIVE tool_calls (finish_reason
  *     "tool_calls", empty content) whenever it feels like it, even
@@ -135,15 +135,19 @@
  *
  * Providers — the endpoint no longer hardcodes Pollinations for every
  * agent. A provider registry (/var/lib/teamz-agent/providers.json) holds
- * the validated keyless providers; each agent's request carries its
+ * the validated providers; each agent's request carries its
  * provider assignment (agent.provider, from the runner state) and the
- * endpoint routes that agent's calls to its assigned provider. Only
- * keyless providers, validated with a live test call before adding —
- * see docs/PROVIDER_RESEARCHER.md. Pollinations anonymous (openai-fast)
- * is the default and the only provider validated live as of Nov 26,
- * 2026: Hack Club AI 404s, DuckDuckGo AI is bot-challenged (418), and
- * DeepInfra / Together / OpenRouter / Hugging Face all require an API
- * key, so none of them is in the registry.
+ * endpoint routes that agent's calls to its assigned provider. Providers
+ * are validated with a live test call before adding — see
+ * docs/PROVIDER_RESEARCHER.md. A provider is either keyless
+ * ("keyless": true) or keyed: it names "keyEnv", the env var holding its
+ * API key (e.g. "GEMINI_API_KEY"), and the key itself lives only in the
+ * service env (/etc/teamz-agent.env), never in the registry or this
+ * file. Pollinations anonymous (openai-fast) is the default and the
+ * only provider validated live as of Nov 26, 2026: Hack Club AI 404s,
+ * DuckDuckGo AI is bot-challenged (418), and DeepInfra / Together /
+ * OpenRouter / Hugging Face all require an API key, so none of them is
+ * in the registry until its key is configured.
  *
  * Rate limits — when an upstream call is refused (402/429), the endpoint
  * appends an event (with the failed request retained) to
@@ -210,17 +214,25 @@ const UPSTREAM_TIMEOUT_MS = 45_000;
 const MAX_TOOL_ITERATIONS = 5;
 
 /* ===========================================================================
- * Provider registry — keyless providers only, validated before adding.
+ * Provider registry — validated providers, keyless or keyed, added only
+ * after a live test call.
  *
  * Shape of providers.json:
  *   { providers: [{ id, name, baseUrl, model, keyless: true,
  *                    validatedAt, lastValidated, notes }],
  *     validationLog: [{ ts, candidate, ok, reason }] }
- * The Pollinations entry ships with the service. Anything else gets in
- * only through `provisionProvider` below, which makes a real test call
- * first and refuses anything that asks for a key, a card, or payment.
- * A provider that fails validation is recorded in validationLog and NOT
- * added — the log is the honest record of what was tried.
+ * A keyed provider carries "keyEnv" instead of keyless: true, e.g.
+ *   { id: "gemini", name: "Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+ *     model: "gemini-3-flash", keyEnv: "GEMINI_API_KEY", ... }
+ * The key itself is never in the registry: keyEnv only names the env var
+ * that holds it (set on the service unit via /etc/teamz-agent.env). A
+ * keyed provider whose env var is unset is refused at provision time
+ * and never assigned to an agent.
+ * Anything gets in only through `provisionProvider` below, which makes
+ * a real test call first and refuses anything that asks for a card or
+ * payment, or a key it does not have. A provider that fails validation
+ * is recorded in validationLog and NOT added — the log is the honest
+ * record of what was tried.
  * ========================================================================= */
 
 const POLLINATIONS_PROVIDER = {
@@ -266,16 +278,25 @@ function recordValidation(registry, candidate, ok, reason) {
 /**
  * Validate a candidate provider with a real test call: POST a PING prompt
  * to its OpenAI-compatible chat endpoint and require a real, non-empty
- * reply. Returns { ok, reason }. Never adds anything itself.
+ * reply. Returns { ok, reason }. Never adds anything itself. A keyed
+ * candidate (keyEnv set) sends its key as a Bearer token — the key comes
+ * from the named env var only, never from the candidate, and is never
+ * logged. A keyed candidate whose env var is unset fails validation.
  */
 async function validateProviderCandidate(candidate) {
   const { id, name, baseUrl, model } = candidate;
   if (!id || !baseUrl || !model) return { ok: false, reason: 'candidate needs id, baseUrl, and model' };
   if (!/^https:\/\//.test(baseUrl)) return { ok: false, reason: 'baseUrl must be https' };
+  const headers = { 'Content-Type': 'application/json' };
+  if (candidate.keyEnv) {
+    const key = (process.env[candidate.keyEnv] ?? '').trim();
+    if (!key) return { ok: false, reason: `provider needs API key in env var "${candidate.keyEnv}" — not set` };
+    headers.Authorization = `Bearer ${key}`;
+  }
   try {
     const res = await fetch(baseUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with exactly the word PING.' }], stream: false }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -301,17 +322,33 @@ async function validateProviderCandidate(candidate) {
 /**
  * Provision a provider: validate first, add only on success. Returns the
  * outcome; a failure is recorded in validationLog and the registry is
- * left unchanged.
+ * left unchanged. Keyed providers are allowed when they name their key's
+ * env var (keyEnv) and that env var is set — the key itself is never
+ * stored in the registry. A provider that needs a key but names no
+ * keyEnv, or whose keyEnv is unset, is refused.
  */
 async function provisionProvider(candidate) {
   const registry = loadRegistry();
   if (registry.providers.some((p) => p.id === candidate.id)) {
     return { ok: false, reason: `provider "${candidate.id}" is already in the registry` };
   }
-  if (candidate.keyless !== true) {
-    recordValidation(registry, candidate.id, false, 'refused: keyless must be true — paid/keyed providers are never added');
+  const keyEnv = typeof candidate.keyEnv === 'string' ? candidate.keyEnv.trim() : '';
+  const keyed = keyEnv.length > 0;
+  if (keyed) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)) {
+      recordValidation(registry, candidate.id, false, `refused: keyEnv "${keyEnv}" is not a valid env var name`);
+      saveRegistry(registry);
+      return { ok: false, reason: `refused: keyEnv "${keyEnv}" is not a valid env var name` };
+    }
+    if (!(process.env[keyEnv] ?? '').trim()) {
+      recordValidation(registry, candidate.id, false, `refused: keyed provider needs env var "${keyEnv}" — not set`);
+      saveRegistry(registry);
+      return { ok: false, reason: `refused: keyed provider "${candidate.id}" needs API key in env var "${keyEnv}" — not set` };
+    }
+  } else if (candidate.keyless !== true) {
+    recordValidation(registry, candidate.id, false, 'refused: keyless must be true, or name keyEnv for a keyed provider');
     saveRegistry(registry);
-    return { ok: false, reason: 'refused: only keyless providers may be added' };
+    return { ok: false, reason: 'refused: only keyless providers, or keyed providers with keyEnv, may be added' };
   }
   const check = await validateProviderCandidate(candidate);
   recordValidation(registry, candidate.id, check.ok, check.reason);
@@ -325,7 +362,8 @@ async function provisionProvider(candidate) {
     name: candidate.name ?? candidate.id,
     baseUrl: candidate.baseUrl,
     model: candidate.model,
-    keyless: true,
+    keyless: !keyed,
+    ...(keyed ? { keyEnv } : {}),
     validatedAt: now,
     lastValidated: now,
     notes: candidate.notes ?? '',
@@ -366,15 +404,23 @@ function saveReassignments(list) {
 
 /**
  * Reassign one agent's LLM assignment (provider + model) in the runner
- * state, LLM fields ONLY. Refuses unknown agents, unknown/non-keyless
- * providers, and any attempt to touch anything else. Every change is
+ * state, LLM fields ONLY. Refuses unknown agents, unknown providers, and
+ * any attempt to touch anything else. A provider is assignable when it is
+ * keyless, or when it is keyed and its key is configured — a keyed
+ * provider with no key configured is never assigned, so an agent is
+ * never pointed at a provider that cannot answer. Every change is
  * recorded with from/to/when/why.
  */
 function reassignAgentLlm(agentId, providerId, model, reason) {
   const registry = loadRegistry();
   const provider = registry.providers.find((p) => p.id === providerId);
   if (!provider) return { ok: false, reason: `unknown provider "${providerId}" — not in the registry` };
-  if (provider.keyless !== true) return { ok: false, reason: `provider "${providerId}" is not keyless` };
+  if (provider.keyless !== true && !provider.keyEnv) {
+    return { ok: false, reason: `provider "${providerId}" is neither keyless nor keyed (no keyEnv)` };
+  }
+  if (provider.keyEnv && !(process.env[provider.keyEnv] ?? '').trim()) {
+    return { ok: false, reason: `provider "${providerId}" needs API key in env var "${provider.keyEnv}" — not set` };
+  }
   if (model && model !== provider.model) {
     return { ok: false, reason: `model "${model}" does not match provider "${providerId}" (model "${provider.model}")` };
   }
@@ -1124,15 +1170,16 @@ const TOOL_DEFS = [
   {
     name: 'add_provider',
     description:
-      'Add a new keyless LLM provider to the registry. Validates it FIRST with a live test call — a provider that fails validation, or that needs an API key or payment, is NOT added. ' +
-      'Args must be a JSON object: {"id", "name", "baseUrl" (https OpenAI-compatible chat endpoint), "model", "keyless": true}.',
-    usage: 'a JSON object, e.g. {"id": "example", "name": "Example", "baseUrl": "https://example.com/v1/chat/completions", "model": "some-model", "keyless": true}',
+      'Add a new LLM provider to the registry. Validates it FIRST with a live test call — a provider that fails validation is NOT added. ' +
+      'Keyless providers pass {"keyless": true}; keyed providers pass {"keyEnv": "<ENV_VAR>"} instead, and the key must already be set in that env var on the service — keys are never passed in args and never stored in the registry. ' +
+      'Args must be a JSON object: {"id", "name", "baseUrl" (https OpenAI-compatible chat endpoint), "model", "keyless": true} or {"id", "name", "baseUrl", "model", "keyEnv": "GEMINI_API_KEY"}.',
+    usage: 'a JSON object, e.g. {"id": "example", "name": "Example", "baseUrl": "https://example.com/v1/chat/completions", "model": "some-model", "keyless": true} or with "keyEnv": "SOME_API_KEY" instead of "keyless" for a keyed provider',
     run: async (args) => {
       let input;
       try {
         input = JSON.parse(args);
       } catch {
-        throw new Error('add_provider needs a JSON object like {"id": "...", "name": "...", "baseUrl": "https://...", "model": "...", "keyless": true}');
+        throw new Error('add_provider needs a JSON object like {"id": "...", "name": "...", "baseUrl": "https://...", "model": "...", "keyless": true} (or "keyEnv": "ENV_VAR" for a keyed provider)');
       }
       const result = await provisionProvider(input);
       return result.ok ? result.reason : `add_provider FAILED: ${result.reason}`;
@@ -1141,7 +1188,7 @@ const TOOL_DEFS = [
   {
     name: 'reassign_agent',
     description:
-      'Change one agent\'s LLM assignment (provider + model) in the runner state, LLM fields ONLY — never system prompts, skills, or anything else — and only to a validated keyless provider. ' +
+      'Change one agent\'s LLM assignment (provider + model) in the runner state, LLM fields ONLY — never system prompts, skills, or anything else — and only to a validated provider (keyless, or keyed with its key configured). ' +
       'Every change is recorded with from/to/when/why. Args must be a JSON object: {"agentId", "provider", "reason"}.',
     usage: 'a JSON object, e.g. {"agentId": "agent-qa-tester", "provider": "pollinations", "reason": "rate limit on previous provider"}',
     run: async (args) => {
@@ -1439,7 +1486,7 @@ const upstreamQueues = new Map();
 
 function providerGapMs(providerId) {
   if (providerId === 'pollinations') return MIN_GAP_MS;
-  return 5000; // Unknown keyless providers: a small courtesy gap, not a limit we know.
+  return 5000; // Other providers: a small courtesy gap, not a limit we know.
 }
 
 function callWithSpacing(providerId, fn) {
@@ -1625,7 +1672,7 @@ const OPENAI_TOOLS = [
     function: {
       name: 'add_provider',
       description:
-        'Add a new keyless LLM provider to the registry (validated with a live test call first; keyed/paid providers are never added). Args is a JSON object with id, name, baseUrl, model, keyless true.',
+        'Add a new LLM provider to the registry (validated with a live test call first; keyless providers pass keyless true, keyed providers pass keyEnv naming the env var holding the key). Args is a JSON object with id, name, baseUrl, model, and keyless true or keyEnv.',
       parameters: {
         type: 'object',
         properties: {
@@ -1640,7 +1687,7 @@ const OPENAI_TOOLS = [
     function: {
       name: 'reassign_agent',
       description:
-        'Change one agent\'s LLM assignment (provider + model) in the runner state, LLM fields only, to a validated keyless provider. Args is a JSON object with agentId, provider, reason.',
+        'Change one agent\'s LLM assignment (provider + model) in the runner state, LLM fields only, to a validated provider (keyless, or keyed with its key configured). Args is a JSON object with agentId, provider, reason.',
       parameters: {
         type: 'object',
         properties: {
@@ -1735,7 +1782,10 @@ async function callPollinations(openAiMessages, deadline) {
  * registry (OpenAI-compatible). Same shape as callPollinations minus the
  * Pollinations-specific retry logic: a 402/429 throws with the status in
  * the message so the /chat handler records a rate-limit event honestly
- * instead of inventing a reply.
+ * instead of inventing a reply. A keyed provider (keyEnv set) sends its
+ * key as a Bearer token, read from the named env var at call time — the
+ * key is never logged. A keyed provider whose env var is unset throws
+ * naming the provider and the missing env var.
  */
 async function callGenericProvider(provider, openAiMessages, deadline) {
   const remaining = deadline - Date.now();
@@ -1745,9 +1795,15 @@ async function callGenericProvider(provider, openAiMessages, deadline) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     upstreamStarts.set(provider.id, Date.now());
+    const headers = { 'Content-Type': 'application/json' };
+    if (provider.keyEnv) {
+      const key = (process.env[provider.keyEnv] ?? '').trim();
+      if (!key) throw new Error(`provider "${provider.id}" needs API key in env var "${provider.keyEnv}" — not set`);
+      headers.Authorization = `Bearer ${key}`;
+    }
     const res = await fetch(provider.baseUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ model: provider.model, messages: openAiMessages, tools: OPENAI_TOOLS, stream: false }),
       signal: controller.signal,
     });
@@ -1981,6 +2037,7 @@ const server = createServer(async (req, res) => {
           name: p.name,
           model: p.model,
           keyless: p.keyless,
+          keyEnv: p.keyEnv ?? null,
           validatedAt: p.validatedAt,
           lastValidated: p.lastValidated,
         })),
