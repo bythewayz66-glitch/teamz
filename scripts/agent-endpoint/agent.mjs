@@ -162,6 +162,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -670,6 +672,134 @@ export function runRoomRead(args) {
   }
   if (lines.length === 0) return 'No unassigned work in the Build Room right now — nothing to assign.';
   return lines.join('\n');
+}
+
+/**
+ * Fetch a public URL and return its text — the Website Currency Agent's
+ * way to read the LIVE site. It had no fetch tool: it could only read
+ * the repo's docs/ copy via repo_read and guess at what the site shows,
+ * so a stale or broken live page was invisible to it. HTML is stripped
+ * to text; other text types come back raw. Returns at most ~8000 chars.
+ *
+ * SSRF guard: public http(s) only. localhost and private / loopback /
+ * link-local addresses are refused, the hostname is resolved and every
+ * address checked, and the check re-runs on every redirect hop (max 3
+ * hops, redirects followed manually). 10s per fetch, 2 MB body cap.
+ * `FETCH_URL_ALLOW_LOCAL=1` skips the address check — tests only, for a
+ * local fixture server; never set on the live service.
+ */
+const FETCH_URL_TIMEOUT_MS = 10_000;
+const FETCH_URL_MAX_CHARS = 8000;
+const FETCH_URL_MAX_REDIRECTS = 3;
+const FETCH_URL_MAX_BYTES = 2_000_000;
+
+function isPrivateIp(ip) {
+  const v = isIP(ip);
+  if (v === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 0) return true;
+    return false;
+  }
+  if (v === 6) {
+    const lower = ip.toLowerCase();
+    if (lower === '::1' || lower === '::') return true;
+    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true; // fe80::/10
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // fc00::/7
+    return false;
+  }
+  return true; // not an IP at all — treat as unsafe
+}
+
+async function assertPublicUrl(url) {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`fetch_url refused: only http(s) URLs, got ${url.protocol}`);
+  }
+  const host = url.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    throw new Error('fetch_url refused: localhost is not a public URL');
+  }
+  if (process.env.FETCH_URL_ALLOW_LOCAL === '1') return; // tests only
+  if (isIP(host)) {
+    if (isPrivateIp(host)) throw new Error(`fetch_url refused: ${host} is not a public address`);
+    return;
+  }
+  let addresses;
+  try {
+    addresses = await lookup(host, { all: true });
+  } catch {
+    throw new Error(`fetch_url refused: cannot resolve ${host}`);
+  }
+  if (addresses.length === 0 || addresses.some((a) => isPrivateIp(a.address))) {
+    throw new Error(`fetch_url refused: ${host} resolves to a non-public address`);
+  }
+}
+
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export async function runFetchUrl(args) {
+  let input;
+  try {
+    input = JSON.parse(args);
+  } catch {
+    throw new Error('fetch_url needs a JSON object like {"url": "https://mem20.com/"}');
+  }
+  const raw = typeof input.url === 'string' ? input.url.trim() : '';
+  if (!raw) throw new Error('fetch_url needs a JSON object like {"url": "https://mem20.com/"}');
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`fetch_url refused: not a URL: ${JSON.stringify(raw)}`);
+  }
+  let current = url;
+  let res;
+  for (let hop = 0; hop <= FETCH_URL_MAX_REDIRECTS; hop++) {
+    await assertPublicUrl(current);
+    try {
+      res = await fetch(current, {
+        headers: { 'User-Agent': 'Teamz fetch_url (mem20 agent)' },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(FETCH_URL_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new Error(`fetch_url: ${current} unreachable (${err instanceof Error ? err.message : String(err)})`);
+    }
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) throw new Error(`fetch_url refused: redirect without a Location at ${current}`);
+      if (hop === FETCH_URL_MAX_REDIRECTS) throw new Error(`fetch_url refused: redirect limit reached at ${current}`);
+      current = new URL(location, current);
+      continue;
+    }
+    break;
+  }
+  if (!res.ok) throw new Error(`fetch_url: ${current} returned HTTP ${res.status}`);
+  const length = Number(res.headers.get('content-length') ?? 0);
+  if (length > FETCH_URL_MAX_BYTES) throw new Error(`fetch_url refused: ${current} is too large (${length} bytes)`);
+  const body = await res.text();
+  if (body.length > FETCH_URL_MAX_BYTES) throw new Error(`fetch_url refused: ${current} is too large`);
+  const type = (res.headers.get('content-type') ?? '').toLowerCase();
+  const text = type.includes('text/html') ? htmlToText(body) : body;
+  const out = text.slice(0, FETCH_URL_MAX_CHARS);
+  return `${current} (HTTP ${res.status}, ${body.length} chars total):\n${out}${text.length > FETCH_URL_MAX_CHARS ? '\n…[truncated]' : ''}`;
 }
 
 /**
@@ -1448,6 +1578,16 @@ const TOOL_DEFS = [
     run: async (args) => runStagePatch(args),
   },
   {
+    name: 'fetch_url',
+    description:
+      'Fetch a public URL and return its text (HTML stripped to text, ~8000 chars). ' +
+      'Use it to read the LIVE site — e.g. mem20.com — instead of guessing from the repo copy. ' +
+      'Public http(s) only: localhost and private addresses are refused, as are redirects to them. ' +
+      'Args must be a JSON object: {"url"}.',
+    usage: 'a JSON object, e.g. {"url": "https://mem20.com/"}',
+    run: async (args) => runFetchUrl(args),
+  },
+  {
     name: 'room_read',
     description:
       'Read the Build Room (conv-build-room) from the runner state: the work that needs assigning and the agents available. ' +
@@ -1488,6 +1628,8 @@ const TOOL_ALIASES = {
   stagepatch: 'stage_patch',
   roomread: 'room_read',
   readroom: 'room_read',
+  fetchurl: 'fetch_url',
+  fetch: 'fetch_url',
 };
 
 function resolveToolName(name) {

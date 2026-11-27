@@ -42,7 +42,9 @@ import {
   parkForApproval,
   resumeJob,
   startStage,
+  type JobStage,
   type ProductJob,
+  type StagePlan,
 } from '../src/lib/jobs';
 import {
   findPendingApproval,
@@ -50,6 +52,7 @@ import {
   isHighStakes,
   requestApproval,
   type ApprovalRequest,
+  type GateFlags,
 } from '../src/lib/governance';
 import { handleFor, parseMentions } from '../src/lib/mentions';
 import type { Agent } from '../src/types';
@@ -166,10 +169,25 @@ export interface RunnerState {
   rateLimitRescues: RateLimitRescue[];
   /** Per-provider rescue backoff (keyed by provider id). */
   rateLimitBackoff: Record<string, RateLimitBackoff>;
+  /**
+   * Stranded-agent sweep: epoch ms of the last sweep dispatch per agent
+   * id. A stranded agent (no provider, or a provider the registry does
+   * not know) is swept at most once per cooldown so a failed sweep does
+   * not re-dispatch every tick.
+   */
+  strandedSweeps: Record<string, number>;
+  /**
+   * Parked-job triage recovery: epoch ms of the last recovery attempt
+   * per job id. A job parked behind a denied approval gets its triage
+   * re-run at most once per cooldown — its original triage reply may
+   * have scrolled out of the room, and the recovery re-routes the
+   * rework through the gates instead of waiting on the Orchestrator.
+   */
+  triageRecovery: Record<string, number>;
 }
 
 export function emptyRunnerState(): RunnerState {
-  return { version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [], channelMessages: [], rateLimitRescues: [], rateLimitBackoff: {} };
+  return { version: 1, agents: [], jobs: [], triggers: [], approvals: [], cronJobs: [], channelMessages: [], rateLimitRescues: [], rateLimitBackoff: {}, strandedSweeps: {}, triageRecovery: {} };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -283,6 +301,17 @@ export function loadRunnerState(path: string): LoadResult {
       warnings.push(`dropped a rate-limit backoff entry with missing fields for provider ${provider}`);
     }
   }
+  // Sweep/recovery records: plain agent-id (or job-id) → epoch-ms maps.
+  // Missing on old state files is fine — they start empty.
+  for (const [field, target] of [
+    ['strandedSweeps', state.strandedSweeps],
+    ['triageRecovery', state.triageRecovery],
+  ] as const) {
+    const raw = isRecord(parsed[field]) ? parsed[field] : {};
+    for (const [key, ts] of Object.entries(raw)) {
+      if (typeof key === 'string' && typeof ts === 'number') target[key] = ts;
+    }
+  }
   return { state, warnings };
 }
 
@@ -392,7 +421,16 @@ export async function dispatchPromptToAgent(
  * Channel messages, Orchestrator mentions, Reviewer replies, automations
  * ------------------------------------------------------------------------- */
 
-/** Append a runner-delivered reply to the channel record (newest 200 kept). */
+/**
+ * Append a runner-delivered reply to the channel record.
+ *
+ * Triage and gate messages are PINNED: they are the work that still
+ * needs assigning, and they must not scroll out of the record behind
+ * cron chatter (observed Nov 27, 2026: the 200-message cap buried every
+ * triage item, so room_read showed the Orchestrator nothing to assign
+ * and denied jobs never moved). The newest 50 triage/gate messages are
+ * always kept; other messages keep the newest 200.
+ */
 export function recordChannelMessage(
   state: RunnerState,
   message: Omit<ChannelMessage, 'id' | 'ts'> & { ts?: number },
@@ -403,7 +441,16 @@ export function recordChannelMessage(
     ...message,
     text: message.text.slice(0, 4000),
   };
-  state.channelMessages = [...state.channelMessages, full].slice(-200);
+  const next = [...state.channelMessages, full];
+  // Keep the newest 50 triage/gate messages and the newest 200 others,
+  // then merge back in chronological order. Ties on ts (same
+  // millisecond, common in tests) keep their original insertion order.
+  const indexed = next.map((m, i) => ({ m, i }));
+  const pinned = indexed.filter(({ m }) => m.kind === 'triage' || m.kind === 'gate').slice(-50);
+  const others = indexed.filter(({ m }) => m.kind !== 'triage' && m.kind !== 'gate').slice(-200);
+  state.channelMessages = [...pinned, ...others]
+    .sort((a, b) => a.m.ts - b.m.ts || a.i - b.i)
+    .map(({ m }) => m);
   return full;
 }
 
@@ -560,6 +607,11 @@ export function optimizerPrompt(draft: string, target: RunnerAgent): string {
     `PROMPT OPTIMIZATION — optimize the Orchestrator assignment draft below and return ONLY the optimized assignment.\n` +
     `Rules: keep the @mention, the task, and the expected output exactly; make it shorter and more reliable — one clear task, ` +
     `explicit expected output, no extra work, no new scope. Keep system prompts, examples, and output format separate (there are none here — just the assignment).\n` +
+    `The optimized assignment MUST carry these working rules for the agent who receives it:\n` +
+    `1. STAGE EARLY — if the work produces a repo change, stage the patch with stage_patch FIRST, before polishing, refining, or re-checking. A stage that ends with no staged patch has produced nothing.\n` +
+    `2. SMALL SCOPE — keep the stage small enough to finish inside 25 tool iterations: one file, one fix, one verified claim at a time. Split anything bigger instead of burning the whole budget on it.\n` +
+    `3. VERIFY FIRST — verify every claim against the live repo with repo_read (read the file, check the path exists, check the number against docs/surface.json) before writing it into an output. Never copy a claim out of a document.\n` +
+    `4. ${DOCS_RULE}\n` +
     `Reply with the optimized assignment as your whole reply. If you want to add a note, put it AFTER the assignment on its own line starting with "NOTE:".\n` +
     `---\nDRAFT ASSIGNMENT for @${target.name}:\n${draft}`
   );
@@ -571,11 +623,82 @@ export const REVIEWER_CORE_DRIVE =
   `Your only goal is to ensure mem20 is the best product of its kind and to get it actively making money. ` +
   `This is your single purpose, and it governs every decision you make.`;
 
+/**
+ * Jesse's docs rule, in every prompt that carries instructions to an
+ * agent: a document is a claim, never the truth. An agent may trust
+ * ONLY a document it wrote itself. Any other document — pre-existing,
+ * or written by another agent — is unverified until that agent checks
+ * it against the live source of truth.
+ */
+export const DOCS_RULE =
+  `DOCS RULE — a document is a claim, never the truth. You may trust ONLY a document you wrote yourself. ` +
+  `Any other document — pre-existing, or written by another agent — is unverified until YOU check it against ` +
+  `the live source of truth: the live code, the tree, git history, and the live surface (527 MCP tools across ` +
+  `135 domains, version 4.0.0, real catalog ids). Never act on an unverified document claim. Verify with repo_read before you use it.`;
+
+/**
+ * The Reviewer's verification rule. The Reviewer used to judge from the
+ * agent's words alone — it approved a price table with 12 invented SKU
+ * ids and denied a page that exists — because its prompt told it to
+ * reply with one line and gave it no way to check. It has repo_read in
+ * its tool inventory: this rule tells it to use it BEFORE deciding.
+ * The reply is still exactly one line; the verification happens first,
+ * as tool calls, and only then the verdict.
+ */
+export const REVIEWER_VERIFY_RULE =
+  `VERIFY BEFORE YOU DECIDE — you have a repo_read tool: use it. Before you approve or deny on any factual claim, ` +
+  `check that claim against the live repo: does the path exist (repo_read the file)? Is the SKU id real (repo_read ` +
+  `mem20shopz/mem20shopz/catalog.json and confirm the id is listed)? Is the number true (repo_read docs/surface.json)? ` +
+  `Do the verification first, as tool calls, and only then reply with your one-line verdict. ` +
+  `Never approve or deny on a claim you have not verified — if a claim cannot be verified, deny and say it is unverifiable. ` +
+  `Do not trust the agent's summary of what a file says; read the file yourself.`;
+
+/**
+ * Low-risk fast path: docs-only and internal-report work gets a lighter
+ * check. The Reviewer still decides every request — this only marks the
+ * work low-risk so it decides quickly instead of running the full
+ * gauntlet on it. It never approves anything by itself.
+ */
+export const LOW_RISK_MARKER =
+  `LOW-RISK FAST PATH — this is docs-only / internal-report work. Verify the claims with repo_read and decide ` +
+  `quickly: approve when the change is small and verified, deny only on a concrete problem. You are still the ` +
+  `sole decision-maker; this marks the work low-risk, it does not approve it.`;
+
+/** Job names that mark docs / internal-report work (for the fast path). */
+const LOW_RISK_JOB_NAME = /\b(docs?|documentation|reference|tutorial|changelog|notes|brief|report|guide|onboarding)\b/i;
+
+/**
+ * True when a stage review is low-risk fast-path work: never high-stakes,
+ * and either a document stage or an upgrade stage on a docs/report job.
+ * High-stakes stages (release / advertise / sell, spending, publishing,
+ * destructive) are never low-risk, whatever the job is called.
+ */
+export function isLowRiskReview(jobName: string, stage: JobStage, flags: GateFlags = {}): boolean {
+  if (isHighStakes(stage, flags)) return false;
+  if (stage === 'document') return true;
+  if (stage === 'upgrade' && LOW_RISK_JOB_NAME.test(jobName)) return true;
+  return false;
+}
+
+/**
+ * True when an Orchestrator assignment is low-risk fast-path work: no
+ * high-stakes words (spend / publish / release / delete) and the text is
+ * docs / report work.
+ */
+export function isLowRiskAssignment(optimized: string): boolean {
+  if (CARVE_OUT_WORDS.test(optimized)) return false;
+  return LOW_RISK_JOB_NAME.test(optimized);
+}
+
 /** Prompt the Reviewer with: may this assignment go to the room? */
 export function assignmentReviewPrompt(optimized: string, target: RunnerAgent): string {
+  const lowRisk = isLowRiskAssignment(optimized);
   return (
     `REVIEW REQUEST — you are the SOLE decision-maker for this prompt. There is no other approver: no human approval, no escalation, no one else to route this to. Decide it yourself.\n` +
     `${REVIEWER_CORE_DRIVE}\n` +
+    `${REVIEWER_VERIFY_RULE}\n` +
+    `${DOCS_RULE}\n` +
+    (lowRisk ? `${LOW_RISK_MARKER}\n` : '') +
     `This is an Orchestrator assignment prompt. If approved, it will be sent to @${target.name} in the Build Room as their assignment. ` +
     `Judge it on its merits: is it a clear, bounded task with an explicit expected output? Does it ask for anything high-stakes ` +
     `(spending money, publishing publicly, releasing, deleting)? Deny anything vague, unbounded, high-stakes, or that removes a feature or fakes a result.\n` +
@@ -586,15 +709,57 @@ export function assignmentReviewPrompt(optimized: string, target: RunnerAgent): 
   );
 }
 
+/**
+ * Prompt the Reviewer with: may this job stage run? Extracted so the
+ * verification rule, the docs rule, and the low-risk fast path are in
+ * one place and testable — the stage review and the assignment review
+ * carry the same requirements.
+ */
+export function stageReviewPrompt(
+  job: ProductJob,
+  plan: StagePlan,
+  highStakes: boolean,
+): string {
+  const lowRisk = isLowRiskReview(job.name, plan.stage, plan.flags);
+  return (
+    `REVIEW REQUEST — you are the SOLE decision-maker for this stage. There is no other approver: no human approval, no escalation, no one else to route this to. Decide it yourself.\n` +
+    `${REVIEWER_CORE_DRIVE}\n` +
+    `${REVIEWER_VERIFY_RULE}\n` +
+    `${DOCS_RULE}\n` +
+    (lowRisk ? `${LOW_RISK_MARKER}\n` : '') +
+    `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}${highStakes ? ' — HIGH-STAKES: this stage releases, spends money, publishes publicly, or destroys something. Apply extra scrutiny and deny unless the evidence below actually supports it.' : ''}\n` +
+    `Stage prompt: ${plan.prompt}\nExpected output: ${plan.expectedOutput}\n` +
+    `What has happened so far in this job (completed stage outputs — judge the actual change, not just the description):\n${reviewContext(job) || '(nothing yet)'}\n` +
+    `Standing rules you must apply: never remove a feature and never fake one — completion only. Verify every claim against the real code, tree, and git history. The repo-root AGENTS.md is canonical and trumps all other rules docs. mem20core and mem20corez are distinct components — never merge them.\n` +
+    `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". Your decision and its reason are recorded — every decision is recorded with its reason. ` +
+    `One distinction: pushing a routine code or doc change to the team's own repo through the ` +
+    `governed push script is NOT a public release — a release is release notes, an announcement, ` +
+    `publishing the docs site, or selling something. The push script only commits one small staged ` +
+    `change (one file, a few lines, nothing deleted, no workflow files). Judge the staged change in ` +
+    `the context above: approve it only if it is that kind of small routine change; deny anything ` +
+    `bigger, destructive, or release-shaped.`
+  );
+}
+
 /** Prompt the Triage Agent with: this work was denied — fix and reassign it. */
-export function triagePrompt(deniedPrompt: string, reason: string): string {
+export function triagePrompt(
+  deniedPrompt: string,
+  reason: string,
+  opts: { failedAgentId?: string } = {},
+): string {
+  const failedLine = opts.failedAgentId
+    ? `The agent who did the failed work is @${opts.failedAgentId} — assign a DIFFERENT agent to fix it. Never reassign to the same agent; a second try by the same agent is refused.\n`
+    : '';
   return (
     `TRIAGE — the Reviewer DENIED this work. It must not be dropped and must not go to the room unreviewed.\n` +
     `Denied item:\n${deniedPrompt}\n` +
     `Reviewer's reason: ${reason}\n` +
-    `Your job: figure out what needs fixing, decide which agent should fix it, and hand back a corrected assignment. ` +
+    `Your job: list the specific denial issues first (numbered, one per problem in the Reviewer's reason), then decide which agent should fix them, then hand back a corrected assignment.\n` +
+    failedLine +
+    `Verify any factual claim in the corrected assignment against the live repo with repo_read before you write it — never copy a claim out of a document. ${DOCS_RULE}\n` +
     `Reply in this exact format:\n` +
-    `First line: REASSIGN: @<agent-id> — the agent who should do the fix.\n` +
+    `First the numbered list of denial issues.\n` +
+    `Then, on its own line: REASSIGN: @<agent-id> — the agent who should do the fix.\n` +
     `Then the corrected assignment prompt (the full text that agent should receive).\n` +
     `If the item cannot be fixed as written, use REASSIGN: @agent-orchestrator and explain what the Orchestrator must re-draft.`
   );
@@ -625,8 +790,10 @@ export interface AssignmentGateResult {
  * One gate round: optimize the draft, then put it to the Reviewer.
  * Returns `{ denied: true }` on a Reviewer denial (the caller decides
  * about triage); any other failure is a hard stop, never a send.
+ * Exported so the job-denial rework path can run exactly one gate round
+ * on a triage-corrected assignment without re-triaging it.
  */
-async function gateRound(
+export async function gateRound(
   draft: string,
   target: RunnerAgent,
   deps: AssignmentGateDeps,
@@ -723,6 +890,97 @@ export async function gateOrchestratorAssignment(
     deps.emit(`orchestrator gate: @${reassignee.name} — DENIED again after triage — assignment NOT sent`);
   }
   return { ok: false, reason: second.reason ?? first.reason };
+}
+
+/**
+ * Route one Triage reply through the gates and out to the channel — the
+ * inline rework path for a denied job stage (and for parked-job triage
+ * recovery). It does NOT depend on the Orchestrator's triage cron: the
+ * rework runs in the tick where the denial (or the recovery) happens.
+ *
+ * The Triage reply names the agent who should fix the item; that agent
+ * must be DIFFERENT from the one that did the failed work — reassigning
+ * to the same agent is refused, and the item falls back to the
+ * Orchestrator to re-draft. The corrected assignment goes through one
+ * gate round (Prompt Engineer → Reviewer); on approval it is dispatched
+ * to the reassigned agent in the channel and recorded as a 'mention'
+ * message. On a second denial it is NOT sent — a 'gate' message records
+ * it, per the rule that a second denial never reaches the room. The job
+ * itself stays parked either way: rework proposes, it never un-parks.
+ */
+export interface TriageReworkDeps {
+  state: RunnerState;
+  dispatch: (agent: RunnerAgent, prompt: string, channelId: string) => Promise<string>;
+  /** Dispatch to the Reviewer (includes any pending Playto suggestions). */
+  dispatchReview: (prompt: string, channelId: string) => Promise<string>;
+  agentsById: Map<string, RunnerAgent>;
+  channelId: string;
+  emit: (line: string) => void;
+}
+
+export async function runTriageRework(
+  triageReply: string,
+  failedAgentId: string | null,
+  contextLabel: string,
+  deps: TriageReworkDeps,
+): Promise<{ ok: boolean; agentId?: string; reason?: string }> {
+  const parsed = parseTriageReply(triageReply);
+  if (!parsed) {
+    deps.emit(`${contextLabel}: triage reply unreadable — rework NOT sent (item stays parked)`);
+    return { ok: false, reason: 'triage reply unreadable' };
+  }
+  let reassignee = deps.agentsById.get(parsed.agentId);
+  if (!reassignee) {
+    deps.emit(`${contextLabel}: triage named unknown agent ${parsed.agentId} — rework NOT sent`);
+    return { ok: false, reason: `triage named unknown agent ${parsed.agentId}` };
+  }
+  if (failedAgentId && reassignee.id === failedAgentId) {
+    // Never the same agent twice: the agent that produced the denied
+    // work does not get the fix. Fall back to the Orchestrator, who
+    // must re-draft it (the triage prompt's own fallback).
+    const orchestrator = deps.agentsById.get('agent-orchestrator');
+    if (!orchestrator) {
+      deps.emit(`${contextLabel}: triage reassigned to the same agent that failed it — rework NOT sent`);
+      return { ok: false, reason: 'triage reassigned to the same agent that failed' };
+    }
+    deps.emit(`${contextLabel}: triage reassigned to the same agent that failed it — falling back to @Orchestrator to re-draft`);
+    reassignee = orchestrator;
+  }
+  const gated = await gateRound(parsed.prompt, reassignee, {
+    dispatch: deps.dispatch,
+    dispatchReview: deps.dispatchReview,
+    agentsById: deps.agentsById,
+    channelId: deps.channelId,
+    emit: deps.emit,
+  });
+  if (!gated.ok) {
+    recordChannelMessage(deps.state, {
+      channelId: deps.channelId,
+      agentId: reassignee.id,
+      agentName: reassignee.name,
+      kind: 'gate',
+      text:
+        `${contextLabel}: rework for @${reassignee.name} did NOT reach the room: ${gated.reason ?? 'gated'} ` +
+        `(second denial — the item is recorded, not dropped, and returns to triage).`,
+    });
+    deps.emit(`${contextLabel}: rework for @${reassignee.name} ${gated.denied ? 'DENIED again after triage' : 'gated'} — NOT sent to the room`);
+    return { ok: false, reason: gated.reason ?? 'gated' };
+  }
+  try {
+    const targetReply = await deps.dispatch(reassignee, gated.prompt ?? parsed.prompt, deps.channelId);
+    recordChannelMessage(deps.state, {
+      channelId: deps.channelId,
+      agentId: reassignee.id,
+      agentName: reassignee.name,
+      kind: 'mention',
+      text: targetReply,
+    });
+    deps.emit(`${contextLabel}: rework dispatched to @${reassignee.name} — ${targetReply.slice(0, 120)}`);
+    return { ok: true, agentId: reassignee.id, reason: targetReply };
+  } catch (err) {
+    deps.emit(`${contextLabel}: rework dispatch to @${reassignee.name} FAILED (${err instanceof Error ? err.message : String(err)})`);
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** A proposed automation, as the Orchestrator (or the endpoint) submits it. */
@@ -988,6 +1246,14 @@ export interface RunnerDeps {
    * nothing is dropped. Crons, triggers, and rescues are never capped.
    */
   maxJobsPerTick?: number;
+  /**
+   * Provider ids in the agent endpoint's registry (from providers.json
+   * on the server). The stranded-agent sweep uses it to tell a live
+   * provider from a dead one; without it the sweep only catches agents
+   * with no provider at all. The live runner passes the registry ids;
+   * the in-tab runner has none, so it sweeps the no-provider case only.
+   */
+  providerIds?: string[];
 }
 
 export interface ProcessDueResult {
@@ -1012,6 +1278,42 @@ export const RESCUE_BACKOFF_MAX_FAILURES = 8; // cap on consecutive failures tra
 export function rescueBackoffDelayMs(consecutiveFailures: number): number {
   const exp = Math.max(0, Math.min(consecutiveFailures - 1, 10));
   return Math.min(RESCUE_BACKOFF_BASE_MS * 2 ** exp, RESCUE_BACKOFF_MAX_MS);
+}
+
+/**
+ * Stranded-agent sweep — the gap rescue never covered. Rescue only
+ * reacts to rate-limit events, and an agent with no provider (or a
+ * provider the registry does not know) never makes a call on its own
+ * provider, so it never 429s and never triggers a rescue: it fails
+ * silently, forever. Observed Nov 27, 2026: 9 agents had no provider
+ * at all. This sweep catches agents that cannot run, not just agents
+ * that fail loudly. It runs once per tick (bounded by the cooldown in
+ * `strandedSweeps`), and hands the stranded list to the Provider
+ * Researcher, who reassigns each one with reassign_agent.
+ */
+export const MAX_STRANDED_PER_TICK = 3; // agents per sweep dispatch
+export const STRANDED_SWEEP_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24h per agent
+
+/** Parked-job triage recovery: at most 2 recovery attempts per tick. */
+export const MAX_TRIAGE_RECOVERIES_PER_TICK = 2;
+/** Parked-job triage recovery: at most once per job per cooldown. */
+export const TRIAGE_RECOVERY_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
+ * Agents that cannot run: no provider set, or a provider id the
+ * registry does not know (a dead provider). Without `providerIds` the
+ * sweep only catches the no-provider case.
+ */
+export function findStrandedAgents(
+  state: RunnerState,
+  providerIds?: Set<string>,
+): RunnerAgent[] {
+  return state.agents.filter((a) => {
+    const p = (a.provider ?? '').trim();
+    if (!p) return true;
+    if (providerIds && !providerIds.has(p)) return true;
+    return false;
+  });
 }
 
 /**
@@ -1477,6 +1779,124 @@ export async function processDue(
     }
   }
 
+  // Parked-job triage recovery — the deny→rework loop's safety net.
+  // A job parked behind a denied approval got ONE triage reply, recorded
+  // as a 'triage' channel message. If that reply scrolled out of the
+  // room (or the Orchestrator's triage cron was starved — Gemini 429s
+  // killed it ~16 times on Nov 27) the denial stands forever and the
+  // job never moves. This recovery re-runs triage for parked jobs and
+  // routes the rework inline through the gates — it does NOT wait on
+  // the Orchestrator. Bounded: at most 2 recoveries per tick, and at
+  // most once per job per 6h, so a job the Reviewer keeps denying does
+  // not spin the loop every tick.
+  {
+    let recoveries = 0;
+    for (const job of state.jobs) {
+      if (recoveries >= MAX_TRIAGE_RECOVERIES_PER_TICK) break;
+      if (job.status !== 'awaiting_approval') continue;
+      const plan = currentStage(job);
+      if (!plan) continue;
+      const denied = state.approvals.find(
+        (a) => a.jobId === job.id && a.stage === plan.stage && a.status === 'denied',
+      );
+      if (!denied) continue;
+      const lastAttempt = state.triageRecovery[job.id] ?? 0;
+      if (nowMs - lastAttempt < TRIAGE_RECOVERY_COOLDOWN_MS) continue;
+      const triage = agentById.get('agent-triage');
+      if (!triage) {
+        emit(`job ${job.name} / ${plan.stage}: triage recovery skipped — NO TRIAGE AGENT CONFIGURED`);
+        continue;
+      }
+      state.triageRecovery[job.id] = nowMs;
+      recoveries += 1;
+      try {
+        const triageReply = await dispatch(
+          triage,
+          triagePrompt(
+            `Stage "${plan.stage}" of job "${job.name}": ${plan.prompt}\nExpected output: ${plan.expectedOutput}`,
+            denied.reason,
+            { failedAgentId: plan.agentId },
+          ),
+          job.channelId,
+        );
+        recordChannelMessage(state, {
+          channelId: job.channelId,
+          agentId: triage.id,
+          agentName: triage.name,
+          kind: 'triage',
+          text: `Triage (recovery) for denied ${plan.stage} of "${job.name}" (Reviewer: ${denied.reason}): ${triageReply.slice(0, 2000)}`,
+        });
+        emit(`job ${job.name} / ${plan.stage}: triage recovery replied — ${triageReply.slice(0, 120)}`);
+        await runTriageRework(triageReply, plan.agentId, `job ${job.name} / ${plan.stage} (recovery)`, {
+          state,
+          dispatch,
+          dispatchReview: (prompt, channelId) =>
+            dispatchToReviewer(agentById.get('agent-reviewer')!, prompt, channelId),
+          agentsById: agentById,
+          channelId: job.channelId,
+          emit,
+        });
+      } catch (err) {
+        emit(
+          `job ${job.name} / ${plan.stage}: triage recovery FAILED (${err instanceof Error ? err.message : String(err)}) — denial stands, job parked`,
+        );
+      }
+    }
+  }
+
+  // Stranded-agent sweep — rescue's blind spot. Rescue only reacts to
+  // rate-limit events; an agent with no provider (or a dead provider)
+  // never calls, never 429s, and never triggers a rescue. Once per tick
+  // this sweep finds such agents and dispatches the Provider Researcher
+  // (max 3 agents per dispatch, once per agent per 24h) to reassign
+  // each one to a healthy provider with reassign_agent. Skipped when
+  // the Researcher itself is stranded — it cannot fix others while it
+  // cannot run — and when there is no Researcher configured.
+  {
+    const knownProviders = deps.providerIds ? new Set(deps.providerIds) : undefined;
+    const stranded = findStrandedAgents(state, knownProviders).filter(
+      (a) => nowMs - (state.strandedSweeps[a.id] ?? 0) >= STRANDED_SWEEP_COOLDOWN_MS,
+    );
+    if (stranded.length > 0) {
+      const researcher = agentById.get('agent-provider-researcher');
+      const batch = stranded.slice(0, MAX_STRANDED_PER_TICK);
+      if (!researcher) {
+        emit(`stranded sweep: ${stranded.length} stranded agent(s) found but NO PROVIDER RESEARCHER CONFIGURED — cannot fix`);
+      } else if (!researcher.provider) {
+        emit(`stranded sweep: ${stranded.length} stranded agent(s) found but the Provider Researcher itself has no provider — cannot fix`);
+      } else {
+        for (const a of batch) state.strandedSweeps[a.id] = nowMs;
+        const healthyProviders = [...new Set(state.agents.map((a) => a.provider).filter((p): p is string => Boolean(p)))]
+          .filter((p) => !(state.rateLimitBackoff[p] && state.rateLimitBackoff[p].nextAllowedTs > nowMs));
+        const list = batch
+          .map((a) => `@${a.name} (${a.id}) — provider: ${a.provider ? `"${a.provider}" (not in the registry)` : 'none'}, model: ${a.model ?? 'none'}`)
+          .join('\n');
+        try {
+          const reply = await dispatch(
+            researcher,
+            `STRANDED-AGENT SWEEP — these agents cannot run: they have no provider, or a provider the registry does not know. ` +
+              `They never make a call, so they never rate-limit and never trigger rescue; that is why they were missed.\n` +
+              `${list}\n` +
+              `Reassign EACH one to a healthy provider with reassign_agent (healthy providers right now: ${healthyProviders.join(', ') || 'none known'}). ` +
+              `Prefer pollinations, blockrun-free, or grexlabs — never assign a provider that is backed off or known dead (kilo returns empty content; gemini is quota-exhausted). ` +
+              `If a provider cannot be fixed, say so plainly for each agent. ${DOCS_RULE}`,
+            'conv-build-room',
+          );
+          recordChannelMessage(state, {
+            channelId: 'conv-build-room',
+            agentId: researcher.id,
+            agentName: researcher.name,
+            kind: 'researcher',
+            text: `Stranded-agent sweep (${batch.length} agent${batch.length === 1 ? '' : 's'}): ${reply.slice(0, 2000)}`,
+          });
+          emit(`stranded sweep: Provider Researcher replied — ${reply.slice(0, 120)}`);
+        } catch (err) {
+          emit(`stranded sweep FAILED (${err instanceof Error ? err.message : String(err)})`);
+        }
+      }
+    }
+  }
+
   // Product jobs. Capped per tick (see RunnerDeps.maxJobsPerTick): a tick
   // that starts every due product job takes hours, so the 30s tick
   // interval is skipped while one is in flight and the Orchestrator /
@@ -1555,20 +1975,7 @@ export async function processDue(
       }
       try {
         const highStakes = isHighStakes(plan.stage, plan.flags);
-        const reviewerPrompt =
-          `REVIEW REQUEST — you are the SOLE decision-maker for this stage. There is no other approver: no human approval, no escalation, no one else to route this to. Decide it yourself.\n` +
-          `${REVIEWER_CORE_DRIVE}\n` +
-          `Job: "${job.name}" (id ${job.id})\nStage: ${plan.stage}${highStakes ? ' — HIGH-STAKES: this stage releases, spends money, publishes publicly, or destroys something. Apply extra scrutiny and deny unless the evidence below actually supports it.' : ''}\n` +
-          `Stage prompt: ${plan.prompt}\nExpected output: ${plan.expectedOutput}\n` +
-          `What has happened so far in this job (completed stage outputs — judge the actual change, not just the description):\n${reviewContext(job) || '(nothing yet)'}\n` +
-          `Standing rules you must apply: never remove a feature and never fake one — completion only. Verify every claim against the real code, tree, and git history. The repo-root AGENTS.md is canonical and trumps all other rules docs. mem20core and mem20corez are distinct components — never merge them.\n` +
-          `Reply with exactly one line: "APPROVE: <reason>" or "DENY: <reason>". Your decision and its reason are recorded — every decision is recorded with its reason. ` +
-          `One distinction: pushing a routine code or doc change to the team's own repo through the ` +
-          `governed push script is NOT a public release — a release is release notes, an announcement, ` +
-          `publishing the docs site, or selling something. The push script only commits one small staged ` +
-          `change (one file, a few lines, nothing deleted, no workflow files). Judge the staged change in ` +
-          `the context above: approve it only if it is that kind of small routine change; deny anything ` +
-          `bigger, destructive, or release-shaped.`;
+        const reviewerPrompt = stageReviewPrompt(job, plan, highStakes);
         const reply = await dispatchToReviewer(reviewer, reviewerPrompt, job.channelId);
         const verdict = parseReviewerReply(reply);
         if (!verdict) {
@@ -1590,9 +1997,11 @@ export async function processDue(
           emit(`job ${job.name} / ${plan.stage}: DENIED by Reviewer — ${verdict.reason}`);
           // Denied work goes to the Triage Agent — never silently
           // dropped. The triage reply is a fix proposal, recorded in
-          // the room so the Orchestrator can pick it up on its next
-          // triage run and re-submit it through the gates. The job
-          // itself stays parked; a denied stage never re-runs on its own.
+          // the room, and the rework is routed inline through the
+          // gates in THIS tick — it does not wait for the
+          // Orchestrator's triage cron, which starved on Nov 27 when
+          // Gemini quota-exceeded killed it ~16 times. The job itself
+          // stays parked; a denied stage never re-runs on its own.
           const triage = agentById.get('agent-triage');
           if (!triage) {
             emit(`job ${job.name} / ${plan.stage}: NO TRIAGE AGENT CONFIGURED — denial stands, job parked`);
@@ -1603,6 +2012,7 @@ export async function processDue(
                 triagePrompt(
                   `Stage "${plan.stage}" of job "${job.name}": ${plan.prompt}\nExpected output: ${plan.expectedOutput}`,
                   verdict.reason,
+                  { failedAgentId: plan.agentId },
                 ),
                 job.channelId,
               );
@@ -1614,6 +2024,15 @@ export async function processDue(
                 text: `Triage for denied ${plan.stage} of "${job.name}" (Reviewer: ${verdict.reason}): ${triageReply.slice(0, 2000)}`,
               });
               emit(`job ${job.name} / ${plan.stage}: triage replied — ${triageReply.slice(0, 120)}`);
+              await runTriageRework(triageReply, plan.agentId, `job ${job.name} / ${plan.stage}`, {
+                state,
+                dispatch,
+                dispatchReview: (prompt, channelId) =>
+                  dispatchToReviewer(agentById.get('agent-reviewer')!, prompt, channelId),
+                agentsById: agentById,
+                channelId: job.channelId,
+                emit,
+              });
             } catch (err) {
               emit(
                 `job ${job.name} / ${plan.stage}: triage dispatch FAILED (${err instanceof Error ? err.message : String(err)}) — denial stands, job parked`,

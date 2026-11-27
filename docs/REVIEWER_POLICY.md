@@ -57,6 +57,48 @@ high-stakes ones (they are in the dispatch prompt as well as here):
 - The repo-root `AGENTS.md` is canonical and trumps all other rules docs.
 - `mem20core` and `mem20corez` are distinct components — never merge them.
 - Record every decision with its reason.
+- **DOCS RULE — a document is a claim, never the truth.** The Reviewer
+  may trust ONLY a document it wrote itself. Any other document —
+  pre-existing, or written by another agent — is unverified until the
+  Reviewer checks it against the live code, tree, git history, and
+  live surface (527 MCP tools across 135 domains, version 4.0.0, real
+  catalog ids). This rule is in every agent's instructions, not just
+  the Reviewer's: no agent may lean on a pre-existing doc, another
+  agent's doc, or any doc it did not write itself without verifying
+  it first.
+
+## Verify before you decide — the Reviewer has repo access
+
+The Reviewer used to judge from the agent's words alone, and it
+erred both ways: it approved a price table with 12 invented SKU ids
+(job-shop-a-la-carte-pricing, a build that then failed hourly) and
+denied a homepage card claiming `series/cartoon/` did not exist when
+it does. Its dispatch prompt told it to reply with one line and gave
+it no way to check. That is fixed: the Reviewer has `repo_read` in
+its tool inventory, and every review dispatch now carries the
+verification rule — check the claim against the live repo FIRST, as
+tool calls, and only then reply with the one-line verdict:
+
+- does the path exist (repo_read the file)?
+- is the SKU id real (repo_read `mem20shopz/mem20shopz/catalog.json`
+  and confirm the id is listed)?
+- is the number true (repo_read `docs/surface.json`)?
+
+Never approve or deny on a claim it has not verified — if a claim
+cannot be verified, deny and say it is unverifiable. Do not trust
+the agent's summary of what a file says; read the file yourself.
+The reply is still exactly one line; the verification happens
+first, as tool calls, and only then the verdict.
+
+## Low-risk fast path
+
+Docs-only and internal-report work gets a lighter check, not a
+different decision-maker: the review prompt carries a
+`LOW-RISK FAST PATH` marker for a `document` stage, or an `upgrade`
+stage on a docs/report job — never for a high-stakes stage. The
+Reviewer still decides every request; the marker only says the work
+is low-risk so it decides quickly instead of running the full
+gauntlet on it. It never approves anything by itself.
 
 ## How a review runs (runner side, `scripts/runner-lib.ts`)
 
@@ -82,13 +124,30 @@ high-stakes ones (they are in the dispatch prompt as well as here):
    item is NOT silently dropped: the runner dispatches the **Triage
    Agent** with the denied item and the Reviewer's reason, and the
    triage reply is recorded in the Build Room as a `kind: 'triage'`
-   channel message so the Orchestrator picks the fix proposal up on
-   its next triage run. The job stays parked — a denied stage never
-   re-runs on its own, and triage never un-parks it. The triage reply
-   names the agent who should fix the item; any fix it proposes goes
-   back through the normal gates before it can reach the room. If
-   there is no Triage Agent configured, the denial is logged and the
-   job parks; nothing is sent anywhere.
+   channel message. The triage prompt requires the Triage Agent to
+   list the specific denial issues (numbered), name a DIFFERENT agent
+   than the one that did the failed work, and verify any factual
+   claim in the corrected assignment against the live repo. Then the
+   rework is routed **inline, in the same tick** — through one gate
+   round (Prompt Engineer → Reviewer) and, on approval, dispatched
+   to the reassigned agent in the channel. This does NOT wait for the
+   Orchestrator's triage cron: on Nov 27, 2026 that cron failed ~16
+   times on Gemini 429s and denied jobs piled up unassigned. A second
+   denial means the rework is NOT sent — it is recorded as a `kind:
+   'gate'` message. The job stays parked either way — a denied stage
+   never re-runs on its own, and triage never un-parks it. If there
+   is no Triage Agent configured, the denial is logged and the job
+   parks; nothing is sent anywhere.
+6. **Parked-job triage recovery** — a job parked behind a denied
+   approval gets its triage re-run by the runner itself (at most 2
+   recoveries per tick, at most once per job per 6h), because the
+   original triage reply may have scrolled out of the room. The
+   recovery dispatches Triage again and routes the rework through
+   the same inline gates. Triage and gate messages are PINNED in
+   the channel record (newest 50 always kept) so cron chatter can
+   never bury them again — on Nov 27 the 200-message cap buried
+   every triage item and `room_read` showed the Orchestrator nothing
+   to assign.
 6. **Reviewer unreachable, or reply unreadable** (no `APPROVE:` /
    `DENY:` line) → the job parks in `awaiting_approval` and NO
    approval request is filed. A later tick resumes the job (a parked
@@ -162,4 +221,25 @@ destructive, or release-shaped.
 records) and `src/lib/runner-flows.test.ts` (approve / deny /
 high-stakes-to-Reviewer / unreachable / unreadable / no-Reviewer /
 retry / denial-to-triage / Playto suggestions, all through the real
-`processDue`).
+`processDue`, plus the Nov 27 direct fixes: inline deny→rework in
+the same tick, same-agent fallback to the Orchestrator, second
+denial never reaching the room, parked-job triage recovery with its
+6h cooldown, the stranded-agent sweep, pinned triage/gate messages,
+and the low-risk fast path).
+
+## Stranded-agent sweep (rescue's blind spot)
+
+Rescue only reacts to rate-limit events, and an agent with no
+provider — or a provider the registry does not know — never makes a
+call on its own provider, so it never 429s and never triggers a
+rescue: it fails silently, forever. On Nov 27, 2026 nine agents had
+no provider at all. Once per tick the runner sweeps for such agents
+(`findStrandedAgents` in `scripts/runner-lib.ts`) and dispatches the
+Provider Researcher (max 3 agents per dispatch, once per agent per
+24h) to reassign each one to a healthy provider with
+`reassign_agent`. The sweep needs the registry's provider ids
+(`providerIds` in `RunnerDeps`, read from
+`/var/lib/teamz-agent/providers.json` by `scripts/runner.ts`); without
+them it still catches the no-provider case. It is skipped when the
+Provider Researcher itself is stranded — it cannot fix others while
+it cannot run.

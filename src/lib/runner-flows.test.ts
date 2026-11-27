@@ -1,14 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assignmentReviewPrompt,
   emptyRunnerState,
+  findStrandedAgents,
+  isLowRiskReview,
+  optimizerPrompt,
   processDue,
+  recordChannelMessage,
   RESCUE_BACKOFF_BASE_MS,
+  stageReviewPrompt,
+  triagePrompt,
   type RateLimitEvent,
   type RunnerAgent,
   type RunnerState,
 } from '../../scripts/runner-lib';
+import { decideApprovalByReviewer, requestApproval } from './governance';
 import { createCronJob } from './scheduler';
-import { createJob } from './jobs';
+import { createJob, currentStage } from './jobs';
 
 const T0 = new Date(2026, 10, 26, 10, 0, 0); // minute 0: hourly + */15 both match
 
@@ -1302,5 +1310,387 @@ describe('processDue — Playto suggestions to the Reviewer', () => {
     });
     expect(reviewerPrompts).toHaveLength(1);
     expect(reviewerPrompts[0]).not.toContain('Suggestions from Playto');
+  });
+});
+
+describe('processDue — deny→rework loop, triage recovery, stranded sweep (Nov 27 direct fixes)', () => {
+  function gateAgents() {
+    return [
+      agent('agent-orchestrator', 'Orchestrator'),
+      agent('agent-atlas', 'Atlas'),
+      agent('agent-scout', 'Scout'),
+      agent('agent-prompt-engineer', 'Prompt Engineer'),
+      agent('agent-reviewer', 'Reviewer'),
+      agent('agent-triage', 'Triage Agent'),
+      agent('agent-provider-researcher', 'Provider Researcher'),
+    ];
+  }
+
+  function reviewableJob() {
+    return createJob({
+      name: 'Reviewable job',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      stages: [
+        {
+          stage: 'build',
+          agentId: 'agent-atlas',
+          prompt: 'Do the routine build step.',
+          expectedOutput: 'Built.',
+          flags: { requiresReview: true },
+        },
+      ],
+    });
+  }
+
+  it('a denial routes the rework inline through the gates in the same tick — no Orchestrator cron needed', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      jobs: [reviewableJob()],
+    };
+    const calls: Array<{ agentId: string; prompt: string }> = [];
+    let reviewerCalls = 0;
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a, prompt) => {
+        calls.push({ agentId: a.id, prompt });
+        if (a.id === 'agent-reviewer') {
+          reviewerCalls += 1;
+          return reviewerCalls === 1
+            ? 'DENY: the build step touches a blocked path.'
+            : 'APPROVE: corrected assignment is bounded and verified.';
+        }
+        if (a.id === 'agent-triage') {
+          return '1. The build step touches a blocked path.\nREASSIGN: @agent-scout\n@Scout redo the build step without the blocked path, then report the exact files changed.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: @Scout redo the build step without the blocked path, with exact steps and the expected result for each step.';
+        }
+        if (a.id === 'agent-scout') return 'Build fixed without the blocked path.';
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // Reviewer denies, Triage reassigns to a DIFFERENT agent, the fix
+    // goes through the Prompt Engineer and the Reviewer, then out.
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-reviewer',
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-scout',
+    ]);
+    // The triage prompt names the failure and demands a different agent.
+    expect(calls[1].prompt).toContain('the build step touches a blocked path');
+    expect(calls[1].prompt).toContain('DIFFERENT agent');
+    expect(calls[1].prompt).toContain('agent-atlas');
+    expect(calls[1].prompt).toContain('list the specific denial issues');
+    // The Reviewer was told to verify before deciding, and the docs rule.
+    expect(calls[0].prompt).toContain('VERIFY BEFORE YOU DECIDE');
+    expect(calls[0].prompt).toContain('DOCS RULE');
+    expect(calls[0].prompt).toContain('trust ONLY a document you wrote yourself');
+    // The rework reached the room as a mention — and the job still stays
+    // parked: rework proposes, it never un-parks the denied stage.
+    expect(out.approvals).toHaveLength(1);
+    expect(out.approvals[0].status).toBe('denied');
+    expect(out.jobs[0].status).toBe('awaiting_approval');
+    const mentions = out.channelMessages.filter((m) => m.kind === 'mention');
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0].agentId).toBe('agent-scout');
+    expect(mentions[0].text).toContain('Build fixed without the blocked path.');
+    expect(fired.some((f) => f.includes('rework dispatched to @Scout'))).toBe(true);
+  });
+
+  it('triage reassigning to the same agent that failed falls back to the Orchestrator', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      jobs: [reviewableJob()],
+    };
+    const calls: Array<{ agentId: string }> = [];
+    let reviewerCalls = 0;
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push({ agentId: a.id });
+        if (a.id === 'agent-reviewer') {
+          reviewerCalls += 1;
+          return reviewerCalls === 1
+            ? 'DENY: the build step touches a blocked path.'
+            : 'APPROVE: re-draft is bounded.';
+        }
+        if (a.id === 'agent-triage') {
+          return 'REASSIGN: @agent-atlas\n@Atlas redo the build step without the blocked path.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: @Orchestrator re-draft the build step without the blocked path.';
+        }
+        if (a.id === 'agent-orchestrator') return 'Re-drafted the build step.';
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-reviewer',
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-orchestrator',
+    ]);
+    expect(fired.some((f) => f.includes('falling back to @Orchestrator'))).toBe(true);
+    expect(out.jobs[0].status).toBe('awaiting_approval');
+  });
+
+  it('a second denial after triage never reaches the room — recorded as a gate message', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      jobs: [reviewableJob()],
+    };
+    const calls: Array<{ agentId: string }> = [];
+    const { state: out, fired } = await processDue(state, T0, {
+      dispatchPrompt: async (a) => {
+        calls.push({ agentId: a.id });
+        if (a.id === 'agent-reviewer') return 'DENY: still wrong, the blocked path is still in it.';
+        if (a.id === 'agent-triage') {
+          return 'REASSIGN: @agent-scout\n@Scout redo the build step without the blocked path.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: @Scout redo the build step without the blocked path.';
+        }
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-reviewer',
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+    ]);
+    // Scout was never dispatched: the second denial stops the send.
+    expect(calls.some((c) => c.agentId === 'agent-scout')).toBe(false);
+    const gates = out.channelMessages.filter((m) => m.kind === 'gate');
+    expect(gates).toHaveLength(1);
+    expect(gates[0].text).toContain('did NOT reach the room');
+    expect(out.jobs[0].status).toBe('awaiting_approval');
+    expect(fired.some((f) => f.includes('DENIED again after triage'))).toBe(true);
+  });
+
+  it('a job parked behind a denied approval gets its triage re-run by recovery, then stays parked', async () => {
+    const job = reviewableJob();
+    const denied = decideApprovalByReviewer(
+      requestApproval(job.id, job.name, 'build', 'Stage "build" needs a decision', T0.getTime()),
+      'denied',
+      'the build step touches a blocked path.',
+      T0.getTime(),
+    );
+    const parked: RunnerState = {
+      ...emptyRunnerState(),
+      agents: gateAgents(),
+      jobs: [{ ...job, status: 'awaiting_approval' }],
+      approvals: [denied],
+    };
+    let triageCalls = 0;
+    const calls: Array<{ agentId: string }> = [];
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent) => {
+        calls.push({ agentId: a.id });
+        if (a.id === 'agent-triage') {
+          triageCalls += 1;
+          return 'REASSIGN: @agent-scout\n@Scout redo the build step without the blocked path.';
+        }
+        if (a.id === 'agent-prompt-engineer') {
+          return 'Assignment from @Orchestrator: @Scout redo the build step without the blocked path.';
+        }
+        if (a.id === 'agent-reviewer') return 'APPROVE: corrected assignment is bounded and verified.';
+        if (a.id === 'agent-scout') return 'Build fixed without the blocked path.';
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    };
+    const first = await processDue(parked, T0, deps);
+    expect(triageCalls).toBe(1);
+    expect(calls.map((c) => c.agentId)).toEqual([
+      'agent-triage',
+      'agent-prompt-engineer',
+      'agent-reviewer',
+      'agent-scout',
+    ]);
+    expect(first.state.triageRecovery[job.id]).toBeGreaterThan(0);
+    expect(first.state.jobs[0].status).toBe('awaiting_approval');
+    const triageMsgs = first.state.channelMessages.filter((m) => m.kind === 'triage');
+    expect(triageMsgs).toHaveLength(1);
+    expect(triageMsgs[0].text).toContain('(recovery)');
+    // Second tick: the 6h cooldown means no re-run.
+    const second = await processDue(first.state, new Date(T0.getTime() + 2000), deps);
+    expect(triageCalls).toBe(1);
+    expect(second.state.jobs[0].status).toBe('awaiting_approval');
+  });
+
+  it('findStrandedAgents catches no-provider and dead-provider agents, not healthy ones', () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [
+        agent('agent-atlas', 'Atlas'),
+        agent('agent-scout', 'Scout'),
+        agent('agent-pixel', 'Pixel'),
+      ],
+    };
+    // Atlas: no provider. Scout: provider the registry does not know.
+    // Pixel: a live provider.
+    state.agents[0].provider = undefined;
+    state.agents[1].provider = 'kilo-dead';
+    state.agents[2].provider = 'pollinations';
+    const found = findStrandedAgents(state, new Set(['pollinations', 'gemini', 'groq']));
+    expect(found.map((a) => a.id)).toEqual(['agent-atlas', 'agent-scout']);
+    // Without a registry the sweep still catches the no-provider case.
+    expect(findStrandedAgents(state).map((a) => a.id)).toEqual(['agent-atlas']);
+  });
+
+  it('the stranded sweep dispatches the Provider Researcher once per agent per day', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [
+        { ...agent('agent-provider-researcher', 'Provider Researcher'), provider: 'pollinations' },
+        { ...agent('agent-atlas', 'Atlas'), provider: undefined },
+        { ...agent('agent-scout', 'Scout'), provider: 'kilo-dead' },
+        { ...agent('agent-pixel', 'Pixel'), provider: 'pollinations' },
+      ],
+    };
+    let researcherCalls = 0;
+    const deps = {
+      dispatchPrompt: async (a: RunnerAgent, prompt: string) => {
+        if (a.id === 'agent-provider-researcher') {
+          researcherCalls += 1;
+          expect(prompt).toContain('STRANDED-AGENT SWEEP');
+          expect(prompt).toContain('Atlas');
+          expect(prompt).toContain('Scout');
+          expect(prompt).not.toContain('Pixel');
+          return 'Reassigned Atlas to pollinations and Scout to blockrun-free.';
+        }
+        return 'should never run';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+      providerIds: ['pollinations', 'gemini', 'groq', 'blockrun-free'],
+    };
+    const first = await processDue(state, T0, deps);
+    expect(researcherCalls).toBe(1);
+    expect(Object.keys(first.state.strandedSweeps).sort()).toEqual(['agent-atlas', 'agent-scout']);
+    const researcherMsgs = first.state.channelMessages.filter((m) => m.kind === 'researcher');
+    expect(researcherMsgs).toHaveLength(1);
+    // Second tick: the 24h cooldown means no re-dispatch.
+    await processDue(first.state, new Date(T0.getTime() + 2000), deps);
+    expect(researcherCalls).toBe(1);
+  });
+
+  it('the stranded sweep is skipped when the Provider Researcher itself cannot run', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [
+        { ...agent('agent-provider-researcher', 'Provider Researcher'), provider: undefined },
+        { ...agent('agent-atlas', 'Atlas'), provider: undefined },
+      ],
+    };
+    const { fired } = await processDue(state, T0, {
+      dispatchPrompt: async () => 'should never run',
+      executeCommand: commandStub(),
+      log: silentLog(),
+      providerIds: ['pollinations'],
+    });
+    expect(fired.some((f) => f.includes('Provider Researcher itself has no provider'))).toBe(true);
+  });
+
+  it('triage and gate messages are pinned — cron chatter cannot bury them', () => {
+    const state = emptyRunnerState();
+    for (let i = 0; i < 210; i++) {
+      recordChannelMessage(state, {
+        channelId: 'conv-build-room',
+        agentId: 'agent-ceo-assistant',
+        agentName: 'CEO Assistant',
+        kind: 'mention',
+        text: `CEO priorities ${i}`,
+      });
+    }
+    const pinned = recordChannelMessage(state, {
+      channelId: 'conv-build-room',
+      agentId: 'agent-triage',
+      agentName: 'Triage Agent',
+      kind: 'triage',
+      text: 'Triage for denied build of "Reviewable job"',
+    });
+    for (let i = 0; i < 250; i++) {
+      recordChannelMessage(state, {
+        channelId: 'conv-build-room',
+        agentId: 'agent-meeting-notes-specialist',
+        agentName: 'Meeting Notes Specialist',
+        kind: 'mention',
+        text: `Meeting notes triage ${i}`,
+      });
+    }
+    expect(state.channelMessages.some((m) => m.id === pinned.id)).toBe(true);
+    expect(state.channelMessages.filter((m) => m.kind === 'triage')).toHaveLength(1);
+    expect(state.channelMessages.length).toBeLessThanOrEqual(250);
+  });
+
+  it('low-risk fast path: docs work gets the marker, high-stakes work never does', () => {
+    expect(isLowRiskReview('Documentation reference', 'document')).toBe(true);
+    expect(isLowRiskReview('Docs guide', 'upgrade')).toBe(true);
+    expect(isLowRiskReview('Release job', 'release')).toBe(false);
+    expect(isLowRiskReview('Docs guide', 'upgrade', { spendsMoney: true })).toBe(false);
+    expect(isLowRiskReview('Build job', 'build')).toBe(false);
+
+    const docJob = createJob({
+      name: 'Documentation reference',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      stages: [{ stage: 'document', agentId: 'agent-atlas', prompt: 'Write the doc.', expectedOutput: 'A doc.' }],
+    });
+    const docPrompt = stageReviewPrompt(docJob, currentStage(docJob)!, false);
+    expect(docPrompt).toContain('LOW-RISK FAST PATH');
+    expect(docPrompt).toContain('VERIFY BEFORE YOU DECIDE');
+    expect(docPrompt).toContain('DOCS RULE');
+
+    const releaseJob = createJob({
+      name: 'Release job',
+      channelId: 'conv-build-room',
+      schedule: { kind: 'interval', everyMs: 1000 },
+      stages: [{ stage: 'release', agentId: 'agent-atlas', prompt: 'Prepare the release.', expectedOutput: 'Release notes.' }],
+    });
+    const releasePrompt = stageReviewPrompt(releaseJob, currentStage(releaseJob)!, true);
+    expect(releasePrompt).not.toContain('LOW-RISK FAST PATH');
+    expect(releasePrompt).toContain('HIGH-STAKES');
+    expect(releasePrompt).toContain('VERIFY BEFORE YOU DECIDE');
+  });
+
+  it('prompt builders carry the working rules: stage early, small scope, verify, docs rule', () => {
+    const target = agent('agent-atlas', 'Atlas');
+    const optimized = optimizerPrompt('Draft the build.', target);
+    expect(optimized).toContain('STAGE EARLY');
+    expect(optimized).toContain('25 tool iterations');
+    expect(optimized).toContain('VERIFY FIRST');
+    expect(optimized).toContain('DOCS RULE');
+    expect(optimized).toContain('trust ONLY a document you wrote yourself');
+
+    const review = assignmentReviewPrompt('Update the docs reference page.', target);
+    expect(review).toContain('VERIFY BEFORE YOU DECIDE');
+    expect(review).toContain('DOCS RULE');
+    expect(review).toContain('LOW-RISK FAST PATH');
+
+    const highStakesReview = assignmentReviewPrompt('Spend $100 on ads and publish the announcement.', target);
+    expect(highStakesReview).not.toContain('LOW-RISK FAST PATH');
+
+    const triage = triagePrompt('Stage "build": do the build.', 'the build step touches a blocked path.', {
+      failedAgentId: 'agent-atlas',
+    });
+    expect(triage).toContain('DIFFERENT agent');
+    expect(triage).toContain('agent-atlas');
+    expect(triage).toContain('list the specific denial issues');
+    expect(triage).toContain('REASSIGN: @<agent-id>');
+    expect(triage).toContain('DOCS RULE');
   });
 });

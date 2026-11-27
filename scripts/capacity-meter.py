@@ -39,27 +39,55 @@ from collections import Counter
 # ---------------------------------------------------------------------------
 LIMITS = {
     # Keyed Pollinations. Anonymous was ~1 reply/45s (~1.3 RPM) and
-    # 100/day; keyed is higher. Both figures are conservative estimates.
-    "pollinations": {"rpm": 10, "daily": 1000,
-                     "source": "ESTIMATE (keyed; anonymous ~1.3 RPM, 100/day)"},
-    # Kilo Gateway free models: 200 requests/hour per IP.
-    "kilo": {"rpm": 200 / 60, "daily": 4800,
-             "source": "free-llm.com (200/hr/IP)"},
-    # Free.ai: small fragile tier; backed off after 6 failures Nov 26.
-    "freeai": {"rpm": 5, "daily": 200,
-               "source": "ESTIMATE (conservative; fragile)"},
+    # 100/day; the service is KEYED now (upstream: gen.pollinations.ai).
+    # OBSERVED Nov 27, 2026: 1,245 calls by ~13:16 MST, no 429s.
+    "pollinations": {"rpm": 10, "daily": 2000,
+                     "source": "OBSERVED Nov 27 (1,245 calls, no 429s; keyed)"},
+    # Kilo Gateway: DEAD for the tool loop. OBSERVED Nov 27, 2026: the
+    # endpoint answers 200 but with EMPTY content (model reflection /
+    # beam-free returns reasoning only, no content), and it 429'd on
+    # PROMOTION_MODEL_LIMIT_REACHED while judging. Do not assign agents.
+    "kilo": {"rpm": 0, "daily": 0,
+             "source": "OBSERVED Nov 27 (200 but empty content — dead)"},
+    # Free.ai: dead. Backed off after 6 failures Nov 26; no agents.
+    "freeai": {"rpm": 0, "daily": 0,
+               "source": "OBSERVED Nov 26-27 (dead, 6 failures)"},
     # APIsFreeLLM: low-trust operator, low-stakes only.
-    "apisfreellm": {"rpm": 5, "daily": 200,
-                    "source": "ESTIMATE (conservative; low-trust)"},
+    # OBSERVED Nov 27: 304 calls, no 429s.
+    "apisfreellm": {"rpm": 5, "daily": 300,
+                    "source": "OBSERVED Nov 27 (304 calls, no 429s)"},
     # OVH anonymous lane: 2 req/min. RESCUE-ONLY by Jesse's decision.
+    # OBSERVED Nov 27: 429 (quota-exhausted even for rescue).
     "ovh": {"rpm": 2, "daily": 2880,
-            "source": "free-llm.com (2/min/IP)", "rescue_only": True},
+            "source": "free-llm.com (2/min/IP); OBSERVED Nov 27: 429", "rescue_only": True},
     # Google AI Studio (Gemini) free tier: 5-30 RPM by model.
-    "gemini": {"rpm": 15, "daily": 2000,
-               "source": "ESTIMATE (free tier; 5-30 RPM by model)"},
-    # Groq free tier: 30 RPM, 1000 requests/day (GPT-OSS / Qwen models).
-    "groq": {"rpm": 30, "daily": 1000,
-             "source": "free-llm.com (30 RPM, 1000/day)"},
+    # OBSERVED Nov 27: 429 quota-exceeded after ~717 calls — the daily
+    # quota, not RPM, is the binding limit. Triage died on it ~16x.
+    "gemini": {"rpm": 15, "daily": 750,
+               "source": "OBSERVED Nov 27 (429 after ~717 calls)"},
+    # Groq free tier: 30 RPM. The binding limit is TOKENS, not requests:
+    # 200k TPD, ~2,600 tokens per dispatch ≈ 77 dispatches/day ≈ 230
+    # calls/day. OBSERVED Nov 27: 429 "TPD Limit 200000, Used 198336".
+    "groq": {"rpm": 30, "daily": 230,
+             "source": "OBSERVED Nov 27 (200k TPD ≈ 77 dispatches/day)"},
+    # BlockRun (gpt-oss-120b): OBSERVED Nov 27: 429. Degraded, not dead.
+    "blockrun": {"rpm": 5, "daily": 50,
+                 "source": "OBSERVED Nov 27 (429)"},
+    # BlockRun-free (nvidia/nemotron-3.5-lightning): OBSERVED Nov 27:
+    # 200 PING, healthy. No usage data yet — conservative estimate.
+    "blockrun-free": {"rpm": 5, "daily": 200,
+                      "source": "OBSERVED Nov 27 (200 PING; ESTIMATE daily)"},
+    # GrexLabs (auto:free, Nvidia upstream): OBSERVED Nov 27: 200 PING
+    # and 367 calls, no 429s.
+    "grexlabs": {"rpm": 5, "daily": 400,
+                 "source": "OBSERVED Nov 27 (367 calls, no 429s)"},
+    # APIsFreeLLM-new: OBSERVED Nov 27: 200 PING, healthy. No usage
+    # data yet — conservative estimate.
+    "apisfreellm-new": {"rpm": 5, "daily": 200,
+                        "source": "OBSERVED Nov 27 (200 PING; ESTIMATE daily)"},
+    # Freekey: OBSERVED Nov 27: 403 — dead. Do not assign agents.
+    "freekey": {"rpm": 0, "daily": 0,
+                "source": "OBSERVED Nov 27 (403 — dead)"},
 }
 
 # The original 4 providers (before OVH/Gemini/Groq were added).
@@ -183,11 +211,13 @@ def main():
     print(f"MAX AGENTS (B, optimistic x{CALLS_PER_DISPATCH_OPTIMISTIC}): {max_b_opt}")
     print()
     print("Per-provider (Model B): daily cap / est. load / headroom")
+    provider_headroom = {}
     for pid in sorted(set(regular) | set(hourly_per_provider)):
         cap = LIMITS.get(pid, {}).get("daily", 0)
         load = hourly_per_provider.get(pid, 0) * per_hourly_agent + (
             (96 + 4 + 1) * CALLS_PER_DISPATCH / max(len(regular), 1)
         )
+        provider_headroom[pid] = cap - load
         tag = " (pending)" if pid in pending else ""
         flag = "  <-- OVER est. cap" if load > cap else ""
         print(f"  {pid:<12} {cap:>6,}/day  load ~{load:>6,.0f}  headroom ~{cap - load:>6,.0f}{tag}{flag}")
@@ -209,8 +239,11 @@ def main():
         print("highest-RPM providers (Groq, Gemini) to lift it.")
     else:
         print("Model B is the binding one: daily caps bind before RPM does.")
+        # Recommend by measured headroom, not a hardcoded list — the old
+        # line named Kilo, which is dead now (0/day, empty content).
+        top = [pid for pid, hr in sorted(provider_headroom.items(), key=lambda kv: -kv[1]) if hr > 0][:3]
         print("New agents should go to the providers with daily headroom")
-        print("(Kilo, Gemini, Groq) — not the small ones.")
+        print(f"({', '.join(top) if top else 'none — every provider is at cap'}) — not the small ones.")
     print()
     print("Notes: figures marked ESTIMATE are conservative guesses, not")
     print("published caps. OVH is rescue-only reserve (in Model A, out of")

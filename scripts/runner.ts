@@ -108,6 +108,12 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
   }
   for (const warning of loaded.warnings) log(`WARN ${warning}`);
   const { state, fired } = await processDue(loaded.state, new Date(), {
+    // Provider ids from the agent endpoint's registry, for the
+    // stranded-agent sweep (an agent whose provider is not in the
+    // registry cannot run, even though it never rate-limits). Missing
+    // or unreadable registry: the sweep still catches agents with no
+    // provider at all.
+    providerIds: loadProviderIds(),
     dispatchPrompt: (agent, prompt, channelId) => dispatchPromptToAgent(agent, prompt, channelId),
     executeCommand: (job, argv) => executeAllowedCommand(job, argv),
     log: (message) => log(`  ${message}`),
@@ -158,6 +164,27 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     }
   }
   return state;
+}
+
+/* ---------------------------------------------------------------------------
+ * Provider registry — the agent endpoint's providers.json, read for the
+ * stranded-agent sweep. The file is `{ providers: [{ id, ... }] }`.
+ * ------------------------------------------------------------------------- */
+
+/** Provider ids from the agent endpoint's registry, or undefined when it cannot be read. */
+function loadProviderIds(): string[] | undefined {
+  const path = process.env.PROVIDERS_JSON_PATH ?? '/var/lib/teamz-agent/providers.json';
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+    const list = (raw as { providers?: unknown }).providers;
+    if (!Array.isArray(list)) return undefined;
+    const ids = list
+      .map((p) => (p as { id?: unknown }).id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return ids.length > 0 ? ids : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /* ---------------------------------------------------------------------------
