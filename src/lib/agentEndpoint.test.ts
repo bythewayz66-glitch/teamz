@@ -73,6 +73,7 @@ process.env.LOG_PATH = join(dir, 'agent.log');
 process.env.PROVIDER_REGISTRY_PATH = join(dir, 'providers.json');
 process.env.REASSIGNMENTS_PATH = join(dir, 'reassignments.json');
 process.env.RATE_LIMIT_EVENTS_PATH = join(dir, 'rate-limit-events.jsonl');
+process.env.USAGE_FILE_PATH = join(dir, 'usage-daily.json');
 
 // agent.mjs ships no types; the dynamic import is untyped on purpose.
 // @ts-ignore — no declaration file for the endpoint module
@@ -442,5 +443,128 @@ describe('room_read', () => {
 
   it('appears in the tool inventory the model sees', () => {
     expect(endpoint.inventoryText()).toContain('room_read');
+  });
+});
+
+describe('usage tracking (Jesse, Nov 26, 2026 — exact daily totals, not estimates)', () => {
+  const usagePath = join(dir, 'usage-daily.json');
+
+  it('extractUsage reads prompt/completion/total tokens', () => {
+    expect(
+      endpoint.extractUsage({ usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }),
+    ).toEqual({ prompt: 100, completion: 20, total: 120 });
+  });
+
+  it('extractUsage falls back to prompt + completion when total is missing', () => {
+    expect(endpoint.extractUsage({ usage: { prompt_tokens: 50, completion_tokens: 10 } })).toEqual({
+      prompt: 50,
+      completion: 10,
+      total: 60,
+    });
+  });
+
+  it('extractUsage returns zeros for missing or malformed usage, never throws', () => {
+    expect(endpoint.extractUsage({})).toEqual({ prompt: 0, completion: 0, total: 0 });
+    expect(endpoint.extractUsage(null)).toEqual({ prompt: 0, completion: 0, total: 0 });
+    expect(endpoint.extractUsage({ usage: 'junk' })).toEqual({ prompt: 0, completion: 0, total: 0 });
+    expect(
+      endpoint.extractUsage({ usage: { prompt_tokens: '100', completion_tokens: -5, total_tokens: Number.NaN } }),
+    ).toEqual({ prompt: 0, completion: 0, total: 0 });
+  });
+
+  it('recordUsage accumulates totals overall, by provider, and by agent', () => {
+    const before = endpoint.getUsageDay();
+    endpoint.recordUsage({
+      provider: 'pollinations',
+      agentId: 'agent-atlas',
+      usage: { prompt: 100, completion: 20, total: 120 },
+    });
+    endpoint.recordUsage({
+      provider: 'groq',
+      agentId: 'agent-atlas',
+      usage: { prompt: 50, completion: 10, total: 60 },
+    });
+    const reloaded = JSON.parse(readFileSync(usagePath, 'utf-8'));
+    expect(reloaded.calls - before.calls).toBe(2);
+    expect(reloaded.totalTokens - before.totalTokens).toBe(180);
+    expect(reloaded.promptTokens - before.promptTokens).toBe(150);
+    expect((reloaded.byProvider.groq?.calls ?? 0) - (before.byProvider.groq?.calls ?? 0)).toBe(1);
+    expect((reloaded.byAgent['agent-atlas']?.calls ?? 0) - (before.byAgent['agent-atlas']?.calls ?? 0)).toBe(2);
+  });
+
+  it('recordUsage starts a fresh day when the file is from yesterday', () => {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    writeFileSync(
+      usagePath,
+      JSON.stringify({
+        date: yesterday,
+        calls: 99,
+        promptTokens: 9999,
+        completionTokens: 999,
+        totalTokens: 10998,
+        byProvider: {},
+        byAgent: {},
+      }),
+      'utf-8',
+    );
+    const day = endpoint.recordUsage({
+      provider: 'kilo',
+      agentId: 'agent-scout',
+      usage: { prompt: 10, completion: 5, total: 15 },
+    });
+    expect(day.date).toBe(new Date().toISOString().slice(0, 10));
+    expect(day.calls).toBe(1);
+    expect(day.totalTokens).toBe(15);
+  });
+
+  it('a /chat dispatch records its usage and GET /usage reports it', async () => {
+    const payload = JSON.stringify({
+      choices: [{ message: { content: '{"action":"final","final":"hello there"}' } }],
+      usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+    });
+    // Mock only the upstream provider call; localhost calls to the
+    // server under test pass through to the real fetch.
+    const realFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (url: string, init?: unknown) => {
+      if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, init as RequestInit);
+      return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const before = endpoint.getUsageDay();
+    const { server } = endpoint;
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      expect(port).toBeGreaterThan(0);
+      const res = await fetch(`http://127.0.0.1:${port}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent: { id: 'agent-usage-test', name: 'Usage Test', systemPrompt: 'You are Usage Test.' },
+          messages: [{ role: 'user', content: 'Say hi.' }],
+          channel: { id: 'conv-build-room' },
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.reply).toBe('hello there');
+      const after = endpoint.getUsageDay();
+      expect(after.calls - before.calls).toBe(1);
+      expect(after.totalTokens - before.totalTokens).toBe(120);
+      expect(after.promptTokens - before.promptTokens).toBe(100);
+      expect(after.completionTokens - before.completionTokens).toBe(20);
+      expect((after.byProvider.pollinations?.totalTokens ?? 0) - (before.byProvider.pollinations?.totalTokens ?? 0)).toBe(120);
+      expect(after.byAgent['agent-usage-test'].totalTokens).toBe(120);
+      const usageRes = await fetch(`http://127.0.0.1:${port}/usage`);
+      expect(usageRes.status).toBe(200);
+      const usageBody = await usageRes.json();
+      expect(usageBody.totalTokens).toBe(after.totalTokens);
+      expect(usageBody.calls).toBe(after.calls);
+      expect(usageBody.date).toBe(new Date().toISOString().slice(0, 10));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      vi.unstubAllGlobals();
+    }
   });
 });

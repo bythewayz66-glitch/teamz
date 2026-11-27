@@ -122,6 +122,10 @@
  * tool-using exchange is visible in the log.
  *
  *   GET  /health        -> { ok: true, mode, model, tools, ... }
+ *   GET  /usage         -> today's token totals (prompt/completion/
+ *                           total, calls) overall and by provider and
+ *                           by agent, from /var/lib/teamz-agent/
+ *                           usage-daily.json. Read-only, CORS enabled.
  *   GET  /runner-state  -> read-only summary of the headless runner's
  *                           jobs, schedules, stages and runs, from
  *                           /var/lib/teamz-runner/state.json. CORS
@@ -178,6 +182,10 @@ const REASSIGNMENTS_PATH =
   process.env.REASSIGNMENTS_PATH ?? '/var/lib/teamz-agent/reassignments.json';
 const RATE_LIMIT_EVENTS_PATH =
   process.env.RATE_LIMIT_EVENTS_PATH ?? '/var/lib/teamz-agent/rate-limit-events.jsonl';
+// Daily token-usage aggregate (see the usage-tracking section): one
+// JSON object keyed by UTC date, written atomically, best-effort only.
+const USAGE_FILE_PATH =
+  process.env.USAGE_FILE_PATH ?? '/var/lib/teamz-agent/usage-daily.json';
 // The mem20 checkout the runner works on, and the patch staging area.
 // repo_read reads files under MEM20_ROOT; stage_patch writes patch JSON
 // (never repo files) under PATCH_DIR. The privileged push script
@@ -1816,6 +1824,145 @@ export function extractToolArgs(argsRaw) {
   }
 }
 
+/* ===========================================================================
+ * Token usage tracking — exact daily totals instead of estimates.
+ * (Jesse, Nov 26, 2026: the fleet logged reply chars and ms but never
+ * token counts, so a day's usage could only be guessed from call counts.)
+ *
+ * Every provider chat-completions response carries a `usage` object
+ * ({prompt_tokens, completion_tokens, total_tokens}); extractUsage pulls
+ * it out defensively — a provider that omits it, or sends garbage,
+ * yields zeros and never crashes the dispatch. Each upstream call is
+ * recorded into a daily aggregate (UTC date) persisted at
+ * USAGE_FILE_PATH: totals overall plus by provider and by agent.
+ * The aggregate is read from disk on every record, so a restart can
+ * never lose or double-count a day; the write is atomic (tmp +
+ * rename) and fully best-effort — any failure is swallowed, never
+ * thrown, so usage can never break or delay a dispatch. GET /usage
+ * serves the current day's aggregate.
+ * ========================================================================= */
+
+/**
+ * Pull { prompt, completion, total } token counts out of a
+ * chat-completions payload. Missing, non-numeric, or negative fields
+ * count as zero; total falls back to prompt + completion when the
+ * provider does not report it.
+ */
+export function extractUsage(payload) {
+  const u = payload?.usage;
+  if (!u || typeof u !== 'object' || Array.isArray(u)) {
+    return { prompt: 0, completion: 0, total: 0 };
+  }
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const prompt = n(u.prompt_tokens);
+  const completion = n(u.completion_tokens);
+  const total = n(u.total_tokens) || prompt + completion;
+  return { prompt, completion, total };
+}
+
+function utcDayString(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function emptyUsageBucket() {
+  return { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+}
+
+function emptyUsageDay(date) {
+  return {
+    date,
+    calls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    byProvider: {},
+    byAgent: {},
+  };
+}
+
+function normalizeUsageBucket(bucket) {
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  return {
+    calls: n(bucket?.calls),
+    promptTokens: n(bucket?.promptTokens),
+    completionTokens: n(bucket?.completionTokens),
+    totalTokens: n(bucket?.totalTokens),
+  };
+}
+
+function normalizeUsageDay(raw) {
+  const day = emptyUsageDay(typeof raw?.date === 'string' ? raw.date : utcDayString());
+  Object.assign(day, normalizeUsageBucket(raw));
+  for (const [key, value] of Object.entries(raw?.byProvider ?? {})) {
+    if (typeof key === 'string') day.byProvider[key] = normalizeUsageBucket(value);
+  }
+  for (const [key, value] of Object.entries(raw?.byAgent ?? {})) {
+    if (typeof key === 'string') day.byAgent[key] = normalizeUsageBucket(value);
+  }
+  return day;
+}
+
+/**
+ * Load today's aggregate from disk. A missing, corrupt, or
+ * yesterday-dated file starts a fresh day — the previous day's totals
+ * are simply not carried over (each day stands on its own).
+ */
+export function getUsageDay() {
+  const today = utcDayString();
+  try {
+    if (existsSync(USAGE_FILE_PATH)) {
+      const raw = JSON.parse(readFileSync(USAGE_FILE_PATH, 'utf-8'));
+      if (raw && raw.date === today) return normalizeUsageDay(raw);
+    }
+  } catch {
+    // Corrupt file: start fresh below; the next save overwrites it.
+  }
+  return emptyUsageDay(today);
+}
+
+function saveUsageDay(day) {
+  mkdirSync(dirname(USAGE_FILE_PATH), { recursive: true });
+  const tmp = `${USAGE_FILE_PATH}.tmp`;
+  writeFileSync(tmp, JSON.stringify(day, null, 2) + '\n', 'utf-8');
+  renameSync(tmp, USAGE_FILE_PATH);
+}
+
+/**
+ * Add one upstream call's usage to today's aggregate (overall, by
+ * provider, by agent) and persist it atomically. Best-effort: returns
+ * the updated day aggregate, or null when anything fails — never
+ * throws, so a usage write can never break or delay a dispatch.
+ */
+export function recordUsage({ provider, agentId, usage }) {
+  try {
+    const day = getUsageDay();
+    const u = {
+      prompt: Number.isFinite(usage?.prompt) && usage.prompt > 0 ? Math.floor(usage.prompt) : 0,
+      completion: Number.isFinite(usage?.completion) && usage.completion > 0 ? Math.floor(usage.completion) : 0,
+      total: Number.isFinite(usage?.total) && usage.total > 0 ? Math.floor(usage.total) : 0,
+    };
+    const add = (bucket) => {
+      bucket.calls += 1;
+      bucket.promptTokens += u.prompt;
+      bucket.completionTokens += u.completion;
+      bucket.totalTokens += u.total;
+    };
+    add(day);
+    if (typeof provider === 'string' && provider) {
+      day.byProvider[provider] ??= emptyUsageBucket();
+      add(day.byProvider[provider]);
+    }
+    if (typeof agentId === 'string' && agentId) {
+      day.byAgent[agentId] ??= emptyUsageBucket();
+      add(day.byAgent[agentId]);
+    }
+    saveUsageDay(day);
+    return day;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The same three tools as OpenAI function definitions, sent with every
  * chat-completions request. GPT-OSS uses native tool_calls whenever it
@@ -1971,7 +2118,7 @@ async function callPollinations(openAiMessages, deadline) {
           throw new Error('Pollinations returned non-JSON on success');
         }
         const reply = extractReplyText(payload);
-        if (reply) return reply;
+        if (reply) return { text: reply, usage: extractUsage(payload) };
         throw new Error('Pollinations returned an empty reply');
       }
       lastError = new Error(`Pollinations ${res.status}: ${text.slice(0, 240)}`);
@@ -2048,7 +2195,7 @@ async function callGenericProvider(provider, openAiMessages, deadline) {
         throw new Error(`${provider.id} returned non-JSON on success`);
       }
       const reply = extractReplyText(payload);
-      if (reply) return reply;
+      if (reply) return { text: reply, usage: extractUsage(payload) };
       throw new Error(`${provider.id} returned an empty reply`);
     }
     throw new Error(`${provider.id} ${res.status}: ${text.slice(0, 240)}`);
@@ -2069,6 +2216,8 @@ async function callGenericProvider(provider, openAiMessages, deadline) {
  * client above; every other provider goes through the generic
  * OpenAI-compatible client. Per-provider spacing is enforced by
  * callWithSpacing, so one provider's limit never throttles another.
+ * Returns { text, usage } — the reply plus the call's token counts
+ * (zeros when the provider omits usage).
  */
 async function callUpstream(providerId, openAiMessages, deadline) {
   const registry = loadRegistry();
@@ -2283,6 +2432,14 @@ const server = createServer(async (req, res) => {
     );
     return;
   }
+  if (req.method === 'GET' && url.pathname === '/usage') {
+    // Today's token totals (UTC date), overall and by provider and by
+    // agent. Read-only; CORS enabled like /runner-state so the UI can
+    // fetch it cross-port. A missing file means no calls yet today.
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify(getUsageDay()));
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/automations') {
     if (!isLocalhost(req)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -2405,7 +2562,11 @@ const server = createServer(async (req, res) => {
     // (earlier JSON actions as assistant turns, tool observations as
     // user turns) is rebuilt on top of the original conversation.
     // Routed by the agent's assigned provider (callUpstream), not
-    // hardcoded to Pollinations.
+    // hardcoded to Pollinations. Each call's token usage is recorded
+    // into the daily aggregate (best-effort; a failed record never
+    // breaks the dispatch) and summed here for the reply log line.
+    // The loop itself still only sees the reply text.
+    const dispatchUsage = { prompt: 0, completion: 0, total: 0, calls: 0 };
     const propose = async (observations, priorActions) => {
       const msgs = [{ role: 'system', content: toolSystemPrompt }];
       for (const m of baseMessages.slice(1)) msgs.push(m);
@@ -2413,13 +2574,20 @@ const server = createServer(async (req, res) => {
         msgs.push({ role: 'assistant', content: priorActions[i] });
         if (i < observations.length) msgs.push({ role: 'user', content: observations[i] });
       }
-      return callUpstream(providerId, msgs, deadline);
+      const result = await callUpstream(providerId, msgs, deadline);
+      if (typeof result === 'string') return result;
+      dispatchUsage.prompt += result.usage.prompt;
+      dispatchUsage.completion += result.usage.completion;
+      dispatchUsage.total += result.usage.total;
+      dispatchUsage.calls += 1;
+      recordUsage({ provider: providerId, agentId: agent?.id ?? '', usage: result.usage });
+      return result.text;
     };
 
     const result = await runToolLoop(propose, { maxIterations: MAX_TOOL_ITERATIONS, deadline });
     const ms = Date.now() - startedAt;
     const toolSteps = result.steps.filter((s) => s.action === 'tool').map((s) => s.tool).join(',') || 'none';
-    log(`reply ok agent=${agent?.name ?? '?'} chars=${result.text.length} iterations=${result.iterations} tools=${toolSteps} ms=${ms}`);
+    log(`reply ok agent=${agent?.name ?? '?'} chars=${result.text.length} iterations=${result.iterations} tools=${toolSteps} tokens=${dispatchUsage.total} in=${dispatchUsage.prompt} out=${dispatchUsage.completion} calls=${dispatchUsage.calls} ms=${ms}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ reply: result.text }));
   } catch (err) {
