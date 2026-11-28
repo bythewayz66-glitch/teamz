@@ -106,6 +106,12 @@ export interface ApprovalRequest {
    * the sole decision-maker.
    */
   decidedBy?: 'reviewer';
+  /**
+   * Epoch ms the runner expired this request because it sat unused past the
+   * TTL (see scripts/runner-rhythm.ts). An expired request is neither live
+   * nor pending, so the stage is re-reviewed. Absent on everything else.
+   */
+  expiredAt?: number | null;
 }
 
 /** The outcome of asking "may this stage execute right now?" */
@@ -148,7 +154,7 @@ export function findLiveApproval(
   stage: JobStage,
 ): ApprovalRequest | undefined {
   return approvals.find(
-    (a) => a.jobId === jobId && a.stage === stage && a.status === 'approved' && a.consumedAt === null,
+    (a) => a.jobId === jobId && a.stage === stage && a.status === 'approved' && a.consumedAt === null && !a.expiredAt,
   );
 }
 
@@ -159,7 +165,7 @@ export function findPendingApproval(
   stage: JobStage,
 ): ApprovalRequest | undefined {
   return approvals.find(
-    (a) => a.jobId === jobId && a.stage === stage && a.status === 'pending',
+    (a) => a.jobId === jobId && a.stage === stage && a.status === 'pending' && !a.expiredAt,
   );
 }
 
@@ -261,6 +267,6 @@ export function consumeApproval(
 /** Requests still waiting on the Reviewer, oldest first. */
 export function pendingApprovals(approvals: ApprovalRequest[]): ApprovalRequest[] {
   return approvals
-    .filter((a) => a.status === 'pending')
+    .filter((a) => a.status === 'pending' && !a.expiredAt)
     .sort((a, b) => a.requestedAt - b.requestedAt);
 }
