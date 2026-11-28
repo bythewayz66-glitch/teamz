@@ -6,6 +6,7 @@ import './phase1.css';
 import './phase3.css';
 import './dream.css';
 import './phase4.css';
+import './phase5.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
