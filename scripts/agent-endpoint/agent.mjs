@@ -166,6 +166,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 
 const PORT = Number(process.env.PORT ?? 8897);
 // 0.0.0.0: jnet1 is tailnet-only (no public IP), and the Teamz UI on
@@ -194,6 +195,12 @@ const USAGE_FILE_PATH =
 // (root, via sudo) is the only thing that applies a patch to the repo.
 const MEM20_ROOT = resolve(process.env.MEM20_ROOT ?? '/opt/mem20');
 const PATCH_DIR = process.env.PATCH_DIR ?? '/var/lib/teamz-runner/patches';
+// The mem20 toolchest bridge (toolchest.py): the only way Teamz agents
+// reach the mem20 tool catalog (527 tools). It spawns the mem20 MCP
+// server over stdio on this host. TOOLCHEST_PYTHON is the venv python
+// that has the `mcp` package.
+const TOOLCHEST_BRIDGE = process.env.TOOLCHEST_BRIDGE ?? '/opt/teamz-agent/toolchest.py';
+const TOOLCHEST_PYTHON = process.env.TOOLCHEST_PYTHON ?? '/root/.venv/bin/python';
 // The UI is served from port 8895, this service from 8897, so the
 // browser treats the UI's fetch as cross-origin. Read-only + no auth
 // on a tailnet-only service, so a wildcard origin is acceptable.
@@ -672,6 +679,164 @@ export function runRoomRead(args) {
   }
   if (lines.length === 0) return 'No unassigned work in the Build Room right now — nothing to assign.';
   return lines.join('\n');
+}
+
+/* --- mem20 toolchest gateway (Jesse, Nov 28, 2026) ---------------------- */
+/*
+ * The agents only had wikipedia/weather/calculator — three tools each,
+ * the same three for everyone — while mem20 has a 527-tool catalog (the
+ * toolchest) the agents could not reach: the mem20 MCP was never
+ * connected to Teamz. The gateway is two tools backed by
+ * /opt/teamz-agent/toolchest.py, a Python bridge that spawns the mem20
+ * MCP server over stdio and speaks JSON-RPC via the MCP SDK:
+ *   • toolchest_search — search the catalog by keyword and/or domain.
+ *   • toolchest_call   — invoke one mem20 tool by name with JSON args.
+ * The bridge caches the catalog (1h TTL) so a search is fast after the
+ * first call; a call always spawns the server (up to ~40s startup).
+ * Destructive actions are refused on both sides of the bridge (the
+ * endpoint checks first, the bridge re-checks): delete/remove/destroy/
+ * spend/publish/release/sell/charge/refund, plus named external-publish
+ * tools (social post, outbound messages, direct git commits/PRs).
+ * Tool observations are truncated at 1200 chars in the loop, so search
+ * results are kept to one short line per tool (10 max).
+ */
+
+const TOOLCHEST_DESTRUCTIVE_WORDS = ['delete', 'remove', 'destroy', 'spend', 'publish', 'release', 'sell', 'charge', 'refund'];
+const TOOLCHEST_READONLY_MARKERS = ['audit', 'status', 'doctor', 'list', 'get', 'read', 'search', 'verify', 'check'];
+// Named tools that publish or send to the outside world, beyond the word
+// list above: posting to social media, sending email/chat/SMS, and
+// committing or opening a PR on GitHub (which would bypass the governed
+// push path — repo changes go through stage_patch, never a direct commit).
+const TOOLCHEST_BLOCKED_TOOLS = new Set([
+  'mkt_social_post',
+  'comm_send_email', 'comm_slack_message', 'comm_sms_send',
+  'comm_telegram_message', 'comm_discord_message', 'comm_push_notify',
+  'vcs_git_commit', 'vcs_github_pr',
+]);
+
+export function isDestructiveTool(name) {
+  const low = String(name ?? '').toLowerCase();
+  if (TOOLCHEST_BLOCKED_TOOLS.has(low)) return true;
+  if (!TOOLCHEST_DESTRUCTIVE_WORDS.some((w) => low.includes(w))) return false;
+  // A read-only tool that merely mentions a destructive word is not
+  // destructive (e.g. vcs_asset_release_audit audits releases).
+  return !TOOLCHEST_READONLY_MARKERS.some((m) => low.includes(m));
+}
+
+const TOOLCHEST_TIMEOUT_MS = 240_000;
+
+function runBridge(argv, stdinText) {
+  // spawn, not execFile: execFile's `input` option does not deliver stdin
+  // to the child in this environment (the bridge's stdin.read() hangs
+  // forever), while spawn with an explicit stdin.write + stdin.end works.
+  return new Promise((resolve) => {
+    const child = spawn(TOOLCHEST_PYTHON, [TOOLCHEST_BRIDGE, ...argv]);
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      resolve({ code: 1, stdout, stderr: `${stderr}toolchest bridge timed out after ${TOOLCHEST_TIMEOUT_MS}ms`, timedOut: true });
+    }, TOOLCHEST_TIMEOUT_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      if (stdout.length > 1024 * 1024) {
+        try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      }
+    });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code: 1, stdout, stderr: `${stderr}${err instanceof Error ? err.message : String(err)}`, timedOut: false });
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code: code ?? 1, stdout, stderr, timedOut: false });
+    });
+    try {
+      if (stdinText) child.stdin.write(stdinText);
+      child.stdin.end();
+    } catch {
+      // stdin already closed; the bridge reads an empty object then.
+    }
+  });
+}
+
+export async function runToolchestSearch(args) {
+  let input;
+  try {
+    input = JSON.parse(args);
+  } catch {
+    throw new Error('toolchest_search needs a JSON object like {"query": "memory", "domain": "memory"}');
+  }
+  const query = typeof input.query === 'string' ? input.query.trim() : '';
+  const domain = typeof input.domain === 'string' ? input.domain.trim() : '';
+  if (!query && !domain) {
+    throw new Error('toolchest_search needs a JSON object like {"query": "memory"} — pass a keyword, a domain, or both');
+  }
+  const res = await runBridge(['search', query, domain], '');
+  if (res.code !== 0) {
+    throw new Error(`toolchest_search failed: ${res.stderr.trim().slice(0, 400) || 'bridge exited non-zero'}`);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(res.stdout);
+  } catch {
+    throw new Error('toolchest_search failed: the bridge returned non-JSON output');
+  }
+  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  if (tools.length === 0) {
+    return `No mem20 tools match ${JSON.stringify(query || domain)} (${payload.total ?? '?'} tools in the catalog). Try a different keyword or domain.`;
+  }
+  const lines = tools.map((t) => {
+    const desc = String(t.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const argList = Array.isArray(t.args) && t.args.length ? ` [args: ${t.args.join(', ')}]` : '';
+    return `- ${t.name} (${t.domain})${argList}: ${desc}`;
+  });
+  return `${tools.length} of ${payload.total ?? '?'} mem20 tools matching ${JSON.stringify(query || domain)}:\n${lines.join('\n')}`;
+}
+
+export async function runToolchestCall(args) {
+  let input;
+  try {
+    input = JSON.parse(args);
+  } catch {
+    throw new Error('toolchest_call needs a JSON object like {"tool": "memory_status", "arguments": {}}');
+  }
+  const tool = typeof input.tool === 'string' ? input.tool.trim() : '';
+  if (!tool) {
+    throw new Error('toolchest_call needs a JSON object like {"tool": "memory_status", "arguments": {}}');
+  }
+  if (!/^[A-Za-z0-9_]+$/.test(tool)) {
+    throw new Error(`toolchest_call refused: bad tool name ${JSON.stringify(tool)} — tool names are letters, digits, and underscores only`);
+  }
+  if (isDestructiveTool(tool)) {
+    throw new Error(`toolchest_call refused: ${tool} is a destructive action (delete, remove, destroy, spend, publish, release, sell, charge, refund) or publishes outside mem20 — not available through the toolchest`);
+  }
+  const toolArgs = input.arguments && typeof input.arguments === 'object' && !Array.isArray(input.arguments) ? input.arguments : {};
+  const res = await runBridge(['call', tool], JSON.stringify(toolArgs));
+  if (res.code === 2) {
+    // The bridge refused it (its own destructive check).
+    throw new Error(`toolchest_call refused: ${res.stderr.trim().slice(0, 400)}`);
+  }
+  if (res.code !== 0) {
+    throw new Error(`toolchest_call failed: ${res.stderr.trim().slice(0, 400) || 'bridge exited non-zero'}`);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(res.stdout);
+  } catch {
+    throw new Error('toolchest_call failed: the bridge returned non-JSON output');
+  }
+  const result = typeof payload.result === 'string' ? payload.result : JSON.stringify(payload);
+  return `${tool}:\n${result}`;
 }
 
 /**
@@ -1597,6 +1762,24 @@ const TOOL_DEFS = [
     usage: 'a JSON object, e.g. {"what": "unassigned"} or {"what": "agents", "role": "backend"}',
     run: async (args) => runRoomRead(args),
   },
+  {
+    name: 'toolchest_search',
+    description:
+      'Search the mem20 tool catalog (527 tools) by keyword and/or domain — the gateway that gives Teamz agents the mem20 toolchest. ' +
+      'Args must be a JSON object: {"query" (keyword, e.g. "memory"), "domain" (optional, e.g. "memory")}. ' +
+      'Returns up to 10 matching tools with name, domain, a one-line description, and argument names.',
+    usage: 'a JSON object, e.g. {"query": "memory"} or {"query": "status", "domain": "memory"}',
+    run: async (args) => runToolchestSearch(args),
+  },
+  {
+    name: 'toolchest_call',
+    description:
+      'Invoke one mem20 tool by name with JSON arguments, through the toolchest bridge (spawns the mem20 MCP server over stdio). ' +
+      'Args must be a JSON object: {"tool" (exact mem20 tool name), "arguments" (object, may be empty)}. ' +
+      'Returns the real result. Destructive actions and anything that publishes outside mem20 are refused.',
+    usage: 'a JSON object, e.g. {"tool": "memory_status", "arguments": {}}',
+    run: async (args) => runToolchestCall(args),
+  },
 ];
 
 export const TOOL_NAMES = TOOL_DEFS.map((d) => d.name);
@@ -1630,6 +1813,10 @@ const TOOL_ALIASES = {
   readroom: 'room_read',
   fetchurl: 'fetch_url',
   fetch: 'fetch_url',
+  toolchestsearch: 'toolchest_search',
+  searchtools: 'toolchest_search',
+  toolchestcall: 'toolchest_call',
+  calltool: 'toolchest_call',
 };
 
 function resolveToolName(name) {
@@ -2352,6 +2539,36 @@ export const OPENAI_TOOLS = [
         type: 'object',
         properties: {
           args: { type: 'string', description: 'The JSON object for the room read' },
+        },
+        required: ['args'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'toolchest_search',
+      description:
+        'Search the mem20 tool catalog (527 tools) by keyword and/or domain. Returns up to 10 matching tools with name, domain, description, and argument names. Args is a JSON object with query (keyword) and optional domain.',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'The JSON object for the search' },
+        },
+        required: ['args'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'toolchest_call',
+      description:
+        'Invoke one mem20 tool by name with JSON arguments, through the toolchest bridge. Returns the real result. Destructive actions (delete, remove, destroy, spend, publish, release, sell, charge, refund) and anything that publishes outside mem20 are refused. Args is a JSON object with tool (name) and arguments (object).',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'The JSON object for the call' },
         },
         required: ['args'],
       },

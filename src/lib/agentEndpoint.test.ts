@@ -75,6 +75,46 @@ process.env.REASSIGNMENTS_PATH = join(dir, 'reassignments.json');
 process.env.RATE_LIMIT_EVENTS_PATH = join(dir, 'rate-limit-events.jsonl');
 process.env.USAGE_FILE_PATH = join(dir, 'usage-daily.json');
 
+// Toolchest fixture bridge: a tiny stand-in for /opt/teamz-agent/toolchest.py
+// with the same CLI (search <query> [domain] / call <tool>, args JSON on
+// stdin) and the same destructive refusal, over a canned 4-tool catalog.
+// The real bridge is verified live on jnet1, not here.
+const toolchestBridge = join(dir, 'toolchest.py');
+writeFileSync(
+  toolchestBridge,
+  [
+    '#!/usr/bin/env python3',
+    'import json, sys',
+    'CATALOG = [',
+    '  {"name": "memory_status", "domain": "memory", "description": "Report memory engine status", "args": [], "required": []},',
+    '  {"name": "memory_recall", "domain": "memory", "description": "Recall memories matching a query", "args": ["query", "k"], "required": ["query"]},',
+    '  {"name": "memory_store", "domain": "memory", "description": "Store a grounded fact", "args": ["fact", "topic"], "required": ["fact"]},',
+    '  {"name": "lattice_search", "domain": "lattice", "description": "Search the lattice", "args": ["query"], "required": ["query"]},',
+    ']',
+    'DESTRUCTIVE = ("delete", "remove", "destroy", "spend", "publish", "release", "sell", "charge", "refund")',
+    'if __name__ == "__main__":',
+    '    if sys.argv[1] == "search":',
+    '        q = sys.argv[2].lower() if len(sys.argv) > 2 else ""',
+    '        dom = sys.argv[3].lower() if len(sys.argv) > 3 else ""',
+    '        hits = [t for t in CATALOG if (not dom or t["domain"] == dom) and (not q or q in (t["name"] + " " + t["description"]).lower())]',
+    '        print(json.dumps({"tools": hits[:10], "count": len(hits), "total": len(CATALOG)}))',
+    '    elif sys.argv[1] == "call":',
+    '        name = sys.argv[2]',
+    '        args = json.loads(sys.stdin.read() or "{}")',
+    '        if any(w in name.lower() for w in DESTRUCTIVE):',
+    '            print(f"toolchest: refused {name} — destructive actions are not available through the toolchest", file=sys.stderr)',
+    '            sys.exit(2)',
+    '        if name == "memory_status":',
+    '            print(json.dumps({"tool": name, "result": "ledger events : 2\\ndeep entries : 2"}))',
+    '        else:',
+    '            print(f"toolchest: {name} failed: no such tool", file=sys.stderr)',
+    '            sys.exit(1)',
+  ].join('\n'),
+  'utf-8',
+);
+process.env.TOOLCHEST_BRIDGE = toolchestBridge;
+process.env.TOOLCHEST_PYTHON = 'python3';
+
 // agent.mjs ships no types; the dynamic import is untyped on purpose.
 // @ts-ignore — no declaration file for the endpoint module
 const endpoint = await import('../../scripts/agent-endpoint/agent.mjs');
@@ -802,5 +842,82 @@ describe('tool declarations (Jesse, Nov 28, 2026 — the Orchestrator was told t
     expect(declared.has('repo_read')).toBe(true);
     expect(declared.has('stage_patch')).toBe(true);
     expect(declared.has('fetch_url')).toBe(true);
+    expect(declared.has('toolchest_search')).toBe(true);
+    expect(declared.has('toolchest_call')).toBe(true);
+  });
+});
+
+describe('toolchest gateway (Jesse, Nov 28, 2026 — agents had 3 useless tools each; mem20 has a 527-tool catalog)', () => {
+  it('toolchest_search finds a known tool by keyword', async () => {
+    const out = await endpoint.runToolchestSearch(JSON.stringify({ query: 'memory' }));
+    expect(out).toContain('memory_status');
+    expect(out).toContain('memory_recall');
+    expect(out).toContain('3 of 4 mem20 tools');
+  });
+
+  it('toolchest_search filters by domain', async () => {
+    const out = await endpoint.runToolchestSearch(JSON.stringify({ query: 'search', domain: 'lattice' }));
+    expect(out).toContain('lattice_search');
+    expect(out).not.toContain('memory_status');
+  });
+
+  it('toolchest_search says plainly when nothing matches', async () => {
+    const out = await endpoint.runToolchestSearch(JSON.stringify({ query: 'zzzznothing' }));
+    expect(out).toContain('No mem20 tools match');
+  });
+
+  it('toolchest_search needs a query or a domain', async () => {
+    await expect(endpoint.runToolchestSearch(JSON.stringify({}))).rejects.toThrow('needs a JSON object');
+  });
+
+  it('toolchest_call returns a real result for a safe tool', async () => {
+    const out = await endpoint.runToolchestCall(JSON.stringify({ tool: 'memory_status', arguments: {} }));
+    expect(out).toContain('memory_status');
+    expect(out).toContain('ledger events : 2');
+  });
+
+  it('toolchest_call refuses a destructive tool name', async () => {
+    await expect(endpoint.runToolchestCall(JSON.stringify({ tool: 'db_delete', arguments: {} }))).rejects.toThrow('refused');
+    await expect(endpoint.runToolchestCall(JSON.stringify({ tool: 'stream_publish', arguments: {} }))).rejects.toThrow('refused');
+    await expect(endpoint.runToolchestCall(JSON.stringify({ tool: 'cloudstorage_delete', arguments: {} }))).rejects.toThrow('refused');
+  });
+
+  it('toolchest_call refuses a bad tool name', async () => {
+    await expect(endpoint.runToolchestCall(JSON.stringify({ tool: 'memory_status; rm -rf /', arguments: {} }))).rejects.toThrow('refused');
+  });
+
+  it('toolchest_call reports a real failure for an unknown tool', async () => {
+    await expect(endpoint.runToolchestCall(JSON.stringify({ tool: 'no_such_tool_xyz', arguments: {} }))).rejects.toThrow('failed');
+  });
+
+  it('isDestructiveTool: destructive words refused, read-only audits allowed', () => {
+    const { isDestructiveTool } = endpoint;
+    expect(isDestructiveTool('db_delete')).toBe(true);
+    expect(isDestructiveTool('stream_publish')).toBe(true);
+    expect(isDestructiveTool('cloudstorage_delete')).toBe(true);
+    expect(isDestructiveTool('mkt_social_post')).toBe(true);
+    expect(isDestructiveTool('comm_send_email')).toBe(true);
+    expect(isDestructiveTool('vcs_git_commit')).toBe(true);
+    expect(isDestructiveTool('vcs_asset_release_audit')).toBe(false);
+    expect(isDestructiveTool('memory_status')).toBe(false);
+    expect(isDestructiveTool('memory_recall')).toBe(false);
+  });
+
+  it('both gateway tools are reachable through the tool registry', async () => {
+    const search = await endpoint.executeTool('toolchest_search', JSON.stringify({ query: 'memory' }));
+    expect(search.ok).toBe(true);
+    expect(search.output).toContain('memory_status');
+    const call = await endpoint.executeTool('toolchest_call', JSON.stringify({ tool: 'memory_status', arguments: {} }));
+    expect(call.ok).toBe(true);
+    expect(call.output).toContain('ledger events : 2');
+    const refused = await endpoint.executeTool('toolchest_call', JSON.stringify({ tool: 'db_delete', arguments: {} }));
+    expect(refused.ok).toBe(false);
+    expect(refused.output).toContain('refused');
+  });
+
+  it('both gateway tools appear in the tool inventory the model sees', () => {
+    const inventory = endpoint.inventoryText();
+    expect(inventory).toContain('toolchest_search');
+    expect(inventory).toContain('toolchest_call');
   });
 });
