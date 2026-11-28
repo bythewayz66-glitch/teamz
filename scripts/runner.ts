@@ -198,6 +198,19 @@ async function runOneTick(
       saveRunnerState(statePath, s);
       log('  state persisted before gated command stage (approval on disk for the push script)');
     },
+    // Checkpoint save after each dispatch (Nov 28, 2026 — the lost-tick
+    // fix): state.json is no longer saved only at tick end, so a tick
+    // killed mid-way loses at most the single dispatch in flight.
+    // Best-effort: a failed checkpoint is logged + reported, never
+    // fatal — the tick-end save below is still the final backstop.
+    onCheckpoint: async (s) => {
+      try {
+        saveRunnerState(statePath, s);
+      } catch (err) {
+        log(`  checkpoint save FAILED: ${err instanceof Error ? err.message : String(err)}`);
+        ctx.telemetry.emit('state_save_failed', { tick: ctx.tick });
+      }
+    },
     reloadAgents: async () => {
       try {
         return loadRunnerState(statePath).state.agents;
@@ -428,7 +441,9 @@ async function main(): Promise<number> {
   if (lost) {
     log(
       `WARN previous tick #${lost.tick} (started ${lost.startedAt}) never finished: ` +
-        `${lost.completedDispatches} completed and ${lost.failedDispatches} failed dispatches were lost with it (state is saved only at tick end)`,
+        `${lost.completedDispatches} completed and ${lost.failedDispatches} failed dispatches were recorded in its events — ` +
+        `state is checkpointed after each dispatch, so a lost tick should lose at most the dispatch in flight; ` +
+        `if completed dispatches are missing from state.json, the checkpoint save is failing (see state_save_failed events)`,
     );
     telemetry.emit('lost_tick', { ...lost });
   }

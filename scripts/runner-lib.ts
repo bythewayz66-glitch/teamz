@@ -1230,6 +1230,19 @@ export interface RunnerDeps {
    */
   onBeforeCommand?: (state: RunnerState) => Promise<void>;
   /**
+   * Called after every dispatch completes — and after each dispatch's
+   * outcome is recorded — with the tick's in-progress state. The live
+   * runner persists the state here (a checkpoint save), so a tick that
+   * dies mid-way loses at most the single dispatch in flight: every
+   * completed dispatch is already on disk. Without this the state was
+   * saved only at tick end, so a killed tick lost all of its dispatches
+   * and the next tick re-fired work that had already happened (stale
+   * cron/job lastRunAt, lost run records — the Nov 28, 2026 lost-tick
+   * problem). Optional; best-effort — a failure is logged and never
+   * breaks the tick. The callback must not mutate the state.
+   */
+  onCheckpoint?: (state: RunnerState) => void | Promise<void>;
+  /**
    * Called with each human-readable line processDue produces, as it is
    * produced. The live runner hands completed-job lines to the Slack
    * poster here, so a tick killed mid-flight (a restart) still posts
@@ -1592,6 +1605,21 @@ export async function processDue(
       // A poster failure never breaks the tick.
     }
   };
+  /**
+   * Checkpoint: hand the tick's in-progress state to the caller (the
+   * live runner saves it to disk) so a tick killed mid-way loses at
+   * most the dispatch in flight. Best-effort by design — a checkpoint
+   * failure is logged and never breaks the tick; the tick-end save in
+   * the runner is still the final backstop.
+   */
+  const checkpoint = async (): Promise<void> => {
+    if (!deps.onCheckpoint) return;
+    try {
+      await deps.onCheckpoint(state);
+    } catch (err) {
+      deps.log(`checkpoint save FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const agentById = new Map(state.agents.map((a) => [a.id, a]));
 
   // Heavy hours are a backlog, not a clock: assess the due product
@@ -1637,6 +1665,13 @@ export async function processDue(
       return await deps.dispatchPrompt(agent, prompt, channelId);
     } finally {
       releaseDispatchSlot(slot);
+      // Checkpoint after EVERY dispatch: the dispatch's own state
+      // updates (lastRunAt set before the call, the run recorded as
+      // 'dispatched' before a product stage runs) are on disk before
+      // the next dispatch starts, so a tick killed mid-flight loses
+      // at most this dispatch's outcome record — never the dispatch
+      // itself. The outcome record lands at the next checkpoint.
+      await checkpoint();
     }
   };
 
@@ -1708,6 +1743,9 @@ export async function processDue(
     } catch (err) {
       emit(`trigger → ${agent.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
     }
+    // The trigger's lastRunAt is already on disk (checkpoint in
+    // `dispatch`); this saves the outcome line with it.
+    await checkpoint();
   }
 
   // Per-tick cron cap (Nov 27, 2026 fleet slowdown — MAX_CRONS_PER_TICK):
@@ -1838,6 +1876,9 @@ export async function processDue(
           emit('orchestrator: no @mentions in reply — nothing assigned this run');
         }
       }
+      // Checkpoint the cron's completed run (record + channel message)
+      // so a tick killed before the next dispatch keeps it.
+      await checkpoint();
     } catch (err) {
       const updated = recordCronRun(
         { ...cron, lastRunAt: nowMs },
@@ -1845,6 +1886,7 @@ export async function processDue(
       );
       state.cronJobs = state.cronJobs.map((j) => (j.id === cron.id ? updated : j));
       emit(`cron ${cron.name}: FAILED ${err instanceof Error ? err.message : String(err)}`);
+      await checkpoint();
     }
   }
 
@@ -2050,6 +2092,9 @@ export async function processDue(
           emit(`rate-limit rescue: acknowledge FAILED — ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      // Checkpoint the rescue record (attempt count, backoff update)
+      // before the next event is attempted.
+      await checkpoint();
     }
   }
 
@@ -2115,6 +2160,7 @@ export async function processDue(
           `job ${job.name} / ${plan.stage}: triage recovery FAILED (${err instanceof Error ? err.message : String(err)}) — denial stands, job parked`,
         );
       }
+      await checkpoint();
     }
   }
 
@@ -2167,6 +2213,7 @@ export async function processDue(
         } catch (err) {
           emit(`stranded sweep FAILED (${err instanceof Error ? err.message : String(err)})`);
         }
+        await checkpoint();
       }
     }
   }
@@ -2231,7 +2278,14 @@ export async function processDue(
   // inside one job must never kill the others (allSettled) — a failed
   // job is recorded as failed and retried on a later tick, like a
   // failed sequential run before it.
-  await Promise.allSettled(dueToStart.map((job) => runOneProductJob(job)));
+  await Promise.allSettled(
+    dueToStart.map(async (job) => {
+      await runOneProductJob(job);
+      // Checkpoint the job's finished stage (run record, approval
+      // consumption, stage advance) before the next tick's work.
+      await checkpoint();
+    }),
+  );
 
   // One due product job's stage, from gate check to recorded run.
   // Defined here (not hoisted out of processDue) because it closes over
@@ -2365,6 +2419,10 @@ export async function processDue(
     }
     // Record the dispatched run first, so a crash mid-stage cannot lose it.
     state.jobs = state.jobs.map((j) => (j.id === job.id ? started.job : j));
+    // Checkpoint the 'dispatched' run before the stage itself runs: a
+    // tick killed during a long command or a slow prompt dispatch must
+    // not lose the fact that this stage started.
+    await checkpoint();
     if (started.run.kind === 'command' && plan.command) {
       // Gated command stage: persist state first, so a privileged helper
       // the command invokes can verify the live approval on disk. A

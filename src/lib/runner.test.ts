@@ -368,6 +368,92 @@ describe('processDue — one headless tick', () => {
     expect(out.state.jobs[0].currentStageIndex).toBe(1);
   });
 
+  it('checkpoints state after each dispatch, so a mid-tick interruption loses at most the dispatch in flight', async () => {
+    // Two prompt crons due in the same tick. The first dispatch
+    // completes; the second dispatch is where the tick "dies". A real
+    // kill is a dead process, not an exception — so the test models it
+    // by reloading the LAST checkpoint written before the second
+    // dispatch started, i.e. exactly what would be on disk if the
+    // process had died mid-dispatch. The completed first dispatch must
+    // already be there; the in-flight second one must be absent (still
+    // due, so it retries — never lost, never duplicated).
+    const state = emptyRunnerState();
+    state.agents = [
+      { id: 'agent-atlas', name: 'Atlas', endpointUrl: 'http://127.0.0.1:9/chat', model: 'test', systemPrompt: '' },
+    ];
+    state.cronJobs = [
+      {
+        id: 'cron-1',
+        name: 'first',
+        schedule: '*/15 * * * *',
+        type: 'prompt',
+        target: 'First prompt.',
+        agentId: 'agent-atlas',
+        channelId: 'conv-build-room',
+        enabled: true,
+        lastRunAt: null,
+        runs: [],
+      },
+      {
+        id: 'cron-2',
+        name: 'second',
+        schedule: '0 * * * *',
+        type: 'prompt',
+        target: 'Second prompt.',
+        agentId: 'agent-atlas',
+        channelId: 'conv-build-room',
+        enabled: true,
+        lastRunAt: null,
+        runs: [],
+      },
+    ];
+    const checkpoints: RunnerState[] = [];
+    let checkpointsBeforeSecondDispatch = -1;
+    let calls = 0;
+    await processDue(state, new Date(2026, 10, 25, 7, 0), {
+      dispatchPrompt: async () => {
+        calls += 1;
+        if (calls === 2) {
+          checkpointsBeforeSecondDispatch = checkpoints.length;
+          throw new Error('tick killed mid-dispatch');
+        }
+        return 'reply one';
+      },
+      executeCommand: async () => {
+        throw new Error('no commands here');
+      },
+      log: () => {},
+      onCheckpoint: (s) => {
+        checkpoints.push(structuredClone(s));
+      },
+    });
+    expect(calls).toBe(2);
+    expect(checkpointsBeforeSecondDispatch).toBeGreaterThan(0);
+    // At least one checkpoint per dispatch — the tick-end save alone
+    // would have produced zero.
+    expect(checkpoints.length).toBeGreaterThanOrEqual(2);
+    // The checkpoint taken right after the first dispatch already has
+    // its lastRunAt on disk, before the run record is even written.
+    expect(checkpoints[0].cronJobs[0].lastRunAt).toBe(new Date(2026, 10, 25, 7, 0).getTime());
+    // Reload the last checkpoint from before the second dispatch
+    // started, through the real disk round-trip.
+    const dir = mkdtempSync(join(tmpdir(), 'teamz-checkpoint-'));
+    try {
+      const path = join(dir, 'state.json');
+      saveRunnerState(path, checkpoints[checkpointsBeforeSecondDispatch - 1]);
+      const reloaded = loadRunnerState(path).state;
+      expect(reloaded.cronJobs[0].runs).toHaveLength(1);
+      expect(reloaded.cronJobs[0].runs[0].ok).toBe(true);
+      expect(reloaded.cronJobs[0].runs[0].detail).toContain('reply one');
+      expect(reloaded.channelMessages.some((m) => m.kind === 'cron' && m.text === 'reply one')).toBe(true);
+      // The in-flight dispatch left nothing behind: still due, no run.
+      expect(reloaded.cronJobs[1].lastRunAt).toBeNull();
+      expect(reloaded.cronJobs[1].runs).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a due trigger dispatches, and a cron command job is refused', async () => {
     const state = emptyRunnerState();
     state.agents = [
