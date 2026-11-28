@@ -115,6 +115,24 @@ export interface HomeSession {
   preview: string;
   /** Plain-words retention policy, e.g. "kept for 90 days, then pruned". */
   retention: string;
+  starred: boolean;
+  /** Lower-cased name plus message text, for searching within this agent's sessions. */
+  text: string;
+}
+
+export type SessionSort = 'recent' | 'name';
+
+/** Gamut's per-agent "Sort / Search sessions": every word must appear in the name or any message. */
+export function filterSessions(sessions: HomeSession[], query: string, sort: SessionSort): HomeSession[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = words.length === 0 ? sessions : sessions.filter((s) => words.every((w) => s.text.includes(w)));
+  return [...hit].sort((a, b) => (sort === 'name' ? a.name.localeCompare(b.name) : b.lastAt - a.lastAt));
+}
+
+/** The model without its vendor prefix, e.g. "deepseek-ai/DeepSeek-V4-Flash-0731" -> "DeepSeek-V4-Flash-0731". */
+export function modelLabel(model: string): string {
+  const tail = model.split('/').pop() ?? model;
+  return tail || model;
 }
 
 export interface HomeTrigger {
@@ -163,6 +181,10 @@ export interface AgentHomeModel {
   agent: Agent;
   status: HomeStatus;
   model: string;
+  /** Model name without the vendor prefix; the full id is `model`. */
+  modelLabel: string;
+  /** Per-request tool-step budget when the agent has one (Teamz's analogue of Gamut's effort). */
+  stepLimit: number | null;
   provider: string | null;
   sessions: HomeSession[];
   lastSession: HomeSession | null;
@@ -172,6 +194,7 @@ export interface AgentHomeModel {
   tools: Array<{ id: string; label: string; description: string }>;
   connections: Array<{ label: string; detail: string }>;
   recentRuns: HomeRun[];
+  runRecord: RunRecord | null;
   cost: HomeCost;
   warmth: { last: string; next: string };
 }
@@ -350,6 +373,85 @@ function agentRuns(
   return runs.sort((a, b) => b.at - a.at);
 }
 
+export interface RunRecord {
+  planned: number;
+  ran: number;
+  skipped: number;
+  failed: number;
+  /** Gamut's plain format: "Last 7 days: 24 planned runs, 23 ran, 1 skipped, and 0 failed." */
+  sentence: string;
+  /** Schedules with nothing on record in the window; their misses cannot be counted honestly. */
+  noRecord: string[];
+}
+
+const RECORD_WINDOW_MS = 7 * DAY;
+
+function countSlots(expr: string, fromMs: number, toMs: number, cap = 1000): number {
+  try {
+    const schedule = new Schedule(expr);
+    let t = new Date(Math.floor(fromMs / MIN) * MIN - MIN);
+    let n = 0;
+    while (n < cap) {
+      const next = schedule.next(t);
+      if (next.getTime() > toMs) break;
+      n += 1;
+      t = next;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Planned / ran / skipped / failed over the last 7 days across this agent's
+ * cron schedules, in Gamut's plain format. A schedule is only counted from its
+ * first recorded run in the window: Teamz keeps no creation time for a cron job
+ * and the runner retains only its newest 50 runs per job, so counting earlier
+ * slots as "skipped" would blame a job for time it did not exist (or whose
+ * history has rolled off). A schedule with nothing on record is listed
+ * separately instead of being called skipped. Planned slots are an estimate
+ * from the cron expression; two runs in one slot count as one ran.
+ */
+export function buildRunRecord(
+  agentId: string,
+  runner: RunnerSnapshot | null,
+  local: LocalAutonomy | null,
+  now: number,
+): RunRecord | null {
+  const byId = new Map<string, CronJob>();
+  for (const j of [...(runner?.cronJobs ?? []), ...(local?.cronJobs ?? [])]) {
+    if (j.agentId === agentId) byId.set(j.id, j);
+  }
+  if (byId.size === 0) return null;
+  let planned = 0;
+  let ran = 0;
+  let failed = 0;
+  let skipped = 0;
+  const noRecord: string[] = [];
+  for (const j of byId.values()) {
+    const inWindow = j.runs.filter((r) => r.ts >= now - RECORD_WINDOW_MS);
+    if (inWindow.length === 0) {
+      noRecord.push(j.name);
+      continue;
+    }
+    const anchor = Math.min(...inWindow.map((r) => r.ts));
+    const slots = Math.max(countSlots(j.schedule, anchor, now), inWindow.length);
+    const okRuns = inWindow.filter((r) => r.ok).length;
+    const failRuns = inWindow.length - okRuns;
+    planned += slots;
+    ran += okRuns;
+    failed += failRuns;
+    skipped += Math.max(0, slots - inWindow.length);
+  }
+  const sentence = `Last 7 days: ${plural(planned, 'planned run')}, ${ran} ran, ${skipped} skipped, and ${failed} failed.`;
+  return { planned, ran, skipped, failed, sentence, noRecord };
+}
+
+function isReviewer(agent: Pick<Agent, 'id'>): boolean {
+  return agent.id === 'agent-reviewer';
+}
+
 function statusOf(agent: Agent, interrupted: boolean): HomeStatus {
   if (interrupted) {
     return { tone: 'warn', label: 'Interrupted', detail: 'A reply was cut off mid-work. Open the session and resume it.' };
@@ -389,38 +491,54 @@ function lastAgentMessage(
   return best;
 }
 
-/** The two warm sentences a home opens with. */
+/**
+ * The two warm sentences a home opens with. They are written by the UI about
+ * the agent, not by the agent, so for the Reviewer they are third person:
+ * nothing in Teamz speaks as the Reviewer except the Reviewer.
+ */
 export function buildWarmth(
   lastMsg: { msg: Message; conv: Conversation } | null,
   runs: HomeRun[],
   next: HomeTrigger | null,
   interrupted: boolean,
   now: number,
+  voice: { name: string; third: boolean } = { name: 'I', third: false },
 ): { last: string; next: string } {
+  const t = voice.third;
+  const who = voice.name;
   const lastRun = runs[0];
   let last: string;
   if (interrupted) {
-    last = 'I was cut off in the middle of a reply. Open that session and resume it, and I will pick up from everything already said.';
+    last = t
+      ? `${who} was cut off in the middle of a reply. Open that session and resume it, and ${who} will pick up from everything already said.`
+      : 'I was cut off in the middle of a reply. Open that session and resume it, and I will pick up from everything already said.';
   } else if (lastRun && (!lastMsg || lastRun.at > lastMsg.msg.createdAt)) {
+    const tail = lastRun.detail ? ` — ${lastRun.detail}` : '.';
     last =
       lastRun.outcome === 'failed'
-        ? `My last scheduled run, “${lastRun.title}”, failed ${timeAgo(lastRun.at, now)}${lastRun.detail ? ` — ${lastRun.detail}` : '.'}`
-        : `I last ran “${lastRun.title}” ${timeAgo(lastRun.at, now)}${lastRun.detail ? ` — ${lastRun.detail}` : '.'}`;
+        ? `${t ? `${who}’s` : 'My'} last scheduled run, “${lastRun.title}”, failed ${timeAgo(lastRun.at, now)}${tail}`
+        : `${t ? who : 'I'} last ran “${lastRun.title}” ${timeAgo(lastRun.at, now)}${tail}`;
   } else if (lastMsg) {
     const where = lastMsg.conv.session?.kind === 'room' || lastMsg.conv.kind === 'channel' ? `in ${lastMsg.conv.name}` : `in “${lastMsg.conv.name}”`;
-    last = `I last replied ${where} ${timeAgo(lastMsg.msg.createdAt, now)}: “${excerpt(lastMsg.msg.text)}”`;
+    last = `${t ? who : 'I'} last replied ${where} ${timeAgo(lastMsg.msg.createdAt, now)}: “${excerpt(lastMsg.msg.text)}”`;
   } else {
-    last = `I haven’t done anything yet. Start a session with me and it will show up here.`;
+    last = t
+      ? `${who} hasn’t done anything yet. Start a session and it will show up here.`
+      : `I haven’t done anything yet. Start a session with me and it will show up here.`;
   }
 
   let nextText: string;
   if (next && next.nextAt !== null) {
     const clock = new Date(next.nextAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-    nextText = `Next, I’ll run “${next.name}” ${timeUntil(next.nextAt, now)} (${clock}), ${next.when}.`;
+    nextText = t
+      ? `Next, ${who} will run “${next.name}” ${timeUntil(next.nextAt, now)} (${clock}), ${next.when}.`
+      : `Next, I’ll run “${next.name}” ${timeUntil(next.nextAt, now)} (${clock}), ${next.when}.`;
   } else if (next) {
-    nextText = `“${next.name}” is set up for me but ${next.note ?? 'is not scheduled'}, so nothing is queued.`;
+    nextText = `“${next.name}” is set up for ${t ? who : 'me'} but ${next.note ?? 'is not scheduled'}, so nothing is queued.`;
   } else {
-    nextText = `Nothing is scheduled for me. I act when someone asks, or when the Orchestrator assigns me work.`;
+    nextText = t
+      ? `Nothing is scheduled for ${who}. It acts when someone asks, or when the Orchestrator assigns it work.`
+      : `Nothing is scheduled for me. I act when someone asks, or when the Orchestrator assigns me work.`;
   }
   return { last, next: nextText };
 }
@@ -448,6 +566,8 @@ export function buildAgentHome(input: {
       messageCount: msgs.length,
       preview: last ? excerpt(last.text, 90) : 'No messages yet',
       retention: describeRetention(c.session.retention),
+      starred: Boolean(c.session.starred),
+      text: `${c.name} ${msgs.map((m) => m.text).join(' ')}`.toLowerCase().slice(0, 30_000),
     };
   });
   const lastSession = sessions.find((s) => s.messageCount > 0) ?? null;
@@ -498,6 +618,8 @@ export function buildAgentHome(input: {
     agent,
     status: statusOf(agent, interrupted),
     model: agent.model,
+    modelLabel: modelLabel(agent.model),
+    stepLimit: agent.maxIterations ?? null,
     provider,
     sessions,
     lastSession,
@@ -507,7 +629,11 @@ export function buildAgentHome(input: {
     tools,
     connections,
     recentRuns,
+    runRecord: buildRunRecord(agent.id, runner, local, now),
     cost,
-    warmth: buildWarmth(lastMsg, runs, nextTrigger, interrupted, now),
+    warmth: buildWarmth(lastMsg, runs, nextTrigger, interrupted, now, {
+      name: agent.name,
+      third: isReviewer(agent),
+    }),
   };
 }
