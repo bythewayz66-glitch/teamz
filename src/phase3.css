@@ -1,0 +1,54 @@
+/* Phase 3: Team Library, first-job card, avatar shapes. Uses the existing tokens. */
+.avatar-face { position: absolute; inset: 0; }
+.avatar-face-inner { position: absolute; inset: 1px; }
+.avatar-face ~ .avatar-emoji { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; transform: none; font-size: 1em !important; }
+
+.shape-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+.shape-opt { background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 4px; cursor: pointer; }
+.shape-opt:hover { background: #1b2331; }
+.shape-opt.is-on { background: #1d2739; border-color: #3c4d68; }
+
+.firstjob { margin: 14px 0; padding: 14px 16px; border: 1px solid #2b3648; border-radius: 12px; background: #121a26; }
+.firstjob h3 { margin: 0 0 4px; font-size: 13px; letter-spacing: 0.02em; color: #93a0b5; font-weight: 600; text-transform: uppercase; }
+.firstjob-title { margin: 0 0 4px; font-weight: 600; color: #e8edf6; }
+.firstjob-meta, .firstjob-hint { margin: 0 0 8px; font-size: 12px; color: #93a0b5; }
+.firstjob-prompt { margin: 0 0 10px; padding: 10px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #0e1219; border: 1px solid #242f40; border-radius: 8px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #c6d0e0; }
+.firstjob-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+.lib-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.lib-import, .lib-publish { margin: 0 0 12px; padding: 10px 12px; border: 1px dashed #2b3648; border-radius: 10px; }
+.lib-publish summary { cursor: pointer; font-weight: 600; color: #c6d0e0; }
+.lib-form { display: grid; gap: 8px; margin-top: 10px; }
+.lib-form input, .lib-form select, .lib-form textarea, .lib-form-row input, .lib-compare select { background: #0e1219; color: #e8edf6; border: 1px solid #242f40; border-radius: 8px; padding: 8px 10px; font: inherit; min-width: 0; }
+.lib-form-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.lib-form-row input { flex: 1 1 160px; }
+.lib-card { border: 1px solid #242f40; border-radius: 12px; padding: 12px; margin: 0 0 10px; background: #111823; }
+.lib-card-head { display: flex; gap: 12px; align-items: flex-start; }
+.lib-card-title { flex: 1; min-width: 0; }
+.lib-card-title h3 { margin: 0; font-size: 15px; color: #e8edf6; }
+.lib-card-title p { margin: 4px 0 0; font-size: 12.5px; color: #a9b4c6; overflow-wrap: anywhere; }
+.lib-card-actions { display: flex; flex-direction: column; gap: 6px; }
+.lib-ver { font-weight: 500; font-size: 12px; color: #7c9cff; margin-left: 4px; }
+.lib-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.lib-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #2b3648; color: #b6c1d2; }
+.lib-badge.is-builtin, .lib-badge.is-approved { border-color: #2f7a5c; color: #5fd4a4; }
+.lib-badge.is-unreviewed { border-style: dashed; border-color: #8a6d2f; color: #f5c56b; }
+.lib-badge.is-rejected { border-color: #8a3b3b; color: #f87171; }
+.lib-note { margin: 8px 0 0; font-size: 12px; color: #f5c56b; }
+.lib-note.is-error { color: #f87171; }
+.lib-muted { font-size: 12px; color: #93a0b5; margin: 6px 0; }
+.lib-body { margin-top: 12px; border-top: 1px solid #1d2836; padding-top: 10px; }
+.lib-body h4 { margin: 12px 0 4px; font-size: 12px; color: #93a0b5; text-transform: uppercase; letter-spacing: 0.03em; }
+.lib-body ul, .lib-body ol { margin: 0; padding-left: 18px; font-size: 12.5px; color: #c6d0e0; }
+.lib-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.lib-pre { margin: 4px 0 0; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #0e1219; border: 1px solid #242f40; border-radius: 8px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #c6d0e0; }
+.lib-compare { display: grid; gap: 8px; margin-top: 8px; }
+.lib-diff-row { margin-top: 6px; }
+
+@media (max-width: 720px) {
+  .lib-card-head { flex-wrap: wrap; }
+  .lib-card-actions { flex-direction: row; width: 100%; }
+  .lib-card-actions .btn { flex: 1; min-height: 40px; }
+  .lib-cols { grid-template-columns: 1fr; }
+  .shape-opt { min-width: 44px; min-height: 44px; }
+}
