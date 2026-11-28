@@ -146,6 +146,8 @@ export interface UseWorkspace {
   renameSession: (id: string, name: string) => void;
   setSessionRetention: (id: string, retention: RetentionPolicy) => void;
   archiveSession: (id: string, archived: boolean) => void;
+  /** Starred sessions are never pruned by retention. */
+  starSession: (id: string, starred: boolean) => void;
   /** Re-ask the agents whose replies were cut off; the whole conversation is the context. */
   resumeSession: (id: string) => Promise<void>;
   resetWorkspace: () => void;
@@ -602,8 +604,9 @@ export function useWorkspace(): UseWorkspace {
   const newSession = useCallback((agentId: string, name?: string): string => {
     const id = uid('sess');
     setState((s) => {
-      if (!s.agents.some((a) => a.id === agentId)) return s;
-      const conv = newChatSession({ id: agentId }, id, Date.now(), name?.trim() || DEFAULT_SESSION_NAME);
+      const owner = s.agents.find((a) => a.id === agentId);
+      if (!owner) return s;
+      const conv = newChatSession(owner, id, Date.now(), name?.trim() || DEFAULT_SESSION_NAME);
       return {
         ...s,
         conversations: [conv, ...s.conversations],
@@ -630,6 +633,10 @@ export function useWorkspace(): UseWorkspace {
 
   const archiveSession = useCallback((id: string, archived: boolean) => {
     setState((s) => patchSession(s, id, { status: archived ? 'archived' : 'active' }));
+  }, []);
+
+  const starSession = useCallback((id: string, starred: boolean) => {
+    setState((s) => patchSession(s, id, { starred }));
   }, []);
 
   /** Insert an agent, plus its 1:1 thread, and optionally invite it into a room. */
@@ -904,6 +911,7 @@ export function useWorkspace(): UseWorkspace {
     renameSession,
     setSessionRetention,
     archiveSession,
+    starSession,
     resumeSession,
     resetWorkspace,
   };
