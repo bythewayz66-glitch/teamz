@@ -4,6 +4,7 @@ import { AgentAvatar, AvatarStack, StatusDot } from './Avatar';
 import { ChatIcon, CloseIcon, HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
 import { HomeIcon } from './HomeIcon';
 import { formatRelative } from '../lib/format';
+import { buildSections } from '../lib/sections';
 
 interface SidebarProps {
   /** True while the sidebar is an open overlay drawer (small screens). */
@@ -68,10 +69,109 @@ export function Sidebar({
       )
     : agents;
 
+  const [grouped, setGrouped] = useState(() => {
+    try {
+      return localStorage.getItem('teamz:sidebar-grouped') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleGrouped = () => {
+    const next = !grouped;
+    setGrouped(next);
+    try {
+      localStorage.setItem('teamz:sidebar-grouped', next ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  };
+  const toggleSection = (id: string, isOpen: boolean) =>
+    setCollapsed((prev) => {
+      if (isOpen === !prev.has(id)) return prev;
+      const n = new Set(prev);
+      if (isOpen) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const sections = buildSections(visibleAgents);
+
   const channels = conversations.filter((c) => c.kind === 'channel');
   const directs = conversations.filter((c) => c.kind === 'direct');
 
   const onlineCount = agents.filter((a) => a.status !== 'offline').length;
+
+  const renderAgent = (agent: Agent) => {
+    const direct = directs.find((c) => c.agentIds[0] === agent.id);
+    const isActive = direct && direct.id === activeConversationId;
+    const isTyping = Object.values(typing).some((ids) => ids.includes(agent.id));
+
+    return (
+      <li key={agent.id}>
+        <div className={`agent-row${isActive ? ' is-active' : ''}`}>
+          <button
+            className="agent-row-main"
+            onClick={() => onOpenAgentChat(agent.id)}
+            title={`Open chat with ${agent.name}`}
+          >
+            <AgentAvatar agent={agent} size={34} showStatus={agent.status} />
+            <span className="agent-row-text">
+              <span className="agent-name">
+                {agent.name}
+                {isTyping && <span className="typing-chip">typing…</span>}
+              </span>
+              <span className="agent-meta">
+                <StatusDot status={agent.status} size={6} />
+                {agent.status === 'online' ? 'Online' : agent.status === 'busy' ? 'Busy' : 'Offline'}
+                <span className="dot-sep">·</span>
+                <span className="agent-model">
+                  {agent.origin?.role ?? agent.model}
+                </span>
+              </span>
+              {agent.skills.length > 0 && (
+                <span className="agent-skills">
+                  {agent.skills.slice(0, 3).map((s) => (
+                    <span key={s.key} className="agent-skill">
+                      {s.label}
+                    </span>
+                  ))}
+                  {agent.skills.length > 3 && (
+                    <span className="agent-skill is-more">
+                      +{agent.skills.length - 3}
+                    </span>
+                  )}
+                </span>
+              )}
+            </span>
+          </button>
+          <button
+            className="agent-row-action"
+            onClick={() => onOpenAgentHome(agent.id)}
+            title={`${agent.name} home`}
+            aria-label={`${agent.name} home`}
+          >
+            <HomeIcon size={14} />
+          </button>
+          <button
+            className="agent-row-action"
+            onClick={() => onOpenAgentChat(agent.id)}
+            title={`Message ${agent.name}`}
+            aria-label={`Message ${agent.name}`}
+          >
+            <ChatIcon size={14} />
+          </button>
+          <button
+            className="agent-row-action"
+            onClick={() => onOpenAgentSettings(agent.id)}
+            title={`${agent.name} settings`}
+            aria-label={`${agent.name} settings`}
+          >
+            <SettingsIcon size={14} />
+          </button>
+        </div>
+      </li>
+    );
+  };
 
   return (
     <aside className="sidebar" id="teamz-sidebar" aria-label="Agents and conversations">
@@ -110,6 +210,9 @@ export function Sidebar({
         <section className="rail-section">
           <div className="rail-heading">
             <span>Agents</span>
+            <button className="mini-btn" onClick={toggleGrouped} aria-pressed={grouped} title="Group agents by programme">
+              {grouped ? 'By programme' : 'Flat list'}
+            </button>
             <button className="mini-btn" onClick={onNewAgent} title="Create a new agent">
               <PlusIcon size={13} />
               New Agent
@@ -117,77 +220,19 @@ export function Sidebar({
           </div>
 
           <ul className="agent-list">
-            {visibleAgents.map((agent) => {
-              const direct = directs.find((c) => c.agentIds[0] === agent.id);
-              const isActive = direct && direct.id === activeConversationId;
-              const isTyping = Object.values(typing).some((ids) => ids.includes(agent.id));
-
-              return (
-                <li key={agent.id}>
-                  <div className={`agent-row${isActive ? ' is-active' : ''}`}>
-                    <button
-                      className="agent-row-main"
-                      onClick={() => onOpenAgentChat(agent.id)}
-                      title={`Open chat with ${agent.name}`}
-                    >
-                      <AgentAvatar agent={agent} size={34} showStatus={agent.status} />
-                      <span className="agent-row-text">
-                        <span className="agent-name">
-                          {agent.name}
-                          {isTyping && <span className="typing-chip">typing…</span>}
-                        </span>
-                        <span className="agent-meta">
-                          <StatusDot status={agent.status} size={6} />
-                          {agent.status === 'online' ? 'Online' : agent.status === 'busy' ? 'Busy' : 'Offline'}
-                          <span className="dot-sep">·</span>
-                          <span className="agent-model">
-                            {agent.origin?.role ?? agent.model}
-                          </span>
-                        </span>
-                        {agent.skills.length > 0 && (
-                          <span className="agent-skills">
-                            {agent.skills.slice(0, 3).map((s) => (
-                              <span key={s.key} className="agent-skill">
-                                {s.label}
-                              </span>
-                            ))}
-                            {agent.skills.length > 3 && (
-                              <span className="agent-skill is-more">
-                                +{agent.skills.length - 3}
-                              </span>
-                            )}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                    <button
-                      className="agent-row-action"
-                      onClick={() => onOpenAgentHome(agent.id)}
-                      title={`${agent.name} home`}
-                      aria-label={`${agent.name} home`}
-                    >
-                      <HomeIcon size={14} />
-                    </button>
-                    <button
-                      className="agent-row-action"
-                      onClick={() => onOpenAgentChat(agent.id)}
-                      title={`Message ${agent.name}`}
-                      aria-label={`Message ${agent.name}`}
-                    >
-                      <ChatIcon size={14} />
-                    </button>
-                    <button
-                      className="agent-row-action"
-                      onClick={() => onOpenAgentSettings(agent.id)}
-                      title={`${agent.name} settings`}
-                      aria-label={`${agent.name} settings`}
-                    >
-                      <SettingsIcon size={14} />
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
+            {grouped
+              ? sections.map((sec) => (
+                  <li key={sec.id} className="prog-section">
+                    <details open={q ? true : !collapsed.has(sec.id)} onToggle={(e) => toggleSection(sec.id, (e.currentTarget as HTMLDetailsElement).open)}>
+                      <summary className="prog-head">
+                        <span>{sec.label}</span>
+                        <span className="count">{sec.agents.length}</span>
+                      </summary>
+                      <ul className="agent-list prog-list">{sec.agents.map(renderAgent)}</ul>
+                    </details>
+                  </li>
+                ))
+              : visibleAgents.map(renderAgent)}
             {visibleAgents.length === 0 && (
               <li className="rail-empty">No agents match “{query}”.</li>
             )}

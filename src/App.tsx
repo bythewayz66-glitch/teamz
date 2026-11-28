@@ -21,6 +21,9 @@ import { DreamNotices } from './components/DreamNotices';
 import { LibraryPanel } from './components/LibraryPanel';
 import { useLibrary } from './store/useLibrary';
 import { buildAgentHome } from './lib/agentHome';
+import { buildFleetGraph } from './lib/graph';
+import { FleetMap } from './components/FleetMap';
+import { useConnectionPolicy } from './store/useConnectionPolicy';
 import type { SearchAction } from './lib/search';
 
 export default function App() {
@@ -40,6 +43,7 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false);
   const [showJobs, setShowJobs] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
+  const [showFleetMap, setShowFleetMap] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   /** When set, the main column shows this agent's home instead of a conversation. */
@@ -47,6 +51,7 @@ export default function App() {
   const ops = useOperations();
   const dream = useDream(ws.state, ops.runner);
   const library = useLibrary();
+  const connectionPolicy = useConnectionPolicy();
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   /* Mobile drawer: Esc closes it, and focus returns to the hamburger when it
@@ -87,6 +92,19 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
+  const graph = useMemo(
+    () =>
+      buildFleetGraph({
+        agents: ws.state.agents,
+        messages: ws.state.messages,
+        runner: ops.runner,
+        local: { jobs: autonomy.jobs, triggers: autonomy.triggers, cronJobs: autonomy.cronJobs },
+        ledger: ops.ledger,
+        now: clock,
+      }),
+    [ws.state.agents, ws.state.messages, ops.runner, ops.ledger, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, clock],
+  );
+
   const homeAgent = homeAgentId ? ws.agentsById.get(homeAgentId) ?? null : null;
   const homeModel = useMemo(
     () =>
@@ -100,9 +118,11 @@ export default function App() {
             rate: ops.rate,
             now: clock,
             dream: dream.state,
+            graph,
+            policies: connectionPolicy.policies,
           })
         : null,
-    [homeAgent, ws.state, ops.runner, ops.ledger, ops.rate, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, dream.state, clock],
+    [homeAgent, ws.state, ops.runner, ops.ledger, ops.rate, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, dream.state, graph, connectionPolicy.policies, clock],
   );
 
   /* Any navigation that changes the active conversation leaves the agent home. */
@@ -207,6 +227,9 @@ export default function App() {
           <button className="btn ghost sm search-trigger" onClick={() => setShowPalette(true)} aria-label="Search agents, sessions and settings">
             <SearchIcon size={13} /> Search <kbd>Ctrl K</kbd>
           </button>
+          <button className="btn ghost sm" onClick={() => setShowFleetMap(true)}>
+            Fleet map
+          </button>
           <button className="btn ghost sm" onClick={() => setShowLibrary(true)}>
             Team Library
           </button>
@@ -251,6 +274,7 @@ export default function App() {
             onDreamEnable={() => dream.enable(homeModel.agent.id)}
             onDreamDisable={() => dream.disable(homeModel.agent.id)}
             onDreamCadence={(cron) => dream.setCadence(homeModel.agent.id, cron)}
+            onSetPolicy={(rowId, value) => connectionPolicy.setPolicy(homeModel.agent.id, rowId, value)}
           />
         ) : (
           <>
@@ -370,6 +394,17 @@ export default function App() {
         onClose={() => setShowPalette(false)}
         state={ws.state}
         onAction={onSearchAction}
+      />
+
+      <FleetMap
+        open={showFleetMap}
+        onClose={() => setShowFleetMap(false)}
+        graph={graph}
+        agents={ws.state.agents}
+        onOpenAgentHome={(id) => {
+          setShowFleetMap(false);
+          openHome(id);
+        }}
       />
 
       <LibraryPanel

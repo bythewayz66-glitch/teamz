@@ -20,6 +20,8 @@ import {
   type UsageBucket,
   type UsageLedger,
 } from './usageLedger';
+import { buildConnectionRows, type ConnectionRow, type PolicyMap } from './connections';
+import type { FleetGraph } from './graph';
 import type { RunnerAgentSummary, RunnerChannelMessage, RunnerJobSummary } from '../api/runnerState';
 import {
   DREAM_CADENCES,
@@ -206,6 +208,8 @@ export interface AgentHomeModel {
   skills: HomeSkill[];
   tools: Array<{ id: string; label: string; description: string }>;
   connections: Array<{ label: string; detail: string }>;
+  /** What this agent can reach outside Teamz, each with its declared policy and whether it is enforced. */
+  reach: ConnectionRow[];
   recentRuns: HomeRun[];
   cost: HomeCost;
   warmth: { last: string; next: string };
@@ -470,6 +474,8 @@ export function buildAgentHome(input: {
   rate: CostRate | null;
   now: number;
   dream?: DreamState;
+  graph?: FleetGraph | null;
+  policies?: PolicyMap;
 }): AgentHomeModel {
   const { agent, state, runner, local, ledger, rate, now } = input;
   const dreamModel = buildHomeDream(agent.id, input.dream, runner, now);
@@ -548,6 +554,7 @@ export function buildAgentHome(input: {
     skills: [...deriveSkills(agent), ...(dreamModel.enabled ? [{ label: 'Dream — scheduled self-review', source: 'dream' as const }] : [])],
     tools,
     connections,
+    reach: buildConnectionRows({ agent, runner, graph: input.graph ?? null, policies: input.policies ?? {} }),
     recentRuns,
     cost,
     warmth: buildWarmth(lastMsg, runs, nextTrigger, interrupted, now),
