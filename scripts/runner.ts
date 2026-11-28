@@ -25,7 +25,7 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   dispatchPromptToAgent,
   executeAllowedCommand,
@@ -36,6 +36,13 @@ import {
   type RunnerState,
 } from './runner-lib';
 import { postJobUpdate } from './slack-poster';
+import {
+  findLostTick,
+  makeTelemetry,
+  readEventLines,
+  stallReasons,
+  type Telemetry,
+} from './runner-telemetry';
 
 interface CliOptions {
   statePath: string;
@@ -98,7 +105,37 @@ function makeLogger(logPath: string): (message: string) => void {
   };
 }
 
-async function runOneTick(statePath: string, log: (message: string) => void): Promise<RunnerState | null> {
+/** Live tick/dispatch bookkeeping the telemetry events and the stall watchdog share. */
+interface TickContext {
+  telemetry: Telemetry;
+  tick: number;
+  tickOpened: boolean;
+  tickStartedAtMs: number | null;
+  dispatchSeq: number;
+  inFlight: Map<number, { agent: string; startedAtMs: number }>;
+  lastCompletionMs: number | null;
+  lastWarningsKey: string;
+}
+
+async function runOneTick(
+  statePath: string,
+  log: (message: string) => void,
+  ctx: TickContext,
+): Promise<RunnerState | null> {
+  ctx.tick += 1;
+  ctx.tickOpened = false;
+  ctx.tickStartedAtMs = null;
+  const openTick = (state: { agents: unknown[]; jobs: unknown[]; cronJobs: unknown[] }): void => {
+    if (ctx.tickOpened) return;
+    ctx.tickOpened = true;
+    ctx.tickStartedAtMs = Date.now();
+    ctx.telemetry.emit('tick_start', {
+      tick: ctx.tick,
+      agents: state.agents.length,
+      jobs: state.jobs.length,
+      cronJobs: state.cronJobs.length,
+    });
+  };
   let loaded;
   try {
     loaded = loadRunnerState(statePath);
@@ -107,6 +144,11 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     return null;
   }
   for (const warning of loaded.warnings) log(`WARN ${warning}`);
+  const warningsKey = loaded.warnings.join('\n');
+  if (warningsKey !== ctx.lastWarningsKey) {
+    ctx.lastWarningsKey = warningsKey;
+    ctx.telemetry.emit('state_warnings', { count: loaded.warnings.length, warnings: loaded.warnings.slice(0, 20) });
+  }
   const { state, fired } = await processDue(loaded.state, new Date(), {
     // Provider ids from the agent endpoint's registry, for the
     // stranded-agent sweep (an agent whose provider is not in the
@@ -114,7 +156,30 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     // or unreadable registry: the sweep still catches agents with no
     // provider at all.
     providerIds: loadProviderIds(),
-    dispatchPrompt: (agent, prompt, channelId) => dispatchPromptToAgent(agent, prompt, channelId),
+    dispatchPrompt: async (agent, prompt, channelId) => {
+      openTick(loaded.state);
+      const id = (ctx.dispatchSeq += 1);
+      const startedAtMs = Date.now();
+      ctx.inFlight.set(id, { agent: agent.id, startedAtMs });
+      ctx.telemetry.emit('dispatch_start', { tick: ctx.tick, dispatch: id, agent: agent.id, channel: channelId });
+      try {
+        const reply = await dispatchPromptToAgent(agent, prompt, channelId);
+        ctx.lastCompletionMs = Date.now();
+        ctx.telemetry.emit('dispatch_end', {
+          tick: ctx.tick, dispatch: id, agent: agent.id, ok: true,
+          ms: ctx.lastCompletionMs - startedAtMs, replyChars: reply.length,
+        });
+        return reply;
+      } catch (err) {
+        ctx.telemetry.emit('dispatch_end', {
+          tick: ctx.tick, dispatch: id, agent: agent.id, ok: false,
+          ms: Date.now() - startedAtMs, error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+        });
+        throw err;
+      } finally {
+        ctx.inFlight.delete(id);
+      }
+    },
     executeCommand: (job, argv) => executeAllowedCommand(job, argv),
     log: (message) => log(`  ${message}`),
     rateLimitEvents: async () => readRateLimitEvents(),
@@ -163,6 +228,7 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
     // posting per completion (not batched at end of tick) means a tick
     // killed mid-flight by a restart still reports the work it did.
     onJobUpdate: (line) => {
+      ctx.telemetry.emit('job_update', { tick: ctx.tick, line: line.slice(0, 300) });
       void postJobUpdate(line, log);
     },
   });
@@ -171,8 +237,18 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
       saveRunnerState(statePath, state);
     } catch (err) {
       log(`ERROR saving state file ${statePath}: ${err instanceof Error ? err.message : String(err)}`);
+      ctx.telemetry.emit('state_save_failed', { tick: ctx.tick });
       return state;
     }
+  }
+  if (ctx.tickOpened) {
+    ctx.telemetry.emit('tick_end', {
+      tick: ctx.tick,
+      ms: Date.now() - (ctx.tickStartedAtMs ?? Date.now()),
+      fired: fired.length,
+      saved: fired.length > 0,
+    });
+    ctx.tickStartedAtMs = null;
   }
   return state;
 }
@@ -335,11 +411,33 @@ async function main(): Promise<number> {
     return 2;
   }
   const log = makeLogger(opts.logPath);
+  const eventsPath = process.env.RUNNER_EVENTS_PATH ?? join(dirname(opts.logPath), 'runner-events.jsonl');
+  const lost = findLostTick(readEventLines(eventsPath));
+  const telemetry = makeTelemetry(eventsPath, (m) => console.error(`[teamz-runner] ${m}`));
+  const bootMs = Date.now();
+  const ctx: TickContext = {
+    telemetry,
+    tick: 0,
+    tickOpened: false,
+    tickStartedAtMs: null,
+    dispatchSeq: 0,
+    inFlight: new Map(),
+    lastCompletionMs: null,
+    lastWarningsKey: '',
+  };
+  if (lost) {
+    log(
+      `WARN previous tick #${lost.tick} (started ${lost.startedAt}) never finished: ` +
+        `${lost.completedDispatches} completed and ${lost.failedDispatches} failed dispatches were lost with it (state is saved only at tick end)`,
+    );
+    telemetry.emit('lost_tick', { ...lost });
+  }
+  telemetry.emit('boot', { statePath: opts.statePath, intervalSec: opts.intervalMs / 1000, once: opts.once });
   log(
     `teamz-runner starting (state=${opts.statePath}, interval=${opts.intervalMs / 1000}s, once=${opts.once})`,
   );
 
-  const first = await runOneTick(opts.statePath, log);
+  const first = await runOneTick(opts.statePath, log, ctx);
   if (first === null) {
     log('first tick could not load state; will retry on the next tick');
     if (opts.once) return 1;
@@ -355,6 +453,7 @@ async function main(): Promise<number> {
     if (stopping) return;
     stopping = true;
     log('teamz-runner stopping (signal received)');
+    telemetry.emit('shutdown', { inFlightDispatches: ctx.inFlight.size, tickOpen: ctx.tickOpened });
     process.exit(0);
   };
   process.on('SIGINT', stop);
@@ -374,7 +473,7 @@ async function main(): Promise<number> {
       return;
     }
     tickInFlight = true;
-    void runOneTick(opts.statePath, log)
+    void runOneTick(opts.statePath, log, ctx)
       .catch((err) => {
         log(`ERROR in tick: ${err instanceof Error ? err.message : String(err)}`);
       })
@@ -382,6 +481,29 @@ async function main(): Promise<number> {
         tickInFlight = false;
       });
   }, opts.intervalMs);
+  // Stall watchdog: report a stall once when it starts and once when it
+  // clears, so the log shows how long the rhythm was actually stuck.
+  let activeStalls = new Set<string>();
+  const watchdog = setInterval(() => {
+    const now = stallReasons({
+      nowMs: Date.now(),
+      bootMs,
+      inFlight: [...ctx.inFlight.values()],
+      tickStartedAtMs: ctx.tickStartedAtMs,
+      lastCompletionMs: ctx.lastCompletionMs,
+    });
+    const next = new Set(now);
+    for (const r of next) {
+      if (!activeStalls.has(r)) {
+        log(`WARN stall: ${r}`);
+        telemetry.emit('stall', { reason: r });
+      }
+    }
+    for (const r of activeStalls) {
+      if (!next.has(r)) telemetry.emit('stall_cleared', { reason: r });
+    }
+    activeStalls = next;
+  }, 60_000);
   // The interval keeps the process alive; the signal handlers below resolve
   // the wait, which clears it and lets main() return.
   await new Promise<void>((resolve) => {
@@ -389,6 +511,7 @@ async function main(): Promise<number> {
     process.on('SIGTERM', resolve);
   });
   clearInterval(timer);
+  clearInterval(watchdog);
   log('teamz-runner stopped');
   return 0;
 }
