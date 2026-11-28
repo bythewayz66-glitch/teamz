@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation, Message, MessageFilter } from '../types';
 import { AgentAvatar, StatusDot } from './Avatar';
 import { RichText } from './RichText';
+import { FirstJobCard } from './FirstJobCard';
 import { MentionAutocomplete } from './MentionAutocomplete';
 import {
   ChatIcon,
@@ -486,7 +487,11 @@ export function ChatPane({
             </p>
           </div>
 
-          {messages.length === 0 && (
+          {messages.length === 0 && conversation.session?.intro && (
+            <FirstJobCard intro={conversation.session.intro} onRun={onSend} />
+          )}
+
+          {messages.length === 0 && !conversation.session?.intro && (
             <div className="empty-thread">
               <p>No messages yet — say hello to start the thread.</p>
               <div className="suggestion-row">
