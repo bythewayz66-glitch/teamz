@@ -30,13 +30,13 @@ import {
   dispatchPromptToAgent,
   executeAllowedCommand,
   loadRunnerState,
-  processDue,
-  reapOrphansOnDisk,
   saveRunnerState,
   type RateLimitEvent,
   type RunnerState,
 } from './runner-lib';
 import { postJobUpdate } from './slack-poster';
+import { processDueWithRhythm, reapOrphansOnDisk } from './runner-tick';
+import { assertNotCreditRefusal } from './runner-rhythm';
 import {
   findLostTick,
   makeTelemetry,
@@ -151,7 +151,7 @@ async function runOneTick(
     ctx.lastWarningsKey = warningsKey;
     ctx.telemetry.emit('state_warnings', { count: loaded.warnings.length, warnings: loaded.warnings.slice(0, 20) });
   }
-  const { state, fired } = await processDue(loaded.state, new Date(), {
+  const { state, fired } = await processDueWithRhythm(loaded.state, new Date(), {
     // Provider ids from the agent endpoint's registry, for the
     // stranded-agent sweep (an agent whose provider is not in the
     // registry cannot run, even though it never rate-limits). Missing
@@ -166,6 +166,7 @@ async function runOneTick(
       ctx.telemetry.emit('dispatch_start', { tick: ctx.tick, dispatch: id, agent: agent.id, channel: channelId });
       try {
         const reply = await dispatchPromptToAgent(agent, prompt, channelId);
+        assertNotCreditRefusal(agent.name, reply);
         ctx.lastCompletionMs = Date.now();
         ctx.telemetry.emit('dispatch_end', {
           tick: ctx.tick, dispatch: id, agent: agent.id, ok: true,
