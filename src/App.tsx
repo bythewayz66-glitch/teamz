@@ -18,6 +18,8 @@ import { SessionBar } from './components/SessionBar';
 import { useOperations } from './store/useOperations';
 import { useDream } from './store/useDream';
 import { DreamNotices } from './components/DreamNotices';
+import { LibraryPanel } from './components/LibraryPanel';
+import { useLibrary } from './store/useLibrary';
 import { buildAgentHome } from './lib/agentHome';
 import type { SearchAction } from './lib/search';
 
@@ -37,12 +39,14 @@ export default function App() {
   const [showMembers, setShowMembers] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [showJobs, setShowJobs] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   /** When set, the main column shows this agent's home instead of a conversation. */
   const [homeAgentId, setHomeAgentId] = useState<string | null>(null);
   const ops = useOperations();
   const dream = useDream(ws.state, ops.runner);
+  const library = useLibrary();
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   /* Mobile drawer: Esc closes it, and focus returns to the hamburger when it
@@ -202,6 +206,9 @@ export default function App() {
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '10px 14px 0' }}>
           <button className="btn ghost sm search-trigger" onClick={() => setShowPalette(true)} aria-label="Search agents, sessions and settings">
             <SearchIcon size={13} /> Search <kbd>Ctrl K</kbd>
+          </button>
+          <button className="btn ghost sm" onClick={() => setShowLibrary(true)}>
+            Team Library
           </button>
           <button className="btn ghost sm" onClick={() => setShowJobs(true)}>
             Jobs &amp; Scheduler
@@ -363,6 +370,22 @@ export default function App() {
         onClose={() => setShowPalette(false)}
         state={ws.state}
         onAction={onSearchAction}
+      />
+
+      <LibraryPanel
+        open={showLibrary}
+        onClose={() => setShowLibrary(false)}
+        library={library}
+        agents={ws.state.agents}
+        onCreate={(t) => {
+          const r = ws.createAgentFromLibrary(t);
+          if (r.ok) {
+            setShowLibrary(false);
+            setHomeAgentId(null);
+            setSidebarOpen(false);
+          }
+          return r.ok ? { ok: true } : r;
+        }}
       />
 
       <JobsPanel
