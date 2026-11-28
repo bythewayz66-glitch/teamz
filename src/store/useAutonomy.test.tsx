@@ -12,7 +12,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { act } from 'react-dom/test-utils';
+import { act } from 'react';
 import { useAutonomy, AUTONOMY_STORAGE_KEY, type UseAutonomy } from './useAutonomy';
 import type { Agent, Conversation, Message, WorkspaceState } from '../types';
 import type { UseWorkspace } from './useWorkspace';
