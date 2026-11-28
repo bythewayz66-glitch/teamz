@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Agent, Conversation } from '../types';
 import { AgentAvatar, AvatarStack, StatusDot } from './Avatar';
 import { ChatIcon, CloseIcon, HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
+import { HomeIcon } from './HomeIcon';
 import { formatRelative } from '../lib/format';
 
 interface SidebarProps {
@@ -20,6 +21,7 @@ interface SidebarProps {
   onNewChannel: () => void;
   onOpenAgentSettings: (agentId: string) => void;
   onOpenAgentChat: (agentId: string) => void;
+  onOpenAgentHome: (agentId: string) => void;
   onOpenWorkspaceInfo: () => void;
 }
 
@@ -37,6 +39,7 @@ export function Sidebar({
   onNewChannel,
   onOpenAgentSettings,
   onOpenAgentChat,
+  onOpenAgentHome,
   onOpenWorkspaceInfo,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
@@ -156,6 +159,14 @@ export function Sidebar({
                           </span>
                         )}
                       </span>
+                    </button>
+                    <button
+                      className="agent-row-action"
+                      onClick={() => onOpenAgentHome(agent.id)}
+                      title={`${agent.name} home`}
+                      aria-label={`${agent.name} home`}
+                    >
+                      <HomeIcon size={14} />
                     </button>
                     <button
                       className="agent-row-action"
