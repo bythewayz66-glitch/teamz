@@ -473,7 +473,6 @@ export default function App() {
         autonomy={autonomy}
         agents={ws.state.agents}
         conversations={ws.state.conversations}
-        onOpenAgentHome={(id) => openHome(id)}
         onOpenConversation={(id) => openSession(id)}
       />
     </div>
