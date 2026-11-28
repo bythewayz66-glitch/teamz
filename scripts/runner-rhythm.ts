@@ -3,7 +3,7 @@
  *
  * Phase 0 of the overhaul roadmap: end silent failure. Everything here is a
  * pure function over runner state (no I/O, no clock, no timers) so each rule
- * can be proved by a deterministic test; runner-lib.ts calls them from
+ * can be proved by a deterministic test; runner-tick.ts applies them around
  * processDue and the live runner reports their events to the telemetry log.
  */
 
