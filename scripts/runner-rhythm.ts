@@ -188,6 +188,13 @@ export function isCreditRefusalReply(text: unknown): boolean {
   return CREDIT_REFUSAL.some((re) => re.test(t));
 }
 
+/** Throw when a reply is a provider's out-of-credits refusal, so the dispatch is recorded as failed. */
+export function assertNotCreditRefusal(agentName: string, reply: string): void {
+  if (isCreditRefusalReply(reply)) {
+    throw new Error(`${agentName}: provider refused as a reply (402 out of credits) — ${reply.trim().slice(0, 200)}`);
+  }
+}
+
 /** A rate-limit event's error says credits, not just a transient 429. */
 export function isCreditExhaustion(error: string): boolean {
   return /\b402\b|credit|top[- ]?up|quota|insufficient/i.test(error);
@@ -225,4 +232,25 @@ export function expireStaleBackoff<B extends { nextAllowedTs: number }>(
     }
   }
   return dropped;
+}
+
+/**
+ * Rewrite the provider status in a rate-limit rescue prompt so providers that
+ * just reported out of credits are listed as limited, never healthy, and named
+ * in a "never reassign" sentence. If the status line is not in the expected
+ * shape the sentence alone is appended: the warning is never dropped.
+ */
+export function markOutOfCredits(prompt: string, outOfCredits: Set<string>): string {
+  if (outOfCredits.size === 0) return prompt;
+  const list = (s: string): string[] => s.split(',').map((x) => x.trim()).filter((x) => x && x !== 'none');
+  const names = [...outOfCredits];
+  const re = /(Healthy right now \(not rate-limited\): )(.*?)( Rate-limited right now: )(.*?)\.( |$)/;
+  const m = re.exec(prompt);
+  let out = prompt;
+  if (m) {
+    const healthy = list(m[2]).filter((p) => !outOfCredits.has(p));
+    const limited = [...new Set([...list(m[4]), ...names.filter((n) => list(m[2]).includes(n) || list(m[4]).includes(n))])];
+    out = prompt.replace(re, `$1${healthy.join(', ') || 'none'}$3${limited.join(', ') || 'none'}.$5`);
+  }
+  return `${out} OUT OF CREDITS (recent 402s) — never reassign anyone to: ${names.join(', ')}.`;
 }
