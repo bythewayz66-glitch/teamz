@@ -88,6 +88,8 @@ export interface Agent {
   lastPingAt?: number;
   lastPingOk?: boolean;
   lastPingMessage?: string;
+  /** Default retention for this agent's new sessions (Gamut's per-agent "Session Auto-Delete"). */
+  sessionRetention?: RetentionPolicy;
   createdAt: number;
 }
 
@@ -119,6 +121,8 @@ export interface SessionMeta {
   agentId?: string;
   status: SessionStatus;
   retention: RetentionPolicy;
+  /** Starred sessions are never pruned by retention. */
+  starred?: boolean;
   updatedAt: number;
   /** Set when a reply was cut off; cleared on resume. */
   interruptedAt?: number;
