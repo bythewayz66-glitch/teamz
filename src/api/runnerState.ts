@@ -41,7 +41,10 @@ export interface RunnerAgentSummary {
   id: string;
   name: string;
   model?: string;
+  provider?: string;
   endpointUrl?: string;
+  /** First sentence of the agent's instructions; absent on older endpoints. */
+  role?: string;
 }
 
 /**

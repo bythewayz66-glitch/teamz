@@ -7,7 +7,8 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { fetchRunnerState, fetchUsageDay } from '../api/runnerState';
+import { fetchRunnerState } from '../api/runnerState';
+import { fetchUsageDay } from '../api/usage';
 import type { RunnerSnapshot } from '../lib/agentHome';
 import {
   EMPTY_LEDGER,
