@@ -3,6 +3,7 @@ import { timeAgo, timeUntil } from '../lib/agentHome';
 import { AgentAvatar } from './Avatar';
 import { PlusIcon, SettingsIcon } from './Icons';
 import { DreamCard } from './DreamCard';
+import { POLICY_LABEL, type ConnectionRow, type PolicyValue } from '../lib/connections';
 
 interface Props {
   home: AgentHomeModel;
@@ -19,6 +20,7 @@ interface Props {
   onDreamEnable: () => void;
   onDreamDisable: () => void;
   onDreamCadence: (cron: string) => void;
+  onSetPolicy: (rowId: ConnectionRow['id'], value: PolicyValue) => void;
 }
 
 const KIND_LABEL: Record<HomeSession['kind'], string> = { chat: 'Chat', work: 'Work', room: 'Room' };
@@ -38,6 +40,7 @@ export function AgentHome({
   onDreamEnable,
   onDreamDisable,
   onDreamCadence,
+  onSetPolicy,
 }: Props) {
   const { agent } = home;
   const interrupted = home.sessions.find((s) => s.status === 'interrupted');
@@ -164,8 +167,38 @@ export function AgentHome({
             )}
           </section>
 
-          <section className="home-card" aria-labelledby="h-conn">
-            <h2 id="h-conn">Connections</h2>
+          <section className="home-card home-card-wide" aria-labelledby="h-conn">
+            <h2 id="h-conn">Connections <span className="count">{home.reach.filter((r) => r.state === 'in-use' || r.state === 'available').length}</span></h2>
+            <p className="home-foot">What this agent can reach outside Teamz. A declared policy is only protection where the row says it is enforced.</p>
+            <ul className="reach-list">
+              {home.reach.map((r) => (
+                <li key={r.id} className={`reach-row is-${r.state}`}>
+                  <div className="reach-top">
+                    <strong>{r.label}</strong>
+                    <span className={`reach-state is-${r.state}`}>{r.stateLabel}</span>
+                    {r.policy !== null &&
+                      (r.editable ? (
+                        <label className="reach-policy">
+                          <span className="sr-only">{r.label} policy</span>
+                          <select value={r.policy} onChange={(e) => onSetPolicy(r.id, e.target.value as PolicyValue)}>
+                            {(Object.keys(POLICY_LABEL) as PolicyValue[]).map((v) => (
+                              <option key={v} value={v}>{POLICY_LABEL[v]}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : (
+                        <span className="reach-policy-fixed">{POLICY_LABEL[r.policy]}</span>
+                      ))}
+                    {r.enforcement && <span className={`reach-enf is-${r.enforcement}`}>{r.enforcement === 'enforced' ? 'Enforced' : 'Not enforced'}</span>}
+                  </div>
+                  <p className="reach-detail">{r.detail}</p>
+                  {r.enforcementNote && <p className="reach-note">{r.enforcementNote}</p>}
+                  {r.calls !== null && (
+                    <p className="reach-note">{r.calls} call{r.calls === 1 ? '' : 's'} in 14 days{r.lastAt ? `, last ${timeAgo(r.lastAt, now)}` : ''}.</p>
+                  )}
+                </li>
+              ))}
+            </ul>
             <ul className="home-list">
               {home.connections.map((c) => (
                 <li key={c.label} className="home-line">
