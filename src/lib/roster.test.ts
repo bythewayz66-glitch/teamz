@@ -48,26 +48,22 @@ describe('roster — runner-agents.json is the single source of truth', () => {
     }
   });
 
-  it('every agent points at the teamz-agent endpoint; agents without a provider use the anonymous-tier model', () => {
+  it('every agent points at the teamz-agent endpoint, on DeepInfra', () => {
     for (const a of roster) {
       expect(a.endpointUrl).toBe('http://127.0.0.1:8897/chat');
       expect(typeof a.systemPrompt).toBe('string');
       expect(a.systemPrompt.length).toBeGreaterThan(50);
-      if (a.provider) {
-        // A provider-carrying agent names its own model (e.g. Triage on Gemini).
-        expect(['kilo', 'gemini', 'groq', 'pollinations']).toContain(a.provider);
-        expect(typeof a.model).toBe('string');
-        expect(a.model.length).toBeGreaterThan(0);
-      } else {
-        expect(a.model).toBe('openai-fast');
-      }
+      // All agents are on DeepInfra (Jesse, Nov 28, 2026): Pollinations
+      // never worked and the free tier 413s on long prompts.
+      expect(a.provider).toBe('deepinfra');
+      expect(a.model).toBe('deepseek-ai/DeepSeek-V4-Flash-0731');
     }
   });
 
-  it('the Triage Agent is on Gemini and answers with a reassignment, never bypassing review', () => {
+  it('the Triage Agent is on DeepInfra and answers with a reassignment, never bypassing review', () => {
     const triage = roster.find((a: { id: string }) => a.id === 'agent-triage');
-    expect(triage.provider).toBe('gemini');
-    expect(triage.model).toBe('gemini-3.5-flash-lite');
+    expect(triage.provider).toBe('deepinfra');
+    expect(triage.model).toBe('deepseek-ai/DeepSeek-V4-Flash-0731');
     expect(triage.systemPrompt).toContain('REASSIGN: @<agent-id>');
     expect(triage.systemPrompt).toContain('never bypass review');
   });
@@ -207,6 +203,15 @@ describe('build-runner-state.mjs — the automation inventory', () => {
     try {
       const inPath = join(dir, 'in.json');
       const outPath = join(dir, 'out.json');
+      const rosterPath = join(dir, 'roster.json');
+      // All 32 roster agents now carry deepinfra (Jesse, Nov 28, 2026), so
+      // no roster agent can exercise the "roster has none" branch as-is.
+      // Exercise it with a roster copy where one agent has no provider.
+      const rosterCopy = JSON.parse(readFileSync(join(ROOT, 'runner-agents.json'), 'utf-8'));
+      const qaEntry = rosterCopy.find((a: { id: string }) => a.id === 'agent-qa-tester');
+      delete qaEntry.provider;
+      qaEntry.model = 'openai-fast';
+      writeFileSync(rosterPath, JSON.stringify(rosterCopy));
       writeFileSync(
         inPath,
         JSON.stringify({
@@ -220,7 +225,7 @@ describe('build-runner-state.mjs — the automation inventory', () => {
       );
       execFileSync(
         'node',
-        [join(ROOT, 'scripts/build-runner-state.mjs'), '--agents', join(ROOT, 'runner-agents.json'), '--in', inPath, '--out', outPath],
+        [join(ROOT, 'scripts/build-runner-state.mjs'), '--agents', rosterPath, '--in', inPath, '--out', outPath],
         { encoding: 'utf-8' },
       );
       const state = JSON.parse(readFileSync(outPath, 'utf-8'));

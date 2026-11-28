@@ -158,7 +158,7 @@ function browserEndpointUrl(serverUrl: string): string {
  * endpoint, model). Local-only fields (emoji, accent, status, prompt,
  * skills) are left alone, and agents that only exist locally are kept.
  */
-function mergeRunnerAgents(prev: WorkspaceState, serverAgents: RunnerAgentSummary[]): WorkspaceState {
+export function mergeRunnerAgents(prev: WorkspaceState, serverAgents: RunnerAgentSummary[]): WorkspaceState {
   if (serverAgents.length === 0) return prev;
   let changed = false;
   const byId = new Map(prev.agents.map((a) => [a.id, a]));
@@ -194,7 +194,27 @@ function mergeRunnerAgents(prev: WorkspaceState, serverAgents: RunnerAgentSummar
       changed = true;
     }
   }
-  return changed ? { ...prev, agents } : prev;
+  // The Build Room must hold the whole live fleet. The Orchestrator assigns
+  // work there by @mention, and an agent that is not in the room never sees
+  // the assignment in the UI. The seed only lists 35 agents; the runner
+  // carries 106 — Jesse had to join them all by hand (Nov 28, 2026).
+  // Bring the room up to the full fleet on every sync.
+  const roomIdx = prev.conversations.findIndex(
+    (c) => c.id === 'conv-build-room' && c.kind === 'channel',
+  );
+  let conversations = prev.conversations;
+  if (roomIdx >= 0) {
+    const room = prev.conversations[roomIdx];
+    const missing = serverAgents
+      .map((s) => s.id)
+      .filter((id) => id && !room.agentIds.includes(id));
+    if (missing.length > 0) {
+      conversations = [...prev.conversations];
+      conversations[roomIdx] = { ...room, agentIds: [...room.agentIds, ...missing] };
+      changed = true;
+    }
+  }
+  return changed ? { ...prev, agents, conversations } : prev;
 }
 
 export function useWorkspace(): UseWorkspace {

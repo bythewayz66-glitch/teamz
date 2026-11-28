@@ -1599,7 +1599,7 @@ const TOOL_DEFS = [
   },
 ];
 
-const TOOL_NAMES = TOOL_DEFS.map((d) => d.name);
+export const TOOL_NAMES = TOOL_DEFS.map((d) => d.name);
 
 /**
  * Aliases for the names the model invents. GPT-OSS shortens tool names
@@ -2195,7 +2195,7 @@ export function recordUsage({ provider, agentId, usage }) {
  * contract stays as the fallback: the model sometimes answers in prose
  * with a JSON blob instead, and the loop parses that the same way.
  */
-const OPENAI_TOOLS = [
+export const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
@@ -2297,7 +2297,113 @@ const OPENAI_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'repo_read',
+      description:
+        'Read a file in the mem20 repo (/opt/mem20) — or the excerpt around a search string in it. Returns at most ~1000 chars. Never reads secrets or git internals. Args is a JSON object with file (repo-relative path) and optional find (sentence to centre the excerpt on).',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'The JSON object for the read' },
+        },
+        required: ['args'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'stage_patch',
+      description:
+        'Stage ONE small patch for your job\'s implement stage: the smallest verified correction to one repo file. Args is a JSON object with jobId (from the runner context in your prompt), file (repo-relative path), oldText (exact text, must occur exactly once), newText, message (one-line commit message). Stages the patch for the governed push — it does NOT edit the repo. Refused for workflow files, requirements.txt, and secrets, and unless your job is on its implement stage.',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'The JSON object for the patch' },
+        },
+        required: ['args'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_url',
+      description:
+        'Fetch a public URL and return its text (HTML stripped to text, ~8000 chars). Use it to read the LIVE site — e.g. mem20.com — instead of guessing from the repo copy. Public http(s) only. Args is a JSON object with url.',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'The JSON object for the fetch' },
+        },
+        required: ['args'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'room_read',
+      description:
+        'Read the Build Room (conv-build-room) from the runner state: the work that needs assigning and the agents available. The Orchestrator\'s triage tool — call it first on every triage run. Args is a JSON object (all optional) with what ("unassigned" by default: triage + gate items and recent messages; "room": recent messages; "agents": agents matching "role") and, for "agents", role (a keyword, e.g. "backend").',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'The JSON object for the room read' },
+        },
+        required: ['args'],
+      },
+    },
+  },
 ];
+
+// Free Pollinations Classic API prompt cap (Jesse, Nov 28, 2026): the
+// free tier rejects prompts over 16,000 characters (messages + tools)
+// with a 413, and a 413 kills the whole dispatch — which the runner then
+// retries, burning a full set of calls for nothing. That is a large part
+// of why the fleet has been burning calls for two days. Enforce a
+// 10,000-character cap so a long room_read dump can never 413. The
+// system prompt and the most recent message are always kept; older middle
+// messages are dropped (oldest first) and any single over-long message is
+// truncated in place with a marker.
+const FREE_PROMPT_CHAR_LIMIT = 10_000;
+export { FREE_PROMPT_CHAR_LIMIT };
+
+export function truncateForFreeTier(messages) {
+  const toolsChars = JSON.stringify(OPENAI_TOOLS).length;
+  const budget = FREE_PROMPT_CHAR_LIMIT - toolsChars;
+  // Measure the prompt the way the API and the tests do: the JSON of the
+  // whole messages array (brackets + commas included). Summing the
+  // individual message JSONs undercounts by (n - 1) commas + 2 brackets,
+  // which is how a fitted prompt once came out 4 chars over the cap.
+  const sizeOf = (arr) => JSON.stringify(arr).length;
+  const before = sizeOf(messages) + toolsChars;
+  if (before <= FREE_PROMPT_CHAR_LIMIT) return messages;
+  const kept = messages.map((m) => ({ ...m }));
+  // A single message whose content alone busts the budget gets cut down.
+  for (const m of kept) {
+    if (typeof m.content === 'string' && JSON.stringify(m).length > budget) {
+      m.content = m.content.slice(0, Math.max(0, budget - 200)) + '\n…[truncated to fit the free-API 10k prompt cap]';
+    }
+  }
+  // Drop the oldest middle messages (system first + last message stay)
+  // until the whole prompt fits.
+  let out = kept;
+  while (out.length > 2 && sizeOf(out) > budget) {
+    out = [out[0], ...out.slice(2)];
+  }
+  // If system + last alone still bust it, cut the last message's content.
+  let size = sizeOf(out);
+  if (size > budget && out.length > 1 && typeof out[out.length - 1].content === 'string') {
+    const last = out[out.length - 1];
+    last.content = last.content.slice(0, Math.max(0, last.content.length - (size - budget) - 200)) + '\n…[truncated to fit the free-API 10k prompt cap]';
+    size = sizeOf(out);
+  }
+  log(`free-API prompt cap: ${before} chars over the 10k limit — truncated to ${size + toolsChars} chars (system prompt + latest kept)`);
+  return out;
+}
 
 /**
  * One chat-completions call. `deadline` is the absolute timestamp the
@@ -2307,6 +2413,9 @@ const OPENAI_TOOLS = [
  * means (first turn: real failure; later: observation + fallback).
  */
 async function callPollinations(openAiMessages, deadline) {
+  // Enforce the free-API prompt cap before any attempt: a 413 wastes the
+  // whole dispatch and the runner retries it, burning calls for nothing.
+  openAiMessages = truncateForFreeTier(openAiMessages);
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const remaining = deadline - Date.now();

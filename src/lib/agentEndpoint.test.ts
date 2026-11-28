@@ -750,3 +750,57 @@ describe('native tool calls (Nov 27, 2026 — nemotron Triage could not repo_rea
     }
   }, 15_000);
 });
+
+describe('free-API prompt cap (Jesse, Nov 28, 2026 — Pollinations 413, fleet-wide)', () => {
+  const { truncateForFreeTier, FREE_PROMPT_CHAR_LIMIT, OPENAI_TOOLS } = endpoint;
+  const toolsChars = JSON.stringify(OPENAI_TOOLS).length;
+  const totalChars = (msgs: unknown[]) =>
+    JSON.stringify(msgs).length + toolsChars;
+
+  it('caps a long room_read-heavy transcript under 10k chars total', () => {
+    const roomDump = 'x'.repeat(9000);
+    const msgs = [
+      { role: 'system', content: 'You are Triage Agent. Triage the room.' },
+      { role: 'user', content: 'Triage the Build Room.' },
+      { role: 'assistant', content: '{"tool":"room_read","args":{"what":"unassigned"}}' },
+      { role: 'tool', content: roomDump },
+      { role: 'assistant', content: '{"tool":"room_read","args":{"what":"agents","role":"backend"}}' },
+      { role: 'tool', content: 'y'.repeat(6000) },
+      { role: 'user', content: 'Assign the denied work now.' },
+    ];
+    expect(totalChars(msgs)).toBeGreaterThan(FREE_PROMPT_CHAR_LIMIT);
+    const fitted = truncateForFreeTier(msgs);
+    expect(totalChars(fitted)).toBeLessThanOrEqual(FREE_PROMPT_CHAR_LIMIT);
+    // System prompt and the latest message survive.
+    expect(fitted[0]).toEqual(msgs[0]);
+    expect(fitted[fitted.length - 1]).toEqual(msgs[msgs.length - 1]);
+    // The huge room dump was cut, not passed through whole.
+    expect(JSON.stringify(fitted)).not.toContain(roomDump);
+  });
+
+  it('leaves a short prompt untouched', () => {
+    const msgs = [
+      { role: 'system', content: 'You are a helper.' },
+      { role: 'user', content: 'Hi.' },
+    ];
+    expect(truncateForFreeTier(msgs)).toBe(msgs);
+  });
+});
+
+describe('tool declarations (Jesse, Nov 28, 2026 — the Orchestrator was told to use room_read, but room_read was never declared to the model)', () => {
+  it('every implemented tool is declared in OPENAI_TOOLS, so the model can actually call it', () => {
+    const { TOOL_NAMES, OPENAI_TOOLS } = endpoint;
+    const declared = new Set(OPENAI_TOOLS.map((t: { function: { name: string } }) => t.function.name));
+    for (const name of TOOL_NAMES as string[]) {
+      expect(declared.has(name)).toBe(true);
+    }
+    // And nothing declared is unimplemented.
+    for (const name of declared) {
+      expect((TOOL_NAMES as string[])).toContain(name);
+    }
+    expect(declared.has('room_read')).toBe(true);
+    expect(declared.has('repo_read')).toBe(true);
+    expect(declared.has('stage_patch')).toBe(true);
+    expect(declared.has('fetch_url')).toBe(true);
+  });
+});
