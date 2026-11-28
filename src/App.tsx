@@ -16,6 +16,8 @@ import { CommandPalette } from './components/CommandPalette';
 import { AgentHome } from './components/AgentHome';
 import { SessionBar } from './components/SessionBar';
 import { useOperations } from './store/useOperations';
+import { useDream } from './store/useDream';
+import { DreamNotices } from './components/DreamNotices';
 import { buildAgentHome } from './lib/agentHome';
 import type { SearchAction } from './lib/search';
 
@@ -40,6 +42,7 @@ export default function App() {
   /** When set, the main column shows this agent's home instead of a conversation. */
   const [homeAgentId, setHomeAgentId] = useState<string | null>(null);
   const ops = useOperations();
+  const dream = useDream(ws.state, ops.runner);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   /* Mobile drawer: Esc closes it, and focus returns to the hamburger when it
@@ -92,9 +95,10 @@ export default function App() {
             ledger: ops.ledger,
             rate: ops.rate,
             now: clock,
+            dream: dream.state,
           })
         : null,
-    [homeAgent, ws.state, ops.runner, ops.ledger, ops.rate, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, clock],
+    [homeAgent, ws.state, ops.runner, ops.ledger, ops.rate, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, dream.state, clock],
   );
 
   /* Any navigation that changes the active conversation leaves the agent home. */
@@ -207,6 +211,18 @@ export default function App() {
           </button>
         </div>
 
+        <DreamNotices
+          notices={dream.state.notices}
+          reports={dream.state.reports}
+          agentsById={ws.agentsById}
+          now={clock}
+          onOpen={(agentId) => {
+            dream.markRead(agentId);
+            openHome(agentId);
+          }}
+          onDismiss={(agentId) => dream.markRead(agentId)}
+        />
+
         {homeModel ? (
           <AgentHome
             home={homeModel}
@@ -224,6 +240,10 @@ export default function App() {
             }}
             onOpenSettings={() => setSettingsAgentId(homeModel.agent.id)}
             onOpenCostRate={() => setShowInfo(true)}
+            dreamRunning={dream.running.includes(homeModel.agent.id)}
+            onDreamEnable={() => dream.enable(homeModel.agent.id)}
+            onDreamDisable={() => dream.disable(homeModel.agent.id)}
+            onDreamCadence={(cron) => dream.setCadence(homeModel.agent.id, cron)}
           />
         ) : (
           <>
