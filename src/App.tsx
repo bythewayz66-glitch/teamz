@@ -179,6 +179,12 @@ export default function App() {
           setSidebarOpen(false);
         }}
         onOpenAgentHome={openHome}
+        onNewSession={(id) => {
+          ws.newSession(id);
+          setHomeAgentId(null);
+          setSidebarOpen(false);
+        }}
+        onOpenSession={openSession}
         onOpenWorkspaceInfo={() => setShowInfo(true)}
       />
 
@@ -224,6 +230,7 @@ export default function App() {
             }}
             onOpenSettings={() => setSettingsAgentId(homeModel.agent.id)}
             onOpenCostRate={() => setShowInfo(true)}
+            onSetDefaultRetention={(policy) => ws.updateAgent(homeModel.agent.id, { sessionRetention: policy })}
           />
         ) : (
           <>
@@ -238,6 +245,7 @@ export default function App() {
             onRename={(name) => ws.renameSession(ws.activeConversation!.id, name)}
             onRetention={(p) => ws.setSessionRetention(ws.activeConversation!.id, p)}
             onArchive={(a) => ws.archiveSession(ws.activeConversation!.id, a)}
+            onStar={(s) => ws.starSession(ws.activeConversation!.id, s)}
             onResume={() => void ws.resumeSession(ws.activeConversation!.id)}
             onOpenHome={
               ws.activeConversation.session.agentId

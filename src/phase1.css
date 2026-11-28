@@ -151,3 +151,31 @@ kbd {
   .palette-backdrop { padding-top: 6vh; }
   .search-trigger kbd { display: none; }
 }
+
+/* Follow-ups: sidebar sessions, session tools, star, run record */
+.agent-sessions-toggle {
+  background: transparent; border: 0; color: var(--text-mute); font: inherit; font-size: 11.5px;
+  padding: 0 0 4px 52px; cursor: pointer; text-align: left;
+}
+.agent-sessions-toggle:hover { color: var(--text); }
+.agent-sessions { list-style: none; margin: 0 0 6px; padding: 0 0 0 46px; display: flex; flex-direction: column; gap: 1px; }
+.agent-session {
+  display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left;
+  background: transparent; border: 0; color: var(--text-dim); font: inherit; font-size: 12px;
+  padding: 3px 8px; border-radius: 6px; cursor: pointer;
+}
+.agent-session span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-session small { color: var(--text-mute); flex-shrink: 0; }
+.agent-session:hover, .agent-session.is-active { background: var(--bg-hover); color: var(--text); }
+.agent-session.more { color: var(--accent); }
+.session-tools { display: flex; gap: 8px; margin-bottom: 10px; }
+.session-tools input, .session-tools select, .retention-default select {
+  background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 12.5px;
+}
+.session-tools input { flex: 1; min-width: 0; }
+.retention-default { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.retention-default label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-dim); }
+.star-btn { background: transparent; border: 0; color: var(--text-mute); font-size: 16px; cursor: pointer; padding: 0 4px; }
+.star-btn.is-on, .star-btn:hover { color: var(--amber); }
+.run-record { margin: 0 0 8px; font-size: 13px; color: var(--text); }
