@@ -2,18 +2,24 @@
 """push-mem20.py — the governed push step for the Teamz runner.
 
 Runs as root via sudo (teamz may run ONLY this file, NOPASSWD — see
-deploy/teamz-push-mem20.sudoers). It commits and pushes ONE staged patch
-to the mem20 repo on GitHub, and only when every check below passes:
+deploy/teamz-push-mem20.sudoers). It commits and pushes staged patches
+to the mem20 repo on GitHub, and only when every check below passes
+for each patch:
 
-  1. A pending patch is selected from /var/lib/teamz-runner/patches/:
-     zero -> NOTHING-TO-PUSH, exit 0; several may queue at once, and the
-     script pushes the first (filename order) whose job has a live
-     Reviewer approval for the upgrade stage. A patch with no approval
-     is not an error — it stays queued and the run reports
-     NOTHING-TO-PUSH. (Before Nov 27, 2026 the rule was "more than one
-     patch -> refuse", which blocked every push — including report jobs
-     with nothing to push — the moment a second patch was staged.)
-  2. The patch itself is valid: a well-formed job id, a repo-relative
+  1. Pending patches are taken from /var/lib/teamz-runner/patches/ in
+     filename order, up to MAX_BATCH_PATCHES (106) per invocation, and
+     processed one at a time: a patch whose job has no live Reviewer
+     approval for the upgrade stage is skipped (not an error — it stays
+     queued and the run reports NOTHING-TO-PUSH if nothing was ready).
+     A patch that fails validation, or any safety check, STOPS the
+     batch: patches already pushed stay pushed (each was verified on
+     its own), the failing patch is reported, and the rest stay queued.
+     (Before Nov 27, 2026 the rule was "more than one patch -> refuse",
+     which blocked every push the moment a second patch was staged;
+     Nov 27 fixed that to one patch per invocation. Nov 28, 2026
+     batches that to 106, so a queue of approved patches drains in one
+     run instead of one per runner invocation.)
+  2. Each patch itself is valid: a well-formed job id, a repo-relative
      path that stays inside /opt/mem20, and a one-line message.
      Blocked, always: .github/ and .git/ paths, requirements.txt (the
      starlette cap lives there — Jesse decides that one), anything under
@@ -26,15 +32,17 @@ to the mem20 repo on GitHub, and only when every check below passes:
      the approval is on disk by the time this script reads it.
   4. The repo is on branch main, the tree is clean, and HEAD equals
      origin/main (fetched first) — a moved remote means re-sync first.
+     Re-checked for EVERY patch in the batch, since each push moves HEAD.
   5. The patch applies cleanly: oldText occurs exactly once in the
      current file. The resulting diff touches exactly one file, changes
      at most 50 lines, deletes no files, and touches no blocked path.
-  6. The push itself is verified: ls-remote origin main must equal the
+  6. Each push itself is verified: ls-remote origin main must equal the
      new HEAD after pushing.
 
-Idempotent: if the patch's change is already the HEAD commit (same job
+Idempotent: if a patch's change is already the HEAD commit (same job
 id in the commit message), the script reports ALREADY-PUSHED, archives
-the patch, and exits 0 instead of failing the stage forever.
+the patch, and moves on to the next patch instead of failing the stage
+forever.
 
 The patch file is treated as untrusted input throughout: it is written
 by the teamz-owned endpoint, and this script runs as root. Nothing in
@@ -58,6 +66,7 @@ APPLIED_DIR = PATCH_DIR / "applied"
 STATE_PATH = Path("/var/lib/teamz-runner/state.json")
 PUSH_STAGE = "upgrade"
 MAX_DIFF_LINES = 50
+MAX_BATCH_PATCHES = 106
 MAX_OLD_TEXT_CHARS = 2000
 MAX_NEW_TEXT_CHARS = 5000
 MAX_MESSAGE_CHARS = 200
@@ -214,47 +223,14 @@ def archive_patch(patch_path, job_id):
     return dest
 
 
-def main():
-    try:
-        pending = load_pending_patches()
-    except RuntimeError as err:
-        return refuse(str(err))
-    if not pending:
-        out("NOTHING-TO-PUSH: no staged patch")
-        return 0
-    # Select the first pending patch whose job has a live Reviewer
-    # approval for the upgrade stage. A patch with no approval is not
-    # an error — it just is not ready to push, so the run reports
-    # NOTHING-TO-PUSH and the patch stays queued. This is what lets
-    # several patches queue at once (Nov 27, 2026 unstick job): the old
-    # "more than one patch -> refuse" rule blocked every push — including
-    # report jobs with nothing to push — the moment a second patch was
-    # staged. One patch is pushed per invocation, in filename order;
-    # every safety check below still applies to the selected patch.
-    # An invalid patch is skipped here but recorded: if nothing is
-    # selectable and a patch failed validation, refuse loudly instead
-    # of reporting NOTHING-TO-PUSH for a job that did stage a patch.
-    selected = None
-    approval_id = None
-    first_error = None
-    for patch_path, patch in pending:
-        try:
-            vals = validate_patch(patch)
-        except RuntimeError as err:
-            if first_error is None:
-                first_error = str(err)
-            continue
-        job_id = vals[0]
-        approval_id = find_live_approval(job_id)
-        if approval_id is not None:
-            selected = (patch_path, vals)
-            break
-    if selected is None:
-        if first_error is not None:
-            return refuse(first_error)
-        out("NOTHING-TO-PUSH: no staged patch has a live Reviewer approval")
-        return 0
-    patch_path, (job_id, rel, target, old_text, new_text, message) = selected
+def push_one(patch_path, vals, approval_id):
+    """Push ONE approved patch, with its own full verification (repo
+    preconditions re-checked here, since an earlier patch in the same
+    batch already moved HEAD; the diff guards; the push verification).
+    Returns 'pushed' or 'already-pushed'. Raises RuntimeError on any
+    failure — after restoring the tree, so a half-applied patch never
+    lingers for the next patch in the batch."""
+    job_id, rel, target, old_text, new_text, message = vals
     try:
 
         # Repo preconditions: main, clean tree, HEAD == origin/main.
@@ -283,7 +259,7 @@ def main():
                 if origin == head:
                     archive_patch(patch_path, job_id)
                     out(f"ALREADY-PUSHED: {head} {rel} (job {job_id}, approval {approval_id})")
-                    return 0
+                    return "already-pushed"
             raise RuntimeError(
                 f"oldText not found in {rel} and the change does not match the HEAD commit — refusing"
             )
@@ -343,7 +319,7 @@ def main():
             f"PUSHED {new_head} {rel} +{added_s}/-{removed_s} "
             f"origin/main={remote} approval={approval_id} job={job_id}"
         )
-        return 0
+        return "pushed"
     except RuntimeError as err:
         # A half-applied patch must never linger in the tree: restore it
         # so the next run (or a human) sees a clean repo.
@@ -352,9 +328,59 @@ def main():
                 git("checkout", "--", ".")
         except Exception:
             pass
-        return refuse(str(err))
+        raise
     except OSError as err:
-        return refuse(f"filesystem error: {err}")
+        raise RuntimeError(f"filesystem error: {err}")
+
+
+def main():
+    try:
+        pending = load_pending_patches()
+    except RuntimeError as err:
+        return refuse(str(err))
+    if not pending:
+        out("NOTHING-TO-PUSH: no staged patch")
+        return 0
+    # Batch (Nov 28, 2026): process up to MAX_BATCH_PATCHES pending
+    # patches in filename order, one at a time, each with its own
+    # verification in push_one. A patch whose job has no live Reviewer
+    # approval is not an error — it is not ready, so it is skipped and
+    # stays queued. The FIRST failure — an invalid patch, an unreadable
+    # runner state, or any failed check/push in push_one — STOPS the
+    # batch: patches already pushed stay pushed (each was verified on
+    # its own), the failing patch is named in the refusal, and the rest
+    # stay queued for a later run. Never refuse the whole batch up
+    # front just because several patches are pending.
+    batch = pending[:MAX_BATCH_PATCHES]
+    pushed = 0
+    skipped = 0
+    for patch_path, patch in batch:
+        try:
+            vals = validate_patch(patch)
+        except RuntimeError as err:
+            return refuse(f"{patch_path.name}: {err} (pushed {pushed} before stopping)")
+        job_id = vals[0]
+        try:
+            approval_id = find_live_approval(job_id)
+        except RuntimeError as err:
+            return refuse(f"{patch_path.name}: {err} (pushed {pushed} before stopping)")
+        if approval_id is None:
+            skipped += 1
+            continue
+        try:
+            push_one(patch_path, vals, approval_id)
+        except RuntimeError as err:
+            return refuse(f"{patch_path.name}: {err} (pushed {pushed} before stopping)")
+        pushed += 1
+    if pushed == 0:
+        out("NOTHING-TO-PUSH: no staged patch has a live Reviewer approval")
+        return 0
+    remaining = len(pending) - len(batch)
+    summary = f"BATCH DONE: pushed {pushed} patch(es), skipped {skipped} not-ready"
+    if remaining > 0:
+        summary += f", {remaining} more queued beyond the {MAX_BATCH_PATCHES}-patch batch cap"
+    out(summary)
+    return 0
 
 
 if __name__ == "__main__":
