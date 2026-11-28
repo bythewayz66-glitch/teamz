@@ -2543,7 +2543,13 @@ async function callGenericProvider(provider, openAiMessages, deadline) {
       if (reply) return { text: reply, usage: extractUsage(payload) };
       throw new Error(`${provider.id} returned an empty reply`);
     }
-    throw new Error(`${provider.id} ${res.status}: ${text.slice(0, 240)}`);
+    // Include the URL in the error: a 404 here usually means the registry's
+    // baseUrl is wrong (DeepInfra was registered as the API root
+    // https://api.deepinfra.com/v1 instead of .../v1/chat/completions,
+    // Nov 28, 2026 — every agent 404'd and the failure looked transient
+    // because direct tests used the right URL). Naming the URL makes that
+    // visible immediately instead of looking like a provider outage.
+    throw new Error(`${provider.id} ${res.status} at ${provider.baseUrl}: ${text.slice(0, 240)}`);
   } catch (err) {
     clearTimeout(timer);
     if (err instanceof DOMException && err.name === 'AbortError') {
