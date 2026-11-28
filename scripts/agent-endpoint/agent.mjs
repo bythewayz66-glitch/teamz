@@ -2192,16 +2192,55 @@ const OBJECT_ARG_TOOLS = new Set([
  * invents ({"expression": "17 * 23"}, {"query": "..."}). For a
  * single-string tool, pull out the one string the tool needs: a known
  * key first, else the first string value, else the raw JSON. For an
- * object-arg tool, return the raw arguments JSON unchanged — reducing
- * it to one string breaks the tool (Nov 27, 2026: nemotron's native
- * repo_read call {"file": "comics/the-z-corps/", "find": "README"} was
- * reduced to the string "comics/the-z-corps/", repo_read threw "needs a
- * JSON object", and the Triage agent rambled itself to the iteration
- * limit instead of reassigning).
+ * object-arg tool, return the raw arguments JSON — except for the one
+ * wrapping the declared schema adds: when the model follows the schema
+ * and passes {"args": "<inner JSON string>"}, the inner JSON is the
+ * args (see extractToolArgs; Nov 28, 2026 room_read "what" bug).
+ * Reducing object args to one string breaks the tool (Nov 27, 2026:
+ * nemotron's native repo_read call {"file": "comics/the-z-corps/",
+ * "find": "README"} was reduced to the string "comics/the-z-corps/",
+ * repo_read threw "needs a JSON object", and the Triage agent rambled
+ * itself to the iteration limit instead of reassigning).
  */
 export function extractToolArgs(argsRaw, toolName) {
   if (typeof argsRaw !== 'string' || !argsRaw.trim()) return '';
-  if (OBJECT_ARG_TOOLS.has(toolName)) return argsRaw.trim();
+  if (OBJECT_ARG_TOOLS.has(toolName)) {
+    // Unwrap the declared `args` parameter (Nov 28, 2026 — the
+    // room_read "what" bug): the native tool schema declares ONE
+    // parameter, `args` (a JSON string), so a model that follows the
+    // schema calls room_read with
+    //   {"args": "{\"what\":\"agents\",\"role\":\"backend\"}"}
+    // and the run functions read `what` at the TOP level — so the
+    // wrapped form always fell through to the default ('unassigned'
+    // for room_read) and the Orchestrator got the same TRIAGE output
+    // for every `what`, burning iterations retrying. Unwrap one level
+    // here, for every object-arg tool at once: an `args` string that
+    // parses as JSON becomes the args; an `args` object is
+    // stringified; anything else — a direct {"what": ...} call, a
+    // non-JSON `args` value, unparseable input — passes through
+    // unchanged, so the direct-call path keeps working exactly as
+    // before (see the Nov 27 nemotron repo_read case above).
+    try {
+      const parsed = JSON.parse(argsRaw.trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'args' in parsed) {
+        const inner = parsed.args;
+        if (typeof inner === 'string') {
+          try {
+            JSON.parse(inner);
+            return inner;
+          } catch {
+            return argsRaw.trim();
+          }
+        }
+        if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+          return JSON.stringify(inner);
+        }
+      }
+    } catch {
+      // Not JSON at all — fall through to the raw string.
+    }
+    return argsRaw.trim();
+  }
   try {
     const parsed = JSON.parse(argsRaw);
     if (typeof parsed === 'string') return parsed;

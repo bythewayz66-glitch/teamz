@@ -688,6 +688,47 @@ describe('native tool calls (Nov 27, 2026 — nemotron Triage could not repo_rea
     expect(endpoint.extractToolArgs('{"agentId": "agent-x", "provider": "grexlabs"}', 'reassign_agent')).toContain('agent-x');
   });
 
+  it('extractToolArgs unwraps the declared args parameter for object-arg tools (Nov 28, 2026 — room_read "what" bug)', () => {
+    // The native tool schema declares ONE parameter, `args` (a JSON
+    // string), so the model calls room_read with the args wrapped:
+    // {"args": "{\"what\":\"agents\",\"role\":\"backend\"}"}. Before the
+    // fix this passed through verbatim, runRoomRead read `what` at the
+    // top level, found nothing, and always returned the default
+    // 'unassigned' TRIAGE output — the Orchestrator kept retrying with
+    // different roles and got the same output every time.
+    const wrapped = '{"args": "{\\"what\\":\\"agents\\",\\"role\\":\\"backend\\"}"}';
+    expect(endpoint.extractToolArgs(wrapped, 'room_read')).toBe('{"what":"agents","role":"backend"}');
+    // The same wrapping on another object-arg tool unwraps too.
+    expect(
+      endpoint.extractToolArgs('{"args": "{\\"file\\": \\"docs/a.md\\"}"}', 'repo_read'),
+    ).toBe('{"file": "docs/a.md"}');
+    // An `args` object (not a string) is stringified.
+    expect(
+      endpoint.extractToolArgs('{"args": {"what": "agents", "role": "backend"}}', 'room_read'),
+    ).toBe('{"what":"agents","role":"backend"}');
+    // Direct calls (no wrapping) are unchanged.
+    expect(endpoint.extractToolArgs('{"what": "agents"}', 'room_read')).toBe('{"what": "agents"}');
+    expect(endpoint.extractToolArgs('{"what": "room"}', 'room_read')).toBe('{"what": "room"}');
+    // A non-JSON `args` value falls back to the raw string.
+    expect(endpoint.extractToolArgs('{"args": "not json{"}', 'room_read')).toBe('{"args": "not json{"}');
+    expect(endpoint.extractToolArgs('plain string', 'room_read')).toBe('plain string');
+    // And the wrapped form flows through extractReplyText, the real
+    // native-call path: the action's args are the inner JSON.
+    const payload = {
+      choices: [{
+        message: {
+          tool_calls: [{ function: { name: 'room_read', arguments: wrapped } }],
+          content: '',
+        },
+      }],
+    };
+    expect(JSON.parse(endpoint.extractReplyText(payload))).toEqual({
+      action: 'tool',
+      tool: 'room_read',
+      args: '{"what":"agents","role":"backend"}',
+    });
+  });
+
   it('extractToolArgs still pulls the one string out for single-string tools', () => {
     expect(endpoint.extractToolArgs('{"expression": "17 * 23"}', 'calculator')).toBe('17 * 23');
     expect(endpoint.extractToolArgs('{"query": "mem20"}', 'web_search')).toBe('mem20');
