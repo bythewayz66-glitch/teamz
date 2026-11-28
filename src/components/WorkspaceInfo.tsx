@@ -3,6 +3,7 @@ import { Modal, Field } from './Modal';
 import { RefreshIcon } from './Icons';
 import { useLlmSettings } from '../store/useLlmSettings';
 import type { LlmSettings, Provider } from '../api/settings';
+import type { CostRate } from '../lib/usageLedger';
 import {
   DEFAULT_ANON_MODEL,
   DEFAULT_KEYED_MODEL,
@@ -176,10 +177,52 @@ interface WorkspaceInfoProps {
   onReset: () => void;
   agentCount: number;
   conversationCount: number;
+  rate: CostRate | null;
+  onSetRate: (rate: CostRate | null) => void;
+}
+
+/** Dollar rate behind "cost to date". Teamz ships no price list, so it stays blank until set. */
+function CostRateSettings({ rate, onSetRate }: { rate: CostRate | null; onSetRate: (r: CostRate | null) => void }) {
+  const [input, setInput] = useState(rate ? String(rate.inputPerMillion) : '');
+  const [output, setOutput] = useState(rate ? String(rate.outputPerMillion) : '');
+  useEffect(() => {
+    setInput(rate ? String(rate.inputPerMillion) : '');
+    setOutput(rate ? String(rate.outputPerMillion) : '');
+  }, [rate]);
+  const i = Number(input);
+  const o = Number(output);
+  const valid = input.trim() !== '' && output.trim() !== '' && Number.isFinite(i) && Number.isFinite(o) && i >= 0 && o >= 0;
+  return (
+    <div className="info-block" id="cost-rate">
+      <h3>Token cost rate</h3>
+      <p>
+        Agent homes show cost to date in tokens. Enter your model’s price per million tokens to see dollars too.
+        It is stored in this browser only.
+      </p>
+      <div className="rate-row">
+        <Field label="Prompt $ / 1M tokens">
+          <input inputMode="decimal" value={input} onChange={(e) => setInput(e.target.value)} placeholder="e.g. 0.10" />
+        </Field>
+        <Field label="Completion $ / 1M tokens">
+          <input inputMode="decimal" value={output} onChange={(e) => setOutput(e.target.value)} placeholder="e.g. 0.40" />
+        </Field>
+      </div>
+      <div className="rate-actions">
+        <button className="btn primary sm" disabled={!valid} onClick={() => onSetRate({ inputPerMillion: i, outputPerMillion: o })}>
+          Save rate
+        </button>
+        {rate && (
+          <button className="btn ghost sm" onClick={() => onSetRate(null)}>
+            Clear
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /** Explains the mock/live switch and the request contract — where to plug in. */
-export function WorkspaceInfo({ open, onClose, onReset, agentCount, conversationCount }: WorkspaceInfoProps) {
+export function WorkspaceInfo({ open, onClose, onReset, agentCount, conversationCount, rate, onSetRate }: WorkspaceInfoProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [llm] = useLlmSettings();
 
@@ -195,7 +238,7 @@ export function WorkspaceInfo({ open, onClose, onReset, agentCount, conversation
           <div className="foot-left">
             {confirmReset ? (
               <div className="confirm-inline">
-                <span>Reset all local data?</span>
+                <span>Reset all local data, including sessions?</span>
                 <button
                   className="btn danger sm"
                   onClick={() => {
@@ -236,6 +279,8 @@ export function WorkspaceInfo({ open, onClose, onReset, agentCount, conversation
       </div>
 
       <ProviderSettings />
+
+      <CostRateSettings rate={rate} onSetRate={onSetRate} />
 
       <div className="info-block">
         <h3>Own endpoints</h3>
