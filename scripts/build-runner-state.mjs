@@ -8,10 +8,15 @@
  *     --agents runner-agents.json \
  *     --in  /var/lib/teamz-runner/state.json \
  *     --out /tmp/state-new.json \
- *     [--extra-agents new-agents-1-website-currency.json]
+ *     [--extra-agents new-agents-1-website-currency.json] \
+ *     [--dream]
  *
  * --extra-agents adds agents that carry a `firstJob` (type "job") and
  * the recurring ProductJob built from it; without it the job never exists.
+ *
+ * --dream adds a 6-hourly Dream (scheduled self-review) cron job for the
+ * Orchestrator, the Reviewer and the Website Currency Agent (the last needs
+ * --extra-agents). Opt-in; see docs/DREAM.md. Existing Dream run history is kept.
  *
  * What it does:
  *   - Agents: wholesale from runner-agents.json (the single source of
@@ -154,6 +159,46 @@ function buildCronJobs(agents) {
   return jobs;
 }
 
+/**
+ * Dream (roadmap Phase 2): a 6-hourly self-review for the three starter
+ * agents only. Opt-in via --dream; the fleet is deliberately not enrolled.
+ * The reply must be one strict JSON report; the Teamz UI pins replies that
+ * parse and the runner's own run record counts planned/ran/failed.
+ */
+export const DREAM_AGENT_IDS = ['agent-orchestrator', 'agent-reviewer', 'agent-website-currency-agent'];
+export const DREAM_SCHEDULE = '0 */6 * * *';
+export const DREAM_TARGET =
+  'Dream: a scheduled self-review of your own recent work. Call room_read with {"what": "room"} and look only at what you said and did, and what was assigned to you, since your last Dream (about six hours ago). ' +
+  'Decide whether anything about how you work should change: a repeated mistake, an instruction that misled you, a skill or tool you lacked. ' +
+  'Use only what you can see in the room; never invent events. You do NOT change yourself: a change is a proposal that Jesse or the Reviewer decides on. If nothing needs changing, say so; that is a good outcome. ' +
+  'Reply with ONLY one JSON object, no other text: ' +
+  '{"changed": boolean, "summary": "one or two plain sentences", "findings": ["short observation"], "proposals": [{"target": "instructions"|"skills"|"tools"|"schedule"|"other", "change": "what to change", "why": "the evidence you saw"}]}. ' +
+  '"changed" is true only with at least one proposal; if false, "proposals" is an empty list.';
+
+/** Dream cron jobs for the starter agents. Run history of an existing Dream job is carried over so a rebuild never erases the record. */
+export function buildDreamCronJobs(agents, existingCronJobs = []) {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const previous = new Map((Array.isArray(existingCronJobs) ? existingCronJobs : []).filter((j) => j && typeof j.id === 'string').map((j) => [j.id, j]));
+  return DREAM_AGENT_IDS.map((agentId) => {
+    const agent = byId.get(agentId);
+    if (!agent) throw new Error(`--dream names agent ${agentId}, which is not in the roster (the Website Currency Agent needs --extra-agents)`);
+    const id = `cron-dream-${agentId.replace(/^agent-/, '')}`;
+    const prev = previous.get(id);
+    return {
+      id,
+      name: `Dream: ${agent.name}`,
+      schedule: DREAM_SCHEDULE,
+      type: 'prompt',
+      target: DREAM_TARGET,
+      enabled: true,
+      agentId,
+      channelId: BUILD_ROOM,
+      lastRunAt: prev && typeof prev.lastRunAt === 'number' ? prev.lastRunAt : null,
+      runs: prev && Array.isArray(prev.runs) ? prev.runs : [],
+    };
+  });
+}
+
 const EXTRA_AGENT_ENDPOINT = 'http://127.0.0.1:8897/chat';
 
 /**
@@ -199,7 +244,7 @@ export function firstJobToProductJob(agent, nowMs = Date.now()) {
  * (e.g. new-agents-1-website-currency.json). Each is added to the roster
  * and its firstJob job is added unless a job with that id already exists.
  */
-export function buildRunnerState(roster, existing = {}, extras = []) {
+export function buildRunnerState(roster, existing = {}, extras = [], options = {}) {
   const rosterIds = new Set(roster.map((a) => a.id));
   for (const x of extras) {
     if (rosterIds.has(x.id)) throw new Error(`extra agent ${x.id} is already in the roster`);
@@ -236,7 +281,7 @@ export function buildRunnerState(roster, existing = {}, extras = []) {
     jobs,
     triggers: Array.isArray(existing.triggers) ? existing.triggers : [],
     approvals: Array.isArray(existing.approvals) ? existing.approvals : [],
-    cronJobs: buildCronJobs(agents),
+    cronJobs: [...buildCronJobs(agents), ...(options.dream ? buildDreamCronJobs(agents, existing.cronJobs) : [])],
     channelMessages: Array.isArray(existing.channelMessages) ? existing.channelMessages : [],
     rateLimitRescues: Array.isArray(existing.rateLimitRescues) ? existing.rateLimitRescues : [],
   };
@@ -256,12 +301,12 @@ function main() {
   const extraIdx = args.indexOf('--extra-agents');
   const extras = extraIdx === -1 ? [] : JSON.parse(readFileSync(args[extraIdx + 1], 'utf-8'));
   if (!Array.isArray(extras)) throw new Error('--extra-agents file is not an array');
-  const state = buildRunnerState(roster, existing, extras);
+  const state = buildRunnerState(roster, existing, extras, { dream: args.includes('--dream') });
   const outPath = get('--out');
   writeFileSync(outPath, JSON.stringify(state, null, 2) + '\n', 'utf-8');
   console.log(
     `built ${outPath}: ${state.agents.length} agents, ${state.cronJobs.length} cron jobs ` +
-      `(${Object.keys(HOURLY_TASKS).length} hourly + orchestrator + provider researcher + keymaster), ` +
+      `(${Object.keys(HOURLY_TASKS).length} hourly + orchestrator + provider researcher + keymaster${args.includes('--dream') ? ` + ${DREAM_AGENT_IDS.length} dream` : ''}), ` +
       `${state.jobs.length} product jobs preserved, ${state.approvals.length} approvals preserved`,
   );
 }
