@@ -1233,12 +1233,13 @@ export interface RunnerDeps {
   onJobUpdate?: (line: string) => void;
   /**
    * Minimum milliseconds between the END of one dispatch and the START
-   * of the next (default 0 — tests). The live runner passes 900_000
-   * (15 min — Nov 27, 2026 fleet slowdown, was 50_000): the gap is
-   * the fleet's master throttle and applies ACROSS ticks (see the
-   * module-level throttle in processDue), so it sets the dispatch
-   * rate at ~1 per 16 minutes whatever the tick interval or the
-   * per-tick caps say. Waiting BETWEEN dispatches — outside any
+   * of the next on the SAME slot (default 0 — tests). The live runner
+   * passes 900_000 (15 min — Nov 27, 2026 fleet slowdown, was 50_000):
+   * the gap is the fleet's master throttle and applies PER SLOT across
+   * ticks (see the module-level slot pool): with 1 slot open the fleet
+   * runs at ~1 dispatch per 16 minutes whatever the tick interval or
+   * the per-tick caps say, ~2 while a backlog has opened the second
+   * slot. Waiting BETWEEN dispatches — outside any
    * dispatch's 330s budget — also keeps every dispatch's model call
    * inside its 330s (the original reason for the gap, observed live
    * Nov 26, 2026). The tick gets longer; the service skips ticks
@@ -1246,18 +1247,28 @@ export interface RunnerDeps {
    */
   minDispatchGapMs?: number;
   /**
-   * Maximum product jobs started per tick (default 1 — Nov 27, 2026
-   * fleet slowdown, was 6). A tick that starts every due product job
-   * takes hours — with ~160 active jobs the 30s tick interval is
+   * Maximum product jobs started per tick. The effective cap is the
+   * active dispatch-slot count (see assessDispatchSlots): 1 normally,
+   * 2 while a backlog of HEAVY_BACKLOG_JOBS or more product jobs is
+   * due — a value passed here above the active slots is clamped in
+   * processDue, so jobs started per tick never exceed slots open
+   * (default DEFAULT_MAX_JOBS_PER_TICK = 1; was 1 under the Nov 27,
+   * 2026 fleet slowdown, 6 before that, briefly 3 on Nov 28, 2026
+   * before Jesse rejected 3 slots the same day). A tick that starts
+   * every due product job takes hours — with ~160 active jobs the 30s tick interval is
    * skipped while one is in flight, so the Orchestrator (15-min) and
    * hourly crons miss their 1-minute windows and never fire (observed
    * live Nov 26, 2026: hourly last ran 17:00, Orchestrator 18:45).
    * Capping the product work per tick bounds the tick, so crons are
    * checked often and fire on schedule (via the catch-up due check in
    * lib/scheduler.ts). Due jobs that are not started stay due and
-   * drain on later ticks — nothing is dropped. Crons have their own
-   * per-tick cap (MAX_CRONS_PER_TICK), rescues theirs
-   * (MAX_RESCUE_EVENTS_PER_TICK); triggers are never capped.
+   * drain on later ticks — nothing is dropped. The cap counts jobs
+   * started (a job that turns out to be blocked without dispatching
+   * still counts: it is the conservative bound that keeps the tick
+   * short). Parked / awaiting-approval jobs cost no dispatch and are
+   * unaffected by the cap. The started jobs run concurrently — one per
+   * dispatch slot (see MAX_DISPATCH_SLOTS) — so the cap is also the
+   * concurrency of the product-job section.
    */
   maxJobsPerTick?: number;
   /**
@@ -1277,23 +1288,153 @@ export interface ProcessDueResult {
 }
 
 /**
- * Fleet slowdown (Jesse, Nov 27, 2026 — "slow them down a lot, don't
- * stop them"): the inter-dispatch gap is GLOBAL, not per-tick. Every
- * model call the fleet makes flows through `dispatch()` inside
- * `processDue`, so the timestamp of the last dispatch ending lives at
- * module scope and survives across ticks in the long-lived runner —
- * a tick that starts right after the previous one still waits the full
- * gap before its first dispatch. A restart resets it (the first
- * dispatch after a restart is immediate). At the live 15-minute gap
- * this caps the whole fleet at ~1 dispatch per 16 minutes (~3-4/hour,
- * ~800 model calls/day at ~10 calls per dispatch), down from ~3,100.
- * No agent or job is exempt — the Reviewer, triage, and rescue flow
- * through the same `dispatch()` and slow down at the same pace.
+ * Dispatch slots (Jesse, Nov 28, 2026 — first "3 dispatch slots i want
+ * 3", then rejected the same day: the 3-slot pace would roughly triple
+ * call volume, ~770/day toward ~2,400/day — "go back to 1, with a
+ * second during heavy hours"): the runner runs ONE dispatch at a time
+ * normally, and opens a SECOND slot only while a real backlog is due —
+ * heavy hours are a backlog, not a clock (see assessDispatchSlots).
+ * Each slot carries its own inter-dispatch gap (see
+ * RunnerDeps.minDispatchGapMs), so the per-slot rate-limit protection
+ * is unchanged. Steady state at the live 15-minute gap stays ~1
+ * dispatch per 16 minutes (~770 model calls/day at ~10 calls per
+ * dispatch); while a backlog is due the fleet briefly runs at ~2 per
+ * 16 minutes until it drains, then the pool closes back to 1. The pool
+ * lives at module scope so the gap survives across ticks in the
+ * long-lived runner (a restart resets it; the first dispatches after a
+ * restart are immediate). Ticks never overlap (tick guard in
+ * scripts/runner.ts), so the pool only ever arbitrates within one tick
+ * — no cross-tick locking, and no slot is ever held across a tick
+ * boundary: a dispatch holds its slot for its whole call and frees it
+ * in `finally`, so a failed, timed-out, or killed run never leaks its
+ * slot.
  */
-let lastDispatchEndedAtMs = 0;
+/** Dispatch slots in normal operation (Jesse, Nov 28, 2026). */
+export const BASE_DISPATCH_SLOTS = 1;
+/** Absolute ceiling of the slot pool — the second heavy-hours slot. */
+export const MAX_DISPATCH_SLOTS = 2;
+/**
+ * Heavy-hours threshold: this many product jobs due at tick start
+ * opens the second slot (see assessDispatchSlots).
+ */
+export const HEAVY_BACKLOG_JOBS = 2;
+
+interface DispatchSlot {
+  busy: boolean;
+  /** Epoch ms the slot's last dispatch ended (0 = never used). */
+  lastEndedAtMs: number;
+}
+
+const dispatchSlots: DispatchSlot[] = Array.from({ length: MAX_DISPATCH_SLOTS }, () => ({
+  busy: false,
+  lastEndedAtMs: 0,
+}));
+
+/** Slots the pool may hand out this tick — 1 normally, 2 under backlog. */
+let activeDispatchSlots = BASE_DISPATCH_SLOTS;
+
+/** How many dispatch slots are open right now (1 normally, 2 under backlog). */
+export function getActiveDispatchSlots(): number {
+  return activeDispatchSlots;
+}
+
+/**
+ * Product jobs that need a dispatch right now: due, with a stage to
+ * run, and no run currently dispatched. This is the same gating the
+ * product-job section applies (see processDue), so the count is the
+ * work one slot cannot take this tick — parked jobs behind a pending
+ * or denied approval count too, because the section counts them
+ * against its per-tick cap as well.
+ */
+export function countDueProductJobs(state: RunnerState, now: Date): number {
+  let due = 0;
+  for (const job of state.jobs) {
+    if (!isJobDue(job, now)) continue;
+    if (job.runs.some((r) => r.status === 'dispatched')) continue;
+    if (!currentStage(job)) continue;
+    due += 1;
+  }
+  return due;
+}
+
+/**
+ * Heavy hours are a backlog, not a clock: at tick start, if at least
+ * HEAVY_BACKLOG_JOBS product jobs are due, one slot cannot take them
+ * all this tick, so the second slot opens. As soon as fewer are due
+ * the pool closes back to 1 — steady-state call volume stays at the
+ * 1-slot level and only briefly doubles while a real backlog drains.
+ * Pure (reads state only); processDue applies the result.
+ */
+export function assessDispatchSlots(state: RunnerState, now: Date): number {
+  return countDueProductJobs(state, now) >= HEAVY_BACKLOG_JOBS ? MAX_DISPATCH_SLOTS : BASE_DISPATCH_SLOTS;
+}
+
+/** Waiters parked until a slot is released. */
+let slotWaiters: Array<() => void> = [];
+
+/**
+ * Take a dispatch slot, waiting for one to be free and for its gap to
+ * expire. Prefers a slot whose gap already expired (immediate start);
+ * otherwise waits for the earliest gap to expire, then re-checks (another
+ * acquirer may have taken it meanwhile). When every slot is busy, parks
+ * until a release wakes it. The check-and-claim in each loop pass runs
+ * synchronously, so no wakeup is ever missed.
+ */
+async function acquireDispatchSlot(
+  minGapMs: number,
+  log: (message: string) => void,
+  agentName: string,
+): Promise<number> {
+  for (;;) {
+    const now = Date.now();
+    let bestWait = Number.POSITIVE_INFINITY;
+    // Only the open slots arbitrate — a closed second slot is never
+    // handed out, however stale its gap is.
+    for (let i = 0; i < activeDispatchSlots; i++) {
+      const slot = dispatchSlots[i];
+      if (slot.busy) continue;
+      const wait = minGapMs > 0 ? minGapMs - (now - slot.lastEndedAtMs) : 0;
+      if (wait <= 0) {
+        slot.busy = true;
+        return i;
+      }
+      if (wait < bestWait) bestWait = wait;
+    }
+    if (bestWait !== Number.POSITIVE_INFINITY) {
+      // A slot is free but still inside its gap — wait for the earliest
+      // gap to expire, then re-check.
+      log(`spacing: waiting ${Math.ceil(bestWait / 1000)}s for a dispatch slot before dispatch to ${agentName}`);
+      await new Promise((resolve) => setTimeout(resolve, bestWait));
+      continue;
+    }
+    // Every open slot is busy — wait until one is released.
+    log(`spacing: all ${activeDispatchSlots} dispatch slots busy, waiting for one before dispatch to ${agentName}`);
+    await new Promise<void>((resolve) => {
+      slotWaiters.push(resolve);
+    });
+  }
+}
+
+/** Free a slot, stamping the end of its dispatch for the next gap. */
+function releaseDispatchSlot(index: number): void {
+  const slot = dispatchSlots[index];
+  slot.busy = false;
+  slot.lastEndedAtMs = Date.now();
+  const waiters = slotWaiters;
+  slotWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
 /** Reset the cross-tick dispatch throttle (tests only). */
 export function resetDispatchThrottle(): void {
-  lastDispatchEndedAtMs = 0;
+  for (const slot of dispatchSlots) {
+    slot.busy = false;
+    slot.lastEndedAtMs = 0;
+  }
+  activeDispatchSlots = BASE_DISPATCH_SLOTS;
+  const waiters = slotWaiters;
+  slotWaiters = [];
+  for (const resolve of waiters) resolve();
 }
 
 /**
@@ -1370,8 +1511,12 @@ export function findStrandedAgents(
 export const MAX_RESCUE_EVENTS_PER_TICK = 2;
 
 /** Default product jobs started per tick (see RunnerDeps.maxJobsPerTick).
- * Nov 27, 2026 fleet slowdown: 6 → 1. Due jobs stay due and drain on
- * later ticks; nothing is dropped. */
+ * The normal default is 1 — the 1-slot pace Jesse ordered Nov 28, 2026
+ * (3 slots were rejected the same day: they would triple call volume).
+ * The effective cap each tick is the active slot count (1 normally, 2
+ * while a backlog is due), so a caller-passed cap above the active
+ * slots is clamped in processDue. Due jobs stay due and drain on later
+ * ticks; nothing is dropped. */
 export const DEFAULT_MAX_JOBS_PER_TICK = 1;
 
 /**
@@ -1440,28 +1585,49 @@ export async function processDue(
   };
   const agentById = new Map(state.agents.map((a) => [a.id, a]));
 
-  // Gap-spaced dispatch: every prompt in this tick goes through here,
+  // Heavy hours are a backlog, not a clock: assess the due product
+  // work at tick start and open the second slot only while at least
+  // HEAVY_BACKLOG_JOBS jobs are due (Jesse, Nov 28, 2026 — 1 slot,
+  // second only under backlog). The pool closes back to 1 as soon as
+  // the backlog drains below the threshold, so steady-state call
+  // volume stays at the 1-slot level. Set before the first dispatch:
+  // no slot is ever busy at a tick boundary (ticks never overlap and
+  // every dispatch is awaited), so shrinking the pool here can never
+  // strand a running dispatch.
+  const dueProductJobs = countDueProductJobs(state, now);
+  const nextSlots = assessDispatchSlots(state, now);
+  if (nextSlots !== activeDispatchSlots) {
+    activeDispatchSlots = nextSlots;
+    if (nextSlots > BASE_DISPATCH_SLOTS) {
+      deps.log(`heavy backlog: ${dueProductJobs} product jobs due — opening second dispatch slot for this tick`);
+    } else {
+      deps.log(`backlog drained: ${dueProductJobs} product job(s) due — back to one dispatch slot`);
+    }
+  }
+
+  // Slot-spaced dispatch: every prompt in this tick goes through here,
   // so the wait between dispatches happens OUTSIDE any dispatch's 330s
-  // budget (see RunnerDeps.minDispatchGapMs). The gap is GLOBAL across
-  // ticks (module-level lastDispatchEndedAtMs, Nov 27, 2026 fleet
-  // slowdown): a tick that starts right after the previous one still
-  // waits the full gap before its first dispatch, so the gap — not the
-  // tick interval or the per-tick caps — sets the fleet's dispatch
-  // rate. The timestamp is only recorded when a gap is configured, so
-  // gap-0 callers (tests, in-tab runner) never perturb it.
+  // budget (see RunnerDeps.minDispatchGapMs). A dispatch holds one of
+  // the open slots for its whole call (module-level pool, Nov 28, 2026
+  // — Jesse: 1 slot, second only under backlog): the gap is PER SLOT
+  // across ticks, so a tick that starts right after the previous one
+  // still waits the full gap before reusing a slot — but a dispatch on
+  // a free slot starts immediately, so up to 2 dispatches run
+  // concurrently while a backlog is due. The gap — not the tick
+  // interval or the per-tick caps — still sets the fleet's dispatch
+  // rate, ~1 per gap normally, ~2 under backlog. The slot is freed in
+  // `finally`, so a failed, timed-out, or killed dispatch never leaks
+  // its slot, and the run that hit the limit is recorded as failed by
+  // the caller. The end-time stamp is written on every release but
+  // only matters when a gap is configured (gap-0 callers — tests, the
+  // in-tab runner — never wait on it).
   const minGapMs = deps.minDispatchGapMs ?? 0;
   const dispatch = async (agent: RunnerAgent, prompt: string, channelId: string): Promise<string> => {
-    if (minGapMs > 0) {
-      const wait = minGapMs - (Date.now() - lastDispatchEndedAtMs);
-      if (wait > 0) {
-        deps.log(`spacing: waiting ${Math.ceil(wait / 1000)}s before dispatch to ${agent.name}`);
-        await new Promise((resolve) => setTimeout(resolve, wait));
-      }
-    }
+    const slot = await acquireDispatchSlot(minGapMs, deps.log, agent.name);
     try {
       return await deps.dispatchPrompt(agent, prompt, channelId);
     } finally {
-      if (minGapMs > 0) lastDispatchEndedAtMs = Date.now();
+      releaseDispatchSlot(slot);
     }
   };
 
@@ -2004,9 +2170,14 @@ export async function processDue(
   // started (a job that turns out to be blocked without dispatching
   // still counts: it is the conservative bound that keeps the tick
   // short). Parked / awaiting-approval jobs cost no dispatch and are
-  // unaffected by the cap.
-  const maxJobsPerTick = deps.maxJobsPerTick ?? DEFAULT_MAX_JOBS_PER_TICK;
+  // unaffected by the cap. The gathered jobs run concurrently below
+  // (runOneProductJob, one per dispatch slot). The effective cap never
+  // exceeds the open slots (see the tick-start assessment above): a
+  // caller-passed cap above the active slots is clamped, so jobs
+  // started per tick never exceed slots open.
+  const maxJobsPerTick = Math.min(deps.maxJobsPerTick ?? activeDispatchSlots, activeDispatchSlots);
   let jobsStarted = 0;
+  const dueToStart: ProductJob[] = [];
   for (let job of state.jobs) {
     // A parked job whose current stage has no pending approval and no
     // denied approval was parked transiently — the Reviewer was
@@ -2041,17 +2212,35 @@ export async function processDue(
       break;
     }
     jobsStarted += 1;
+    dueToStart.push(job);
+  }
+  // Run the gathered jobs concurrently — up to one per dispatch slot
+  // (see the slot pool above). Each job's execution is self-contained:
+  // it only ever rewrites its own entry in state.jobs, and every
+  // shared read (approvals, jobs) happens fresh at each synchronous
+  // step, so concurrent executions cannot clobber each other. A throw
+  // inside one job must never kill the others (allSettled) — a failed
+  // job is recorded as failed and retried on a later tick, like a
+  // failed sequential run before it.
+  await Promise.allSettled(dueToStart.map((job) => runOneProductJob(job)));
+
+  // One due product job's stage, from gate check to recorded run.
+  // Defined here (not hoisted out of processDue) because it closes over
+  // the tick's dispatch, emit, agent map, and in-memory state.
+  async function runOneProductJob(job: ProductJob): Promise<void> {
+    const plan = currentStage(job);
+    if (!plan) return;
     let started = startStage(job, state.approvals, nowMs);
     if (!started.ok) {
       const blockedReason = started.reason;
       if (!started.needsApproval) {
         emit(`job ${job.name}: stage not started — ${blockedReason}`);
-        continue;
+        return;
       }
       if (findPendingApproval(state.approvals, job.id, plan.stage)) {
         state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
         emit(`job ${job.name} / ${plan.stage}: still awaiting approval`);
-        continue;
+        return;
       }
       // Every gated stage goes to the Reviewer — routine AND high-stakes
       // (release / advertise / sell, spending, publishing, destructive).
@@ -2070,7 +2259,7 @@ export async function processDue(
         emit(
           `job ${job.name} / ${plan.stage}: NO REVIEWER CONFIGURED — a gated stage cannot be decided without the Reviewer agent; job parked (config error, no approval filed)`,
         );
-        continue;
+        return;
       }
       try {
         const highStakes = isHighStakes(plan.stage, plan.flags);
@@ -2138,7 +2327,7 @@ export async function processDue(
               );
             }
           }
-          continue;
+          return;
         }
         state.approvals = [
           ...state.approvals,
@@ -2149,7 +2338,7 @@ export async function processDue(
         if (!retry.ok) {
           state.jobs = state.jobs.map((j) => (j.id === job.id ? parkForApproval(j, nowMs) : j));
           emit(`job ${job.name} / ${plan.stage}: still blocked after Reviewer approval — ${retry.reason}`);
-          continue;
+          return;
         }
         started = retry;
       } catch (err) {
@@ -2162,7 +2351,7 @@ export async function processDue(
         emit(
           `job ${job.name} / ${plan.stage}: Reviewer unavailable or unreadable (${err instanceof Error ? err.message : String(err)}) — job parked, will retry the Reviewer on a later tick`,
         );
-        continue;
+        return;
       }
     }
     // Record the dispatched run first, so a crash mid-stage cannot lose it.
@@ -2186,7 +2375,7 @@ export async function processDue(
           );
           state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
           emit(`job ${job.name} / ${plan.stage}: command REFUSED (state persist failed)`);
-          continue;
+          return;
         }
       }
       const result = await deps.executeCommand(job, plan.command.argv);
@@ -2202,7 +2391,7 @@ export async function processDue(
         state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
         state.approvals = nextApprovals;
         emit(`job ${job.name} / ${plan.stage}: command BLOCKED — ${result.blockedReason}`);
-        continue;
+        return;
       }
       const output = result.timedOut
         ? `${result.output}\n[command timed out]`
@@ -2225,7 +2414,7 @@ export async function processDue(
           `job ${job.name}: cycle ${nextJob.cyclesCompleted} complete — auto-reset to stage 0, next run on schedule`,
         );
       }
-      continue;
+      return;
     }
     const agent = agentById.get(started.run.agentId);
     if (!agent) {
@@ -2239,7 +2428,7 @@ export async function processDue(
       );
       state.jobs = state.jobs.map((j) => (j.id === job.id ? nextJob : j));
       emit(`job ${job.name} / ${plan.stage}: unknown agent ${started.run.agentId}, run failed`);
-      continue;
+      return;
     }
     try {
       const reply = await dispatch(agent, started.run.prompt, job.channelId);

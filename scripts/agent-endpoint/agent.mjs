@@ -1790,11 +1790,14 @@ export function buildToolSystemPrompt(agent) {
  * each propose the loop checks there is enough time left for a useful
  * call — on the anonymous tier the second call only gets the ~7s after
  * the 50s gap, so a slow propose is cut short rather than overrunning
- * the runner. If the loop ends without a final (limit reached, deadline
- * reached, or a propose failed after a tool succeeded), the last
- * successful tool observation IS the reply — the tool result always
- * reaches the caller, never an error and never a claim that tools are
- * unavailable.
+ * the runner. If the loop ends without a final because the DEADLINE was
+ * reached, the last successful tool observation IS the reply — the tool
+ * result always reaches the caller, never an error and never a claim
+ * that tools are unavailable. But a loop that ends because it burned
+ * the whole iteration budget, or because propose hit a hard provider
+ * quota wall (402/429), is KILLED, not answered: see hitIterationLimit
+ * and the quota-wall throw below (Jesse, Nov 28, 2026 — fail fast, no
+ * multi-hour retries jamming the dispatch slot).
  */
 export async function runToolLoop(propose, opts = {}) {
   const maxIterations = opts.maxIterations ?? MAX_TOOL_ITERATIONS;
@@ -1804,12 +1807,14 @@ export async function runToolLoop(propose, opts = {}) {
   const steps = [];
   let final = '';
   let lastToolObservation = '';
+  let stoppedForDeadline = false;
 
   for (let i = 1; i <= maxIterations; i++) {
     // Enough time left for a useful propose call plus flushing the reply?
     // 9s reserve: a short model reply is typically 2–8s.
     if (Date.now() > deadline - 9000) {
       log(`tool loop: deadline near at iteration ${i}, stopping with ${steps.length} step(s)`);
+      stoppedForDeadline = true;
       break;
     }
 
@@ -1823,10 +1828,26 @@ export async function runToolLoop(propose, opts = {}) {
       // the loop stops and the tool observation is the reply.
       if (i === 1) throw err;
       const message = err instanceof Error ? err.message : String(err);
+      // Kill-on-limit (Jesse, Nov 28, 2026): a hard provider quota wall
+      // (402/429) is not recoverable inside this run — the provider is
+      // exhausted, and re-proposing just burns the dispatch budget
+      // against it (Nov 27: the pricing job's design runs spent ~1.5h
+      // and ~3h failing on Gemini 429s). Throw at once so the /chat
+      // handler records a rate-limit event — rescue moves the agent to
+      // a live provider — and the run fails fast instead of retrying
+      // to the deadline. Non-quota propose failures still become
+      // observations below: the model may recover from those.
+      if (/402|429|rate|limit|FREE_LIMIT/i.test(message)) {
+        log(`tool loop: quota wall at iteration ${i} — killing the run: ${message}`);
+        throw err;
+      }
       observations.push(`[brain error] ${message}`);
       steps.push({ index: i, action: 'unknown', output: `[brain error] ${message}`, ok: false });
       log(`tool loop: propose failed at iteration ${i}: ${message}`);
-      if (Date.now() > deadline - 9000) break;
+      if (Date.now() > deadline - 9000) {
+        stoppedForDeadline = true;
+        break;
+      }
       continue;
     }
 
@@ -1850,6 +1871,15 @@ export async function runToolLoop(propose, opts = {}) {
     );
   }
 
+  // Kill-on-limit (Jesse, Nov 28, 2026): the loop ending with no final
+  // because it burned the whole iteration budget is a kill, not a
+  // partial success — the caller (/chat) turns it into a failed reply
+  // instead of handing the last tool observation back as an answer.
+  // A deadline stop is not a limit hit: the budget, not the iteration
+  // cap, ended the run. Computed here, before the fallback below
+  // assigns `final` (so `!final` still means "no final was produced").
+  const hitIterationLimit = !final && !stoppedForDeadline;
+
   if (!final) {
     final = lastToolObservation
       ? `[reached the tool limit] ${lastToolObservation}`
@@ -1858,7 +1888,7 @@ export async function runToolLoop(propose, opts = {}) {
         : 'I could not produce an answer in the time available.';
   }
 
-  return { text: final, iterations: steps.length, steps, observations };
+  return { text: final, iterations: steps.length, steps, observations, hitIterationLimit };
 }
 
 /* ===========================================================================
@@ -2791,6 +2821,22 @@ const server = createServer(async (req, res) => {
     };
 
     const result = await runToolLoop(propose, { maxIterations: MAX_TOOL_ITERATIONS, deadline });
+    if (result.hitIterationLimit) {
+      // Kill-on-limit (Jesse, Nov 28, 2026): the loop burned the whole
+      // 25-iteration budget without finishing, so this is a failed
+      // reply, not a partial success — the truncated tool observation
+      // is never handed back as an answer, and the runner records the
+      // run failed (the job retries on a later tick; the slot is freed
+      // at once). No rate-limit event is recorded: this is not a
+      // provider quota wall, so rescue must not move the agent.
+      const killMessage = `agent hit the ${MAX_TOOL_ITERATIONS}-iteration tool limit without finishing — run killed, no partial output kept`;
+      log(
+        `reply KILLED agent=${agent?.name ?? '?'} iterations=${result.iterations} ms=${Date.now() - startedAt}: ${killMessage}`,
+      );
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: killMessage }));
+      return;
+    }
     const ms = Date.now() - startedAt;
     const toolSteps = result.steps.filter((s) => s.action === 'tool').map((s) => s.tool).join(',') || 'none';
     log(`reply ok agent=${agent?.name ?? '?'} chars=${result.text.length} iterations=${result.iterations} tools=${toolSteps} tokens=${dispatchUsage.total} in=${dispatchUsage.prompt} out=${dispatchUsage.completion} calls=${dispatchUsage.calls} ms=${ms}`);

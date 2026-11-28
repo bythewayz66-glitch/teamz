@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assessDispatchSlots,
   assignmentReviewPrompt,
   emptyRunnerState,
   findStrandedAgents,
+  getActiveDispatchSlots,
   isLowRiskReview,
   optimizerPrompt,
   processDue,
@@ -784,45 +786,77 @@ describe('processDue — Reviewer approval flow', () => {
 });
 
 describe('processDue — inter-dispatch spacing', () => {
-  it('waits the configured gap between dispatches, outside any dispatch budget', async () => {
-    const state: RunnerState = {
-      ...emptyRunnerState(),
-      agents: [agent('agent-qa-tester', 'QA Tester'), agent('agent-code-reviewer', 'Code Reviewer')],
-      cronJobs: [
-        createCronJob({
-          name: 'Hourly: QA Tester',
-          schedule: '* * * * *',
-          type: 'prompt',
-          target: 'Write the test plan.',
-          agentId: 'agent-qa-tester',
-          channelId: 'conv-build-room',
-        }),
-        createCronJob({
-          name: 'Hourly: Code Reviewer',
-          schedule: '* * * * *',
-          type: 'prompt',
-          target: 'Write the review checklist.',
-          agentId: 'agent-code-reviewer',
-          channelId: 'conv-build-room',
-        }),
-      ],
-    };
-    const starts: number[] = [];
-    const ends: number[] = [];
-    await processDue(state, T0, {
-      dispatchPrompt: async (a) => {
-        starts.push(Date.now());
-        await new Promise((r) => setTimeout(r, 10));
-        ends.push(Date.now());
-        return `${a.name} done.`;
+  const slotJob = (i: number) => {
+    const job = createJob(
+      {
+        name: `job-slot-${i}`,
+        channelId: 'conv-build-room',
+        schedule: { kind: 'cron', expr: '0 10 * * *' },
+        stages: [
+          {
+            stage: 'design',
+            agentId: 'agent-atlas',
+            prompt: `Do the job-slot-${i} design step.`,
+            expectedOutput: 'Designed.',
+          },
+        ],
       },
-      executeCommand: commandStub(),
-      log: silentLog(),
-      minDispatchGapMs: 150,
-    });
-    expect(starts).toHaveLength(2);
-    // The second dispatch started at least ~150ms after the first ended.
-    expect(starts[1] - ends[0]).toBeGreaterThanOrEqual(120);
+      new Date(2026, 10, 25, 9, 0).getTime(),
+    );
+    return { ...job, lastRunAt: new Date(2026, 10, 25, 10, 0).getTime() };
+  };
+
+  it('two slots dispatch under backlog; a third dispatch waits for a slot gap', async () => {
+    // Nov 28, 2026 (Jesse: 1 slot, second only under backlog): the
+    // 900s gap is PER SLOT, not global. Two due product jobs open the
+    // second slot; the every-minute cron fires first on slot 0, the
+    // first product job starts immediately on the fresh slot 1, and
+    // the second product job must wait for the earliest slot's gap to
+    // expire. 3 dispatches, never more than 2 slots open.
+    resetDispatchThrottle();
+    try {
+      const state: RunnerState = {
+        ...emptyRunnerState(),
+        agents: [agent('agent-atlas', 'Atlas')],
+        jobs: [slotJob(0), slotJob(1)],
+        cronJobs: [
+          createCronJob({
+            name: 'Every minute: Atlas',
+            schedule: '* * * * *',
+            type: 'prompt',
+            target: 'Write the test plan.',
+            agentId: 'agent-atlas',
+            channelId: 'conv-build-room',
+          }),
+        ],
+      };
+      const starts: number[] = [];
+      const ends: number[] = [];
+      const { state: out } = await processDue(state, T0, {
+        dispatchPrompt: async (a) => {
+          starts.push(Date.now());
+          await new Promise((r) => setTimeout(r, 10));
+          ends.push(Date.now());
+          return `${a.name} done.`;
+        },
+        executeCommand: commandStub(),
+        log: silentLog(),
+        minDispatchGapMs: 150,
+      });
+      expect(starts).toHaveLength(3);
+      // The cron and the first product job started together (a fresh
+      // slot each); the second product job waited for the earliest
+      // slot's gap after the first dispatch ended.
+      const sortedStarts = [...starts].sort((a, b) => a - b);
+      const sortedEnds = [...ends].sort((a, b) => a - b);
+      expect(sortedStarts[1] - sortedStarts[0]).toBeLessThan(100);
+      expect(sortedStarts[2] - sortedEnds[0]).toBeGreaterThanOrEqual(120);
+      // Both product jobs completed their cycle; only two slots ever opened.
+      expect(out.jobs.every((j) => j.cyclesCompleted === 1)).toBe(true);
+      expect(getActiveDispatchSlots()).toBe(2);
+    } finally {
+      resetDispatchThrottle();
+    }
   });
 
   it('does not wait at all when no gap is configured (default 0)', async () => {
@@ -849,7 +883,7 @@ describe('processDue — inter-dispatch spacing', () => {
     expect(Date.now() - t0).toBeLessThan(5000);
   });
 
-  it('the gap persists across ticks — the next tick still waits the full gap (Nov 27, 2026 fleet slowdown)', async () => {
+  it('the single slot gap persists across ticks — each tick still waits the full gap (Nov 27, 2026 fleet slowdown; slots Nov 28, 2026)', async () => {
     resetDispatchThrottle();
     const state: RunnerState = {
       ...emptyRunnerState(),
@@ -878,15 +912,21 @@ describe('processDue — inter-dispatch spacing', () => {
       log: silentLog(),
       minDispatchGapMs: 150,
     };
-    // Tick 1 fires the every-minute cron. Tick 2, a minute later, has
-    // the same cron due again (new minute slot) — but its first
-    // dispatch must still wait the full gap after tick 1's dispatch
-    // ended. The gap is global, not per-tick.
-    const first = await processDue(state, T0, deps);
-    expect(starts).toHaveLength(1);
-    await processDue(first.state, new Date(T0.getTime() + 60_000), deps);
-    expect(starts).toHaveLength(2);
+    // Tick 1 fires immediately (fresh slot). Ticks 2–4 each have the
+    // same cron due again a minute later — but with 1 slot open (no
+    // product backlog) there is no fresh slot to fall back on, so each
+    // dispatch must still wait the full gap after the previous
+    // dispatch ended. The single-slot gap persists across ticks; it
+    // is not reset by a new tick.
+    let current = state;
+    for (let tick = 0; tick < 4; tick++) {
+      const out = await processDue(current, new Date(T0.getTime() + tick * 60_000), deps);
+      current = out.state;
+    }
+    expect(starts).toHaveLength(4);
     expect(starts[1] - ends[0]).toBeGreaterThanOrEqual(120);
+    expect(starts[2] - ends[1]).toBeGreaterThanOrEqual(120);
+    expect(starts[3] - ends[2]).toBeGreaterThanOrEqual(120);
     resetDispatchThrottle();
   });
 });
@@ -1229,10 +1269,132 @@ describe('processDue — per-tick product-job cap', () => {
       executeCommand: commandStub(),
       log: silentLog(),
     });
-    // Default cap (1): 1 of 10 starts; the other 9 stay due.
-    expect(calls).toHaveLength(1);
-    expect(out.jobs.filter((j) => j.cyclesCompleted === 1)).toHaveLength(1);
-    expect(out.jobs.filter((j) => j.cyclesCompleted === 0)).toHaveLength(9);
+    // Default cap (1 normally, 2 while a backlog of 2+ product jobs
+    // is due — Nov 28, 2026, Jesse: 1 slot, second only under
+    // backlog): 2 of 10 start, one per open slot; the other 8 stay due.
+    expect(calls).toHaveLength(2);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 1)).toHaveLength(2);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 0)).toHaveLength(8);
+  });
+
+  it('two due product jobs run concurrently under backlog — the third stays due', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas')],
+      jobs: [cronJobAt10('job-one'), cronJobAt10('job-two'), cronJobAt10('job-three')],
+    };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 30));
+        inFlight -= 1;
+        return 'Design done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // Two of three dispatched, and both were in flight at once — the
+    // jobs are not serialized one after another. The third stays due:
+    // the pool only ever opens a second slot, never a third.
+    expect(maxInFlight).toBe(2);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 1)).toHaveLength(2);
+    expect(out.jobs.filter((j) => j.cyclesCompleted === 0)).toHaveLength(1);
+  });
+
+  it('one job\u2019s failed dispatch does not stop the others — the slot is freed and the failure is recorded', async () => {
+    const state: RunnerState = {
+      ...emptyRunnerState(),
+      agents: [agent('agent-atlas', 'Atlas')],
+      jobs: [cronJobAt10('job-one'), cronJobAt10('job-two'), cronJobAt10('job-three')],
+    };
+    const { state: out } = await processDue(state, T0, {
+      dispatchPrompt: async (_a, prompt) => {
+        await new Promise((r) => setTimeout(r, 10));
+        if (prompt.includes('job-one')) throw new Error('agent endpoint 502: killed on the tool limit');
+        return 'Design done.';
+      },
+      executeCommand: commandStub(),
+      log: silentLog(),
+    });
+    // The failed job is recorded failed (not lost, not retried in this
+    // tick); the other started job completed normally. The third job
+    // never started this tick — the pool caps at two slots, so it
+    // stays due for a later tick.
+    expect(out.jobs[0].cyclesCompleted).toBe(0);
+    expect(out.jobs[0].runs[0].status).toBe('failed');
+    expect(out.jobs[0].runs[0].output).toContain('killed on the tool limit');
+    expect(out.jobs[1].cyclesCompleted).toBe(1);
+    expect(out.jobs[2].cyclesCompleted).toBe(0);
+    expect(out.jobs[2].runs).toHaveLength(0);
+  });
+
+  it('the second slot opens only when two or more product jobs are due (Nov 28, 2026)', async () => {
+    // Threshold rule, pure assessment — no dispatch: 0 or 1 due
+    // product jobs → 1 slot; 2 or more → 2 slots.
+    const atlas = agent('agent-atlas', 'Atlas');
+    expect(assessDispatchSlots({ ...emptyRunnerState(), agents: [atlas], jobs: [] }, T0)).toBe(1);
+    expect(
+      assessDispatchSlots(
+        { ...emptyRunnerState(), agents: [atlas], jobs: [cronJobAt10('job-one')] },
+        T0,
+      ),
+    ).toBe(1);
+    expect(
+      assessDispatchSlots(
+        {
+          ...emptyRunnerState(),
+          agents: [atlas],
+          jobs: [cronJobAt10('job-one'), cronJobAt10('job-two')],
+        },
+        T0,
+      ),
+    ).toBe(2);
+  });
+
+  it('the pool closes back to one slot when the backlog drains', async () => {
+    resetDispatchThrottle();
+    try {
+      const state: RunnerState = {
+        ...emptyRunnerState(),
+        agents: [agent('agent-atlas', 'Atlas')],
+        jobs: [cronJobAt10('job-one'), cronJobAt10('job-two')],
+      };
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const deps = {
+        dispatchPrompt: async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 30));
+          inFlight -= 1;
+          return 'Design done.';
+        },
+        executeCommand: commandStub(),
+        log: silentLog(),
+      };
+      // Tick 1: two jobs due — the second slot opens, both run at once.
+      const first = await processDue(state, T0, deps);
+      expect(maxInFlight).toBe(2);
+      expect(getActiveDispatchSlots()).toBe(2);
+      expect(first.state.jobs.every((j) => j.cyclesCompleted === 1)).toBe(true);
+      // Tick 2: a fresh state with one job due — the backlog has
+      // drained, so the pool is back to one slot.
+      const drained: RunnerState = {
+        ...emptyRunnerState(),
+        agents: [agent('agent-atlas', 'Atlas')],
+        jobs: [cronJobAt10('job-three')],
+      };
+      maxInFlight = 0;
+      const second = await processDue(drained, new Date(T0.getTime() + 60_000), deps);
+      expect(getActiveDispatchSlots()).toBe(1);
+      expect(maxInFlight).toBe(1);
+      expect(second.state.jobs[0].cyclesCompleted).toBe(1);
+    } finally {
+      resetDispatchThrottle();
+    }
   });
 });
 

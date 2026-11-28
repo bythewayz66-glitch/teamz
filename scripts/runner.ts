@@ -140,18 +140,22 @@ async function runOneTick(statePath: string, log: (message: string) => void): Pr
         return loaded.state.agents;
       }
     },
-    // 15 minutes between dispatches (see RunnerDeps.minDispatchGapMs):
-    // the fleet slowdown Jesse ordered Nov 27, 2026 — "slow them down
-    // a lot, don't stop them." The gap is the master throttle and now
-    // applies ACROSS ticks, so the whole fleet runs at ~1 dispatch per
-    // 16 minutes (~3-4/hour, ~800 model calls/day at ~10 calls per
-    // dispatch), down from ~3,100 calls/day. Every agent and job —
-    // Reviewer, triage, rescue included — flows through the same
-    // dispatch and slows at the same pace; nothing is exempt, nothing
-    // is stopped. (The gap's original job still holds: waiting
-    // BETWEEN dispatches keeps every dispatch's model call inside its
-    // 330s budget.) The tick gets longer; the service skips ticks
-    // while one is still running (tick guard in main()).
+    // 15 minutes between dispatches on the same slot (see
+    // RunnerDeps.minDispatchGapMs): the fleet slowdown Jesse ordered
+    // Nov 27, 2026 — "slow them down a lot, don't stop them." The gap
+    // is the master throttle and applies PER SLOT across ticks; the
+    // fleet runs 1 slot normally (~1 dispatch per 16 minutes, ~770
+    // model calls/day at ~10 calls per dispatch), and a second slot
+    // opens only while a backlog of 2+ product jobs is due (Nov 28,
+    // 2026 — Jesse: "go back to 1, with a second during heavy hours";
+    // 3 slots were rejected the same day — they would have tripled
+    // call volume toward ~2,400/day). Every agent and job — Reviewer,
+    // triage, rescue included — flows through the same dispatch and
+    // slows at the same pace; nothing is exempt, nothing is stopped.
+    // (The gap's original job still holds: waiting BETWEEN dispatches
+    // keeps every dispatch's model call inside its 330s budget.) The
+    // tick gets longer; the service skips ticks while one is still
+    // running (tick guard in main()).
     minDispatchGapMs: 900_000,
     // Post each completed unit of agent work to #mem20updates as it
     // finishes (see scripts/slack-poster.ts). Fire-and-forget: the
