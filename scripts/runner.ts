@@ -30,12 +30,13 @@ import {
   dispatchPromptToAgent,
   executeAllowedCommand,
   loadRunnerState,
-  processDue,
   saveRunnerState,
   type RateLimitEvent,
   type RunnerState,
 } from './runner-lib';
 import { postJobUpdate } from './slack-poster';
+import { processDueWithRhythm, reapOrphansOnDisk } from './runner-tick';
+import { assertNotCreditRefusal } from './runner-rhythm';
 import {
   findLostTick,
   makeTelemetry,
@@ -115,6 +116,7 @@ interface TickContext {
   inFlight: Map<number, { agent: string; startedAtMs: number }>;
   lastCompletionMs: number | null;
   lastWarningsKey: string;
+  lastBacklogKey: string;
 }
 
 async function runOneTick(
@@ -149,7 +151,7 @@ async function runOneTick(
     ctx.lastWarningsKey = warningsKey;
     ctx.telemetry.emit('state_warnings', { count: loaded.warnings.length, warnings: loaded.warnings.slice(0, 20) });
   }
-  const { state, fired } = await processDue(loaded.state, new Date(), {
+  const { state, fired } = await processDueWithRhythm(loaded.state, new Date(), {
     // Provider ids from the agent endpoint's registry, for the
     // stranded-agent sweep (an agent whose provider is not in the
     // registry cannot run, even though it never rate-limits). Missing
@@ -164,6 +166,7 @@ async function runOneTick(
       ctx.telemetry.emit('dispatch_start', { tick: ctx.tick, dispatch: id, agent: agent.id, channel: channelId });
       try {
         const reply = await dispatchPromptToAgent(agent, prompt, channelId);
+        assertNotCreditRefusal(agent.name, reply);
         ctx.lastCompletionMs = Date.now();
         ctx.telemetry.emit('dispatch_end', {
           tick: ctx.tick, dispatch: id, agent: agent.id, ok: true,
@@ -235,6 +238,16 @@ async function runOneTick(
     // tick gets longer; the service skips ticks while one is still
     // running (tick guard in main()).
     minDispatchGapMs: 900_000,
+    // Rhythm-rule events (orphan reaped, approval expired, backlog drain
+    // estimate) go to the telemetry log; the backlog line only when it changes.
+    onRhythmEvent: (type, fields) => {
+      if (type === 'backlog') {
+        const key = `${fields.due}/${fields.drainHours}`;
+        if (key === ctx.lastBacklogKey) return;
+        ctx.lastBacklogKey = key;
+      }
+      ctx.telemetry.emit(type, { tick: ctx.tick, ...fields });
+    },
     // Post each completed unit of agent work to #mem20updates as it
     // finishes (see scripts/slack-poster.ts). Fire-and-forget: the
     // poster never throws and a failed post never breaks the tick, and
@@ -437,6 +450,7 @@ async function main(): Promise<number> {
     inFlight: new Map(),
     lastCompletionMs: null,
     lastWarningsKey: '',
+    lastBacklogKey: '',
   };
   if (lost) {
     log(
@@ -446,6 +460,14 @@ async function main(): Promise<number> {
         `if completed dispatches are missing from state.json, the checkpoint save is failing (see state_save_failed events)`,
     );
     telemetry.emit('lost_tick', { ...lost });
+  }
+  try {
+    for (const e of reapOrphansOnDisk(opts.statePath, bootMs)) {
+      log(`  ${e.line}`);
+      telemetry.emit(e.type, e.fields);
+    }
+  } catch (err) {
+    log(`WARN boot orphan sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
   telemetry.emit('boot', { statePath: opts.statePath, intervalSec: opts.intervalMs / 1000, once: opts.once });
   log(

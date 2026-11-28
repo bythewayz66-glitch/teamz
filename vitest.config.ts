@@ -17,5 +17,8 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
     reporters: 'default',
     setupFiles: ['./src/test-setup.ts'],
+    // A shell that exports NODE_ENV=production would make React load its
+    // production build, where act() is unsupported; the suite must not depend on that.
+    env: { NODE_ENV: 'test' },
   },
 });
