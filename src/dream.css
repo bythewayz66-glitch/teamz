@@ -1,0 +1,47 @@
+/* ==========================================================================
+   Phase 2 — Dream (scheduled self-review) on the agent home
+   ========================================================================== */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.home-dream { grid-column: 1 / -1; }
+.dream-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.dream-head h2 { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dream-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dream-cadence select {
+  background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm); padding: 5px 8px; font: inherit; font-size: 13px;
+}
+.dream-status { margin: 0 0 10px; color: var(--text-dim); font-size: 13px; }
+.dream-error { color: var(--red); font-size: 13px; margin: 0 0 8px; }
+.dream-record h3, .dream-proposals h3 { margin: 12px 0 6px; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-mute); }
+.dream-counts { margin: 0 0 8px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.dream-counts.has-missed { color: var(--red); }
+.dream-when { color: var(--text-mute); font-weight: 400; }
+.run-dot.dream-ran { background: var(--green); }
+.run-dot.dream-failed, .run-dot.dream-missed { background: var(--red); }
+.run-dot.dream-skipped { background: var(--text-mute); }
+.run-dot.dream-pending { background: var(--amber); }
+.dream-report {
+  margin-top: 14px; padding: 12px 14px; border-radius: var(--r-md);
+  background: var(--bg-panel-2); border: 1px solid var(--line);
+}
+.dream-report.is-pinned { border-color: rgba(124, 156, 255, 0.55); background: linear-gradient(135deg, rgba(124, 156, 255, 0.10), rgba(61, 220, 151, 0.04)); }
+.dream-report header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.dream-pin { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+.dream-summary { margin: 0 0 6px; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.dream-findings { margin: 0 0 6px; padding-left: 18px; color: var(--text-dim); font-size: 13.5px; overflow-wrap: anywhere; }
+.dream-proposals ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; }
+.dream-proposals li { overflow-wrap: anywhere; }
+.dream-why { display: block; color: var(--text-mute); font-size: 12.5px; margin-top: 2px; }
+.dream-history { margin-top: 12px; }
+.dream-history summary { cursor: pointer; color: var(--text-dim); font-size: 13px; }
+.dream-notices { display: flex; flex-direction: column; gap: 6px; padding: 8px 14px 0; }
+.dream-notice {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: var(--r-md); font-size: 13.5px;
+  background: rgba(245, 181, 68, 0.10); border: 1px solid rgba(245, 181, 68, 0.45);
+}
+.dream-notice-actions { display: flex; gap: 6px; }
+@media (max-width: 860px) {
+  .dream-head { align-items: flex-start; }
+  .dream-notices { padding: 8px 10px 0; }
+}
