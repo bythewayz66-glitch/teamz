@@ -16,9 +16,11 @@ The name is the conversation's own `name`.
 | `work` | What an agent did in the Build Room (its replies, plus the `@mention` messages that assigned it work), one rolling session per agent per ISO week. | 90 days, then pruned |
 | `room` | The Build Room itself, untouched, now with metadata. The shared session Jesse watches. | keep forever |
 
-Retention is `forever`, `days: N` or `messages: N`, set per session from the bar above it,
-enforced on load and hourly (`applyRetention`). A `work` session that empties out is
-dropped; a chat or the room is never deleted by retention, only trimmed.
+Retention is `forever`, `days: N` or `messages: N`. Each agent has a default for its *new*
+sessions (its home: "Session auto-delete", Gamut's per-agent setting); any session can then be
+changed from the bar above it. It is enforced on load and hourly (`applyRetention`). **Starred
+sessions are never pruned.** A `work` session that empties out is dropped (unless starred); a chat
+or the room is never deleted by retention, only trimmed.
 
 ## Migrating the Build Room
 
@@ -80,3 +82,26 @@ which is the Reviewer's call.
 model, skills), sessions (name **and the text inside every message**), and settings.
 Every word must match; an exact phrase ranks above scattered words; the matched phrase is
 highlighted in the snippet. Selecting a session opens it; an agent opens its home.
+
+## Gamut patterns: followed and deliberately skipped
+
+Reference: the Gamut exploration notebook (27 Nov 2026) and the overhaul roadmap, section 4.
+
+Followed:
+- Palette opens on **Recent agents** (with last-active time) then **Recent sessions**.
+- **Session auto-delete** as a per-agent default, with **starred sessions preserved**.
+- On an agent's home, **sort and search that agent's sessions** (search reads message text).
+- Each sidebar agent row has a **New session** action and an expandable list of its sessions.
+- The run record in Gamut's plain format: "Last 7 days: 24 planned runs, 23 ran, 1 skipped, and 0 failed."
+- The model is shown on the home without its vendor prefix (full id on hover).
+
+Deliberately skipped, and why:
+- **Reasoning "effort"** (Gamut: "Sonnet 5.5 · Medium"). Teamz has no effort setting; showing one would be a fake capability. The nearest real knob, the per-request tool-step budget, is shown as "up to N steps" when an agent has one.
+- **Per-agent connections state** (Slack "Setup required", GitHub "Listening"). The data is not in the runner's read-only summary; it is Phase 4's Connections hub.
+- **"Invoked by X" sessions** for agent-to-agent calls. Teamz's equivalent is the weekly *work* session built from the @mentions that assigned the work.
+- **Notifications, Drives, Memories, Secrets, API logs, Pinned Items** on the home: later phases (Dream reports pin in Phase 2).
+- **Session auto-delete applying retroactively.** Changing an agent's default affects sessions started afterwards; silently pruning existing history on a settings change is the wrong default.
+- **Skipped-run accuracy before the first run.** The record counts a schedule only from its first recorded run in the window; Teamz keeps no creation time for a cron job, so "skipped" before that would blame a job for time it did not exist. A schedule with nothing on record is listed separately. Phase 0's runner record is the authoritative version of this.
+
+Voice: the two opening sentences are written by the UI about the agent, so for the Reviewer they are
+third person. Nothing in Teamz speaks as the Reviewer except the Reviewer.
