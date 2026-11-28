@@ -1,0 +1,44 @@
+.meter { display: grid; gap: 14px; }
+.meter-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.meter-card { background: var(--bg-panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.meter-card b { display: block; font-size: 20px; line-height: 1.2; }
+.meter-card span { font-size: 12px; color: var(--text-dim); }
+.meter h3 { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); font-weight: 600; }
+.meter-note { margin: 0; font-size: 12px; color: var(--text-mute); line-height: 1.5; }
+.meter-find { border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.5; }
+.meter-find.is-warn { border-color: var(--amber); }
+.meter-bar { display: inline-block; height: 8px; border-radius: 4px; background: var(--accent, #6aa9ff); vertical-align: middle; min-width: 2px; }
+.meter-bar.is-over { background: var(--red); }
+.meter-bar.is-near { background: var(--amber); }
+.meter-day-off td { color: var(--text-mute); }
+.meter-split { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.meter-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; font-size: 13px; }
+.meter-form label { display: grid; gap: 3px; font-size: 12px; color: var(--text-dim); }
+.meter-form input, .meter-form select { background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--line-strong); border-radius: 6px; padding: 5px 8px; font-size: 13px; min-width: 0; }
+.meter-form input[type=text], .meter-form input:not([type]) { width: 150px; }
+.meter-form input[type=number] { width: 110px; }
+.status-chip { font-size: 12px; border: 1px solid var(--line-strong); border-radius: 999px; padding: 1px 8px; white-space: nowrap; color: var(--text-dim); }
+.status-chip.is-ok, .status-chip.is-active, .status-chip.is-approved { color: var(--green); border-color: var(--green); }
+.status-chip.is-low, .status-chip.is-near, .status-chip.is-starved, .status-chip.is-proposed, .status-chip.is-unknown { color: var(--amber); border-color: var(--amber); }
+.status-chip.is-critical, .status-chip.is-exhausted, .status-chip.is-over, .status-chip.is-parked, .status-chip.is-never-run { color: var(--red); border-color: var(--red); }
+.status-chip.is-sleeping, .status-chip.is-rejected, .status-chip.is-no-approved-limit { color: var(--text-mute); }
+.meter-table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; max-height: 44vh; }
+.meter-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.meter-table th, .meter-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line-soft); }
+.meter-table th { position: sticky; top: 0; background: var(--bg-panel-2); color: var(--text-dim); font-weight: 600; white-space: nowrap; }
+.meter-table td.wrap { white-space: normal; min-width: 220px; }
+.pace-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: stretch; }
+.pace-box { border: 1px solid var(--line-strong); border-radius: 10px; padding: 12px; display: grid; gap: 6px; }
+.pace-box b { font-size: 22px; }
+@media (max-width: 860px) {
+  .meter-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .meter-split, .pace-pair { grid-template-columns: 1fr; }
+  .meter-form input[type=text], .meter-form input:not([type]), .meter-form input[type=number] { width: 100%; }
+  .meter-form label { flex: 1 1 130px; }
+}
+.meter .lib-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.meter .lib-tab { background: transparent; border: 1px solid var(--line-strong); color: var(--text-dim); border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+.meter .lib-tab.is-active { background: var(--bg-active); color: var(--text); border-color: var(--text-dim); }
+.meter { min-width: 0; }
+.meter > * { min-width: 0; }
+.meter-form { min-width: 0; }

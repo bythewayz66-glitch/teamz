@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Seniority } from './types';
 import { useWorkspace } from './store/useWorkspace';
 import { useAutonomy } from './store/useAutonomy';
@@ -23,6 +23,9 @@ import { useLibrary } from './store/useLibrary';
 import { buildAgentHome } from './lib/agentHome';
 import { buildFleetGraph } from './lib/graph';
 import { FleetMap } from './components/FleetMap';
+import { MeteringPanel } from './components/MeteringPanel';
+import { useMetering } from './store/useMetering';
+import { buildFleetHealth, buildUsageReport, evaluateBudgets, evaluateCredits, queueDrain } from './lib/metering';
 import { useConnectionPolicy } from './store/useConnectionPolicy';
 import type { SearchAction } from './lib/search';
 
@@ -44,6 +47,8 @@ export default function App() {
   const [showJobs, setShowJobs] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
   const [showFleetMap, setShowFleetMap] = useState(false);
+  const [showMetering, setShowMetering] = useState(false);
+  const metering = useMetering();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   /** When set, the main column shows this agent's home instead of a conversation. */
@@ -103,6 +108,24 @@ export default function App() {
         now: clock,
       }),
     [ws.state.agents, ws.state.messages, ops.runner, ops.ledger, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, clock],
+  );
+
+  const localAutonomy = useMemo(
+    () => ({ jobs: autonomy.jobs, triggers: autonomy.triggers, cronJobs: autonomy.cronJobs }),
+    [autonomy.jobs, autonomy.triggers, autonomy.cronJobs],
+  );
+  const meter = useMemo(() => {
+    const usage = buildUsageReport({ agents: ws.state.agents, runner: ops.runner, ledger: ops.ledger, rate: ops.rate, now: clock });
+    return {
+      usage,
+      credits: evaluateCredits({ credits: metering.state.credits, agents: ws.state.agents, runner: ops.runner, ledger: ops.ledger, rate: ops.rate, now: clock }),
+      budgets: evaluateBudgets({ budgets: metering.state.budgets, agents: ws.state.agents, ledger: ops.ledger, rate: ops.rate, now: clock }),
+      health: buildFleetHealth({ agents: ws.state.agents, runner: ops.runner, local: localAutonomy, ledger: ops.ledger, now: clock }),
+    };
+  }, [ws.state.agents, ops.runner, ops.ledger, ops.rate, metering.state.credits, metering.state.budgets, localAutonomy, clock]);
+  const drainFor = useCallback(
+    (gapMs: number) => queueDrain({ runner: ops.runner, local: localAutonomy, now: clock, gapMs }),
+    [ops.runner, localAutonomy, clock],
   );
 
   const homeAgent = homeAgentId ? ws.agentsById.get(homeAgentId) ?? null : null;
@@ -229,6 +252,9 @@ export default function App() {
           </button>
           <button className="btn ghost sm" onClick={() => setShowFleetMap(true)}>
             Fleet map
+          </button>
+          <button className="btn ghost sm" onClick={() => setShowMetering(true)}>
+            Usage &amp; health
           </button>
           <button className="btn ghost sm" onClick={() => setShowLibrary(true)}>
             Team Library
@@ -403,6 +429,24 @@ export default function App() {
         agents={ws.state.agents}
         onOpenAgentHome={(id) => {
           setShowFleetMap(false);
+          openHome(id);
+        }}
+      />
+
+      <MeteringPanel
+        open={showMetering}
+        onClose={() => setShowMetering(false)}
+        agents={ws.state.agents}
+        usage={meter.usage}
+        credits={meter.credits}
+        budgets={meter.budgets}
+        health={meter.health}
+        drainFor={drainFor}
+        metering={metering}
+        rate={ops.rate}
+        runnerStale={ops.stale}
+        onOpenAgentHome={(id) => {
+          setShowMetering(false);
           openHome(id);
         }}
       />
