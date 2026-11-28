@@ -11,7 +11,13 @@ import { ChannelDialog } from './components/ChannelDialog';
 import { WorkspaceInfo } from './components/WorkspaceInfo';
 import { useLlmSettings } from './store/useLlmSettings';
 import { hasKey, resolveModel } from './api/pollinations';
-import { MenuIcon } from './components/Icons';
+import { MenuIcon, SearchIcon } from './components/Icons';
+import { CommandPalette } from './components/CommandPalette';
+import { AgentHome } from './components/AgentHome';
+import { SessionBar } from './components/SessionBar';
+import { useOperations } from './store/useOperations';
+import { buildAgentHome } from './lib/agentHome';
+import type { SearchAction } from './lib/search';
 
 export default function App() {
   const ws = useWorkspace();
@@ -30,6 +36,10 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false);
   const [showJobs, setShowJobs] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  /** When set, the main column shows this agent's home instead of a conversation. */
+  const [homeAgentId, setHomeAgentId] = useState<string | null>(null);
+  const ops = useOperations();
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   /* Mobile drawer: Esc closes it, and focus returns to the hamburger when it
@@ -50,6 +60,64 @@ export default function App() {
       menuBtnRef.current?.focus();
     }
   }, [sidebarOpen]);
+
+  /* Ctrl/Cmd+K opens the palette from anywhere. */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowPalette((v) => !v);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  /* Re-render once a minute so "30 minutes ago" and "in 12 minutes" stay true. */
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setClock(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const homeAgent = homeAgentId ? ws.agentsById.get(homeAgentId) ?? null : null;
+  const homeModel = useMemo(
+    () =>
+      homeAgent
+        ? buildAgentHome({
+            agent: homeAgent,
+            state: ws.state,
+            runner: ops.runner,
+            local: { jobs: autonomy.jobs, triggers: autonomy.triggers, cronJobs: autonomy.cronJobs },
+            ledger: ops.ledger,
+            rate: ops.rate,
+            now: clock,
+          })
+        : null,
+    [homeAgent, ws.state, ops.runner, ops.ledger, ops.rate, autonomy.jobs, autonomy.triggers, autonomy.cronJobs, clock],
+  );
+
+  /* Any navigation that changes the active conversation leaves the agent home. */
+  useEffect(() => setHomeAgentId(null), [ws.state.activeConversationId]);
+
+  const openSession = (id: string) => {
+    ws.openSession(id);
+    setHomeAgentId(null);
+    setSidebarOpen(false);
+  };
+  const openHome = (agentId: string) => {
+    setHomeAgentId(agentId);
+    setSidebarOpen(false);
+  };
+
+  const onSearchAction = (a: SearchAction) => {
+    if (a.type === 'open-agent') openHome(a.agentId);
+    else if (a.type === 'open-session') openSession(a.conversationId);
+    else if (a.target === 'jobs') setShowJobs(true);
+    else if (a.target === 'new-agent') setShowNewAgent(true);
+    else if (a.target === 'new-channel') setShowNewChannel(true);
+    else setShowInfo(true);
+  };
 
   const settingsAgent = settingsAgentId ? ws.agentsById.get(settingsAgentId) ?? null : null;
 
@@ -101,17 +169,16 @@ export default function App() {
         activeConversationId={ws.state.activeConversationId}
         lastMessageAt={lastMessageAt}
         typing={ws.typing}
-        onSelectConversation={(id) => {
-          ws.setActiveConversation(id);
-          setSidebarOpen(false);
-        }}
+        onSelectConversation={(id) => openSession(id)}
         onNewAgent={() => setShowNewAgent(true)}
         onNewChannel={() => setShowNewChannel(true)}
         onOpenAgentSettings={(id) => setSettingsAgentId(id)}
         onOpenAgentChat={(id) => {
           ws.openDirectChat(id);
+          setHomeAgentId(null);
           setSidebarOpen(false);
         }}
+        onOpenAgentHome={openHome}
         onOpenWorkspaceInfo={() => setShowInfo(true)}
       />
 
@@ -128,7 +195,10 @@ export default function App() {
         </button>
 
         {/* Autonomy nav (additive): opens the Jobs & Scheduler panel. */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 14px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '10px 14px 0' }}>
+          <button className="btn ghost sm search-trigger" onClick={() => setShowPalette(true)} aria-label="Search agents, sessions and settings">
+            <SearchIcon size={13} /> Search <kbd>Ctrl K</kbd>
+          </button>
           <button className="btn ghost sm" onClick={() => setShowJobs(true)}>
             Jobs &amp; Scheduler
             {autonomy.pendingApprovalCount > 0
@@ -137,6 +207,45 @@ export default function App() {
           </button>
         </div>
 
+        {homeModel ? (
+          <AgentHome
+            home={homeModel}
+            now={clock}
+            runnerStale={ops.stale}
+            runnerFetchedAt={ops.runner?.fetchedAt ?? null}
+            onOpenSession={openSession}
+            onNewSession={() => {
+              ws.newSession(homeModel.agent.id);
+              setHomeAgentId(null);
+            }}
+            onResume={(id) => {
+              openSession(id);
+              void ws.resumeSession(id);
+            }}
+            onOpenSettings={() => setSettingsAgentId(homeModel.agent.id)}
+            onOpenCostRate={() => setShowInfo(true)}
+          />
+        ) : (
+          <>
+        {ws.activeConversation?.session && (
+          <SessionBar
+            conversation={ws.activeConversation}
+            agentName={
+              ws.activeConversation.session.agentId
+                ? ws.agentsById.get(ws.activeConversation.session.agentId)?.name
+                : undefined
+            }
+            onRename={(name) => ws.renameSession(ws.activeConversation!.id, name)}
+            onRetention={(p) => ws.setSessionRetention(ws.activeConversation!.id, p)}
+            onArchive={(a) => ws.archiveSession(ws.activeConversation!.id, a)}
+            onResume={() => void ws.resumeSession(ws.activeConversation!.id)}
+            onOpenHome={
+              ws.activeConversation.session.agentId
+                ? () => openHome(ws.activeConversation!.session!.agentId!)
+                : undefined
+            }
+          />
+        )}
         <ChatPane
           conversation={ws.activeConversation}
           messages={ws.activeMessages}
@@ -154,7 +263,10 @@ export default function App() {
           onDeleteConversation={() => {
             if (ws.activeConversation) ws.deleteConversation(ws.activeConversation.id);
           }}
-          onOpenDirectChat={(id) => ws.openDirectChat(id)}
+          onOpenDirectChat={(id) => {
+            ws.openDirectChat(id);
+            setHomeAgentId(null);
+          }}
           onInviteAgent={(agentId) => {
             if (ws.activeConversation) {
               ws.inviteAgentToConversation(ws.activeConversation.id, agentId);
@@ -164,6 +276,8 @@ export default function App() {
           modeLabel={modeLabel}
           onOpenSettings={() => setShowInfo(true)}
         />
+          </>
+        )}
       </div>
 
       <AgentSettings
@@ -174,7 +288,10 @@ export default function App() {
           ws.deleteAgent(id);
           setSettingsAgentId(null);
         }}
-        onOpenChat={(id) => ws.openDirectChat(id)}
+        onOpenChat={(id) => {
+          ws.openDirectChat(id);
+          setHomeAgentId(null);
+        }}
       />
 
       <NewAgentDialog
@@ -217,6 +334,15 @@ export default function App() {
         onReset={ws.resetWorkspace}
         agentCount={ws.state.agents.length}
         conversationCount={ws.state.conversations.length}
+        rate={ops.rate}
+        onSetRate={ops.setRate}
+      />
+
+      <CommandPalette
+        open={showPalette}
+        onClose={() => setShowPalette(false)}
+        state={ws.state}
+        onAction={onSearchAction}
       />
 
       <JobsPanel
@@ -225,7 +351,7 @@ export default function App() {
         autonomy={autonomy}
         agents={ws.state.agents}
         conversations={ws.state.conversations}
-        onOpenConversation={(id) => ws.setActiveConversation(id)}
+        onOpenConversation={(id) => openSession(id)}
       />
     </div>
   );
