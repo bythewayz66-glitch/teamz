@@ -11,7 +11,7 @@
  */
 
 import type { Agent, Conversation, Message, WorkspaceState } from '../types';
-import { oneLine } from './agentHome';
+import { oneLine, timeAgo } from './agentHome';
 import { isSession, lastActivity } from './sessions';
 
 export type SettingTarget = 'workspace' | 'jobs' | 'new-agent' | 'new-channel' | 'cost-rate';
@@ -172,6 +172,31 @@ export function searchWorkspace(
   };
 
   if (tokens.length === 0) {
+    // Gamut's palette opens on "Recent agents" then "Recent sessions".
+    const nowMs = opts.now ?? Date.now();
+    const lastActive = new Map<string, number>();
+    for (const c of state.conversations) {
+      const owner = c.session?.agentId;
+      const msgs = state.messages[c.id];
+      if (!owner || c.session?.status === 'archived' || !msgs || msgs.length === 0) continue;
+      lastActive.set(owner, Math.max(lastActive.get(owner) ?? 0, lastActivity(c, msgs)));
+    }
+    const recentAgents = [...lastActive.entries()]
+      .filter(([id]) => agentsById.has(id))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    for (const [id, at] of recentAgents) {
+      const a = agentsById.get(id)!;
+      results.push({
+        id: `agent:${id}`,
+        group: 'agent',
+        title: a.name,
+        subtitle: `Last active ${timeAgo(at, nowMs)}`,
+        score: 1,
+        at,
+        action: { type: 'open-agent', agentId: id },
+      });
+    }
     const recent = state.conversations
       .filter(isSession)
       .filter((c) => c.session.status !== 'archived' && (state.messages[c.id]?.length ?? 0) > 0)

@@ -1,5 +1,8 @@
-import type { AgentHomeModel, HomeSession } from '../lib/agentHome';
-import { timeAgo, timeUntil } from '../lib/agentHome';
+import { useState } from 'react';
+import type { RetentionPolicy } from '../types';
+import type { AgentHomeModel, HomeSession, SessionSort } from '../lib/agentHome';
+import { filterSessions, timeAgo, timeUntil } from '../lib/agentHome';
+import { RETENTION_PRESETS, retentionKey } from '../lib/sessions';
 import { AgentAvatar } from './Avatar';
 import { PlusIcon, SettingsIcon } from './Icons';
 
@@ -14,6 +17,7 @@ interface Props {
   onResume: (id: string) => void;
   onOpenSettings: () => void;
   onOpenCostRate: () => void;
+  onSetDefaultRetention: (policy: RetentionPolicy | undefined) => void;
 }
 
 const KIND_LABEL: Record<HomeSession['kind'], string> = { chat: 'Chat', work: 'Work', room: 'Room' };
@@ -29,8 +33,15 @@ export function AgentHome({
   onResume,
   onOpenSettings,
   onOpenCostRate,
+  onSetDefaultRetention,
 }: Props) {
   const { agent } = home;
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<SessionSort>('recent');
+  const [showAll, setShowAll] = useState(false);
+  const visible = filterSessions(home.sessions, query, sort);
+  const shown = showAll || query.trim() ? visible : visible.slice(0, 12);
+  const defaultKey = agent.sessionRetention ? retentionKey(agent.sessionRetention) : '';
   const interrupted = home.sessions.find((s) => s.status === 'interrupted');
 
   return (
@@ -44,7 +55,13 @@ export function AgentHome({
               {home.status.label}
             </span>
             <span className="dot-sep">·</span>
-            <span className="mono">{home.model}</span>
+            <span className="mono" title={home.model}>{home.modelLabel}</span>
+            {home.stepLimit ? (
+              <>
+                <span className="dot-sep">·</span>
+                <span title="Tool steps allowed per request">up to {home.stepLimit} steps</span>
+              </>
+            ) : null}
             {home.provider && (
               <>
                 <span className="dot-sep">·</span>
@@ -64,7 +81,7 @@ export function AgentHome({
       </header>
 
       <div className="home-scroll">
-        <section className="home-warmth" aria-label="What I did last and what I do next">
+        <section className="home-warmth" aria-label="Last activity and next scheduled run">
           <p className="warm-last">{home.warmth.last}</p>
           <p className="warm-next">{home.warmth.next}</p>
           {interrupted && (
@@ -77,13 +94,27 @@ export function AgentHome({
         <div className="home-grid">
           <section className="home-card home-sessions" aria-labelledby="h-sessions">
             <h2 id="h-sessions">Sessions <span className="count">{home.sessions.length}</span></h2>
+            {home.sessions.length > 1 && (
+              <div className="session-tools">
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search this agent’s sessions…"
+                  aria-label="Search this agent’s sessions"
+                />
+                <select value={sort} onChange={(e) => setSort(e.target.value as SessionSort)} aria-label="Sort sessions">
+                  <option value="recent">Most recent</option>
+                  <option value="name">Name</option>
+                </select>
+              </div>
+            )}
             {home.sessions.length === 0 && <p className="home-empty">No sessions yet. Start one and it will be kept here.</p>}
             <ul className="home-list">
-              {home.sessions.slice(0, 12).map((s) => (
+              {shown.map((s) => (
                 <li key={s.id}>
                   <button className="home-row" onClick={() => onOpenSession(s.id)}>
                     <span className="home-row-top">
-                      <strong>{s.name}</strong>
+                      <strong>{s.starred ? '★ ' : ''}{s.name}</strong>
                       <span className={`kind-chip kind-${s.kind}`}>{KIND_LABEL[s.kind]}</span>
                       {s.status === 'interrupted' && <span className="kind-chip kind-warn">Interrupted</span>}
                       <span className="home-time">{timeAgo(s.lastAt, now)}</span>
@@ -94,7 +125,32 @@ export function AgentHome({
                 </li>
               ))}
             </ul>
-            {home.sessions.length > 12 && <p className="home-more">{home.sessions.length - 12} older sessions — find them with search (Ctrl/Cmd+K).</p>}
+            {query.trim() && visible.length === 0 && <p className="home-empty">No session here mentions “{query.trim()}”.</p>}
+            {!query.trim() && visible.length > 12 && (
+              <button className="link-btn home-more" onClick={() => setShowAll((v) => !v)}>
+                {showAll ? 'Show fewer' : `Show all ${visible.length} sessions`}
+              </button>
+            )}
+            <div className="retention-default">
+              <label>
+                <span>Session auto-delete for new sessions</span>
+                <select
+                  value={defaultKey}
+                  onChange={(e) =>
+                    onSetDefaultRetention(RETENTION_PRESETS.find((p) => retentionKey(p.policy) === e.target.value)?.policy)
+                  }
+                  aria-label="Default retention for this agent's new sessions"
+                >
+                  <option value="">Built-in (chats kept, work 90 days)</option>
+                  {RETENTION_PRESETS.map((p) => (
+                    <option key={retentionKey(p.policy)} value={retentionKey(p.policy)}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className="home-foot">Applies to sessions started from now on. Starred sessions are never deleted.</span>
+            </div>
           </section>
 
           <section className="home-card" aria-labelledby="h-triggers">
@@ -167,6 +223,17 @@ export function AgentHome({
 
           <section className="home-card" aria-labelledby="h-runs">
             <h2 id="h-runs">Recent runs</h2>
+            {home.runRecord && (
+              <p className="run-record">
+                {home.runRecord.sentence}
+                {home.runRecord.noRecord.length > 0 && (
+                  <span className="home-foot">
+                    {' '}
+                    Nothing on record in 7 days for {home.runRecord.noRecord.map((n) => `“${n}”`).join(', ')}; its misses cannot be counted.
+                  </span>
+                )}
+              </p>
+            )}
             {home.recentRuns.length === 0 && <p className="home-empty">No scheduled runs recorded yet.</p>}
             <ul className="home-list">
               {home.recentRuns.map((r) => (

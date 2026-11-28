@@ -8,6 +8,7 @@ interface Props {
   onRename: (name: string) => void;
   onRetention: (policy: RetentionPolicy) => void;
   onArchive: (archived: boolean) => void;
+  onStar: (starred: boolean) => void;
   onResume: () => void;
   onOpenHome?: () => void;
 }
@@ -19,7 +20,7 @@ const KIND: Record<string, string> = {
 };
 
 /** Slim bar above a session: name, status, retention, and Resume when work was cut off. */
-export function SessionBar({ conversation, agentName, onRename, onRetention, onArchive, onResume, onOpenHome }: Props) {
+export function SessionBar({ conversation, agentName, onRename, onRetention, onArchive, onStar, onResume, onOpenHome }: Props) {
   const session = conversation.session;
   const [name, setName] = useState(conversation.name);
   useEffect(() => setName(conversation.name), [conversation.id, conversation.name]);
@@ -55,6 +56,16 @@ export function SessionBar({ conversation, agentName, onRename, onRetention, onA
           <strong className="session-name-static">{conversation.name}</strong>
         )}
         <span className="session-kind">{KIND[session.kind]}</span>
+        {session.kind !== 'room' && (
+          <button
+            className={`star-btn${session.starred ? ' is-on' : ''}`}
+            onClick={() => onStar(!session.starred)}
+            aria-pressed={Boolean(session.starred)}
+            title={session.starred ? 'Starred: never auto-deleted. Click to unstar.' : 'Star to keep this session even if retention would prune it'}
+          >
+            {session.starred ? '★' : '☆'}
+          </button>
+        )}
         {session.status === 'interrupted' && <span className="kind-chip kind-warn">Interrupted</span>}
         {session.status === 'archived' && <span className="kind-chip">Archived</span>}
       </div>

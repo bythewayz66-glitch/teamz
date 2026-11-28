@@ -99,7 +99,11 @@ export function CommandPalette({ open, onClose, state, onAction }: Props) {
             lastGroup = r.group;
             return (
               <div key={r.id}>
-                {header && <div className="palette-group">{!query.trim() && r.group === 'session' ? 'Recent sessions' : header}</div>}
+                {header && (
+                  <div className="palette-group">
+                    {!query.trim() && r.group === 'session' ? 'Recent sessions' : !query.trim() && r.group === 'agent' ? 'Recent agents' : header}
+                  </div>
+                )}
                 <button
                   id={`palette-opt-${i}`}
                   role="option"
