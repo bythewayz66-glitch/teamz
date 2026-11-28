@@ -18,6 +18,18 @@ import { runMentionChain } from '../lib/mentionFlow';
 import { sendToAgent } from '../api/agents';
 import { getSettings } from '../api/settings';
 import { fetchRunnerState, type RunnerAgentSummary } from '../api/runnerState';
+import {
+  adoptSessions,
+  applyRetention,
+  autoNameSession,
+  DEFAULT_SESSION_NAME,
+  foldRoomIntoSessions,
+  migrateToSessions,
+  newChatSession,
+  patchSession,
+  planResume,
+} from '../lib/sessions';
+import type { RetentionPolicy } from '../types';
 
 const STORAGE_KEY = 'teamz:workspace:v1';
 
@@ -41,19 +53,19 @@ function migrate(parsed: WorkspaceState): WorkspaceState {
 function loadState(): WorkspaceState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return structuredClone(seedState);
+    if (!raw) return migrateToSessions(structuredClone(seedState), Date.now());
     const parsed = JSON.parse(raw) as WorkspaceState;
     if (!parsed?.agents?.length || !parsed?.conversations?.length) {
-      return structuredClone(seedState);
+      return migrateToSessions(structuredClone(seedState), Date.now());
     }
-    return migrate({
+    return migrateToSessions(migrate({
       agents: parsed.agents,
       conversations: parsed.conversations,
       messages: parsed.messages ?? {},
       filters: parsed.filters ?? {},
       activeConversationId:
         parsed.activeConversationId ?? parsed.conversations[0]?.id ?? null,
-    });
+    }), Date.now());
   } catch {
     return structuredClone(seedState);
   }
@@ -127,6 +139,17 @@ export interface UseWorkspace {
   renameConversation: (id: string, name: string) => void;
   deleteConversation: (id: string) => void;
   openDirectChat: (agentId: string) => void;
+  /** Start a new named session with an agent and open it. */
+  newSession: (agentId: string, name?: string) => string;
+  /** Open any conversation or session by id. */
+  openSession: (id: string) => void;
+  renameSession: (id: string, name: string) => void;
+  setSessionRetention: (id: string, retention: RetentionPolicy) => void;
+  archiveSession: (id: string, archived: boolean) => void;
+  /** Starred sessions are never pruned by retention. */
+  starSession: (id: string, starred: boolean) => void;
+  /** Re-ask the agents whose replies were cut off; the whole conversation is the context. */
+  resumeSession: (id: string) => Promise<void>;
   resetWorkspace: () => void;
 }
 
@@ -172,6 +195,7 @@ export function mergeRunnerAgents(prev: WorkspaceState, serverAgents: RunnerAgen
       if (s.name && s.name !== existing.name) patch.name = s.name;
       if (endpointUrl && endpointUrl !== existing.endpointUrl) patch.endpointUrl = endpointUrl;
       if (s.model && s.model !== existing.model) patch.model = s.model;
+      if (s.role && !existing.role && existing.skills.length === 0) patch.role = s.role;
       if (Object.keys(patch).length > 0) {
         const idx = agents.findIndex((a) => a.id === s.id);
         agents[idx] = { ...agents[idx], ...patch };
@@ -188,6 +212,7 @@ export function mergeRunnerAgents(prev: WorkspaceState, serverAgents: RunnerAgen
         endpointUrl: endpointUrl || `http://${window.location.hostname || '127.0.0.1'}:8897/chat`,
         model: s.model || 'openai-fast',
         systemPrompt: `You are ${s.name || s.id}.`,
+        ...(s.role ? { role: s.role } : {}),
         skills: [],
         createdAt: Date.now(),
       });
@@ -221,6 +246,23 @@ export function useWorkspace(): UseWorkspace {
   const [state, setState] = useState<WorkspaceState>(loadState);
   const [typing, setTyping] = useState<Record<string, string[]>>({});
   const aborters = useRef<Map<string, AbortController>>(new Map());
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // Session upkeep. Every new DM becomes a session, and finished Build Room
+  // replies are copied into the replying agent's own work session. Keyed on
+  // counts so it does not re-run on every streamed token; every step returns
+  // the same state object when there is nothing to change.
+  const roomSentCount = (state.messages['conv-build-room'] ?? []).filter((m) => m.status === 'sent').length;
+  useEffect(() => {
+    setState((s) => foldRoomIntoSessions(adoptSessions(s, Date.now()), Date.now()));
+  }, [state.conversations.length, roomSentCount]);
+
+  // Retention is enforced on load (see migrateToSessions) and then hourly.
+  useEffect(() => {
+    const timer = setInterval(() => setState((s) => applyRetention(s, Date.now())), 3_600_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Abort every in-flight request if the component unmounts.
   useEffect(() => {
@@ -253,7 +295,7 @@ export function useWorkspace(): UseWorkspace {
       try {
         const parsed = JSON.parse(e.newValue) as WorkspaceState;
         if (parsed?.agents?.length && parsed?.conversations?.length) {
-          setState(migrate(parsed));
+          setState(foldRoomIntoSessions(adoptSessions(migrate(parsed), Date.now()), Date.now()));
         }
       } catch {
         /* ignore malformed */
@@ -362,6 +404,123 @@ export function useWorkspace(): UseWorkspace {
   }, []);
 
   /**
+   * Deliver one turn: ask each target for a reply (plus any @-mention chain)
+   * and write the replies into the conversation. Shared by `sendMessage` and
+   * `resumeSession`, so a resumed reply behaves exactly like a fresh one.
+   * `history` is the full context the agents see; it grows as they answer.
+   */
+  const deliverTurn = useCallback(
+    async (opts: {
+      conv: Conversation;
+      members: Agent[];
+      byId: Map<string, Agent>;
+      history: Message[];
+      targets: Agent[];
+      directed: boolean;
+    }) => {
+      const { conv, members, byId, history, targets, directed } = opts;
+      const others = members.map((a) => ({ id: a.id, name: a.name }));
+
+      /**
+       * Ask one agent for a reply and deliver it into the thread. Returns
+       * the reply text, or null when no reply was delivered (error, abort)
+       * — a null reply routes the chain nowhere.
+       */
+      const sendOne = async (
+        agent: Agent,
+        isDirected: boolean,
+        mentionedBy?: Agent,
+      ): Promise<string | null> => {
+        const controller = new AbortController();
+        aborters.current.set(`${conv.id}:${agent.id}`, controller);
+
+        setTyping((t) => ({
+          ...t,
+          [conv.id]: [...(t[conv.id] ?? []), agent.id],
+        }));
+
+        const placeholderId = uid('m');
+        appendMessage({
+          id: placeholderId,
+          conversationId: conv.id,
+          authorType: 'agent',
+          authorId: agent.id,
+          text: '',
+          createdAt: Date.now(),
+          status: 'pending',
+        });
+
+        try {
+          const reply = await sendToAgent(agent, history, byId, {
+            conversationId: conv.id,
+            conversationName: conv.name,
+            conversationKind: conv.kind === 'channel' ? 'channel' : 'direct',
+            topic: conv.topic,
+            otherAgents: others.filter((o) => o.id !== agent.id),
+            directed: isDirected,
+            mentionedBy: mentionedBy?.name,
+            signal: controller.signal,
+            // Stream tokens into the placeholder bubble as they arrive.
+            onDelta: (partial) => patchMessage(conv.id, placeholderId, { text: partial }),
+          });
+          const createdAt = Date.now();
+          patchMessage(conv.id, placeholderId, {
+            text: reply,
+            status: 'sent',
+            createdAt,
+          });
+          history.push({
+            id: placeholderId,
+            conversationId: conv.id,
+            authorType: 'agent',
+            authorId: agent.id,
+            text: reply,
+            createdAt,
+            status: 'sent',
+          });
+          return reply;
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            patchMessage(conv.id, placeholderId, {
+              text: '_Cancelled._',
+              status: 'error',
+              createdAt: Date.now(),
+            });
+          } else {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            patchMessage(conv.id, placeholderId, {
+              text: `⚠️ Couldn’t get a reply from ${agent.name}.\n\n\`${message}\`\n\n${
+                getSettings().provider === 'custom'
+                  ? 'Check the endpoint URL in this agent’s settings.'
+                  : 'Check Workspace & API settings (provider, model, API key) and try again.'
+              }`,
+              status: 'error',
+              createdAt: Date.now(),
+            });
+          }
+          return null;
+        } finally {
+          aborters.current.delete(`${conv.id}:${agent.id}`);
+          setTyping((t) => ({
+            ...t,
+            [conv.id]: (t[conv.id] ?? []).filter((id) => id !== agent.id),
+          }));
+        }
+      };
+
+      // The mention flow drives the fan-out: the initial targets first, then
+      // any agent a reply @-mentions, bounded by the chain's safety caps.
+      await runMentionChain({
+        members,
+        initialTargets: targets,
+        initialDirected: directed,
+        send: sendOne,
+      });
+    },
+    [appendMessage, patchMessage],
+  );
+
+  /**
    * Send one user message.
    *
    * Routing rules:
@@ -369,7 +528,7 @@ export function useWorkspace(): UseWorkspace {
    *     the stored message is marked `directed` with a `mentions` list.
    *   • A channel with no mention fans out to every member (the original
    *     behaviour) — that is the room's default.
-   *   • A direct chat always goes to its single member, mention or not.
+   *   • A direct chat or session always goes to its single member, mention or not.
    *   • An agent's reply that @-mentions another agent in the same channel
    *     chains on to them: the reply is a state in the mention flow, and
    *     scanning it for @-mentions routes to the next agent(s). The chain
@@ -407,110 +566,78 @@ export function useWorkspace(): UseWorkspace {
         ...(directed ? { mentions: mentioned.map((a) => a.id), directed: true } : {}),
       };
       appendMessage(userMessage);
+      setState((s) => autoNameSession(s, conv.id));
 
       // Grows as each agent answers, so later agents in a channel see what
       // earlier ones just said and can build on it instead of repeating it.
       const history: Message[] = [...activeMessages, userMessage];
-      const others = members.map((a) => ({ id: a.id, name: a.name }));
+      await deliverTurn({ conv, members, byId: agentsById, history, targets, directed });
+    },
+    [activeConversation, activeMessages, agentsById, appendMessage, deliverTurn],
+  );
 
-      /**
-       * Ask one agent for a reply and deliver it into the thread. Returns
-       * the reply text, or null when no reply was delivered (error, abort)
-       * — a null reply routes the chain nowhere.
-       */
-      const sendOne = async (
-        agent: Agent,
-        isDirected: boolean,
-        mentionedBy?: Agent,
-      ): Promise<string | null> => {
-        const controller = new AbortController();
-        aborters.current.set(`${conv.id}:${agent.id}`, controller);
-
-        setTyping((t) => ({
-          ...t,
-          [conv.id]: [...(t[conv.id] ?? []), agent.id],
-        }));
-
-        const placeholderId = uid('m');
-        appendMessage({
-          id: placeholderId,
-          conversationId: conv.id,
-          authorType: 'agent',
-          authorId: agent.id,
-          text: '',
-          createdAt: Date.now(),
-          status: 'pending',
-        });
-
-        try {
-          const reply = await sendToAgent(agent, history, agentsById, {
-            conversationId: conv.id,
-            conversationName: conv.name,
-            conversationKind: conv.kind,
-            topic: conv.topic,
-            otherAgents: others.filter((o) => o.id !== agent.id),
-            directed: isDirected,
-            mentionedBy: mentionedBy?.name,
-            signal: controller.signal,
-            // Stream tokens into the placeholder bubble as they arrive.
-            onDelta: (partial) => patchMessage(conv.id, placeholderId, { text: partial }),
-          });
-          const createdAt = Date.now();
-          patchMessage(conv.id, placeholderId, {
-            text: reply,
-            status: 'sent',
-            createdAt,
-          });
-          history.push({
-            id: placeholderId,
-            conversationId: conv.id,
-            authorType: 'agent',
-            authorId: agent.id,
-            text: reply,
-            createdAt,
-            status: 'sent',
-          });
-          return reply;
-        } catch (err) {
-          if (err instanceof DOMException && err.name === 'AbortError') {
-            patchMessage(conv.id, placeholderId, {
-              text: '_Cancelled._',
-              status: 'error',
-              createdAt: Date.now(),
-            });
-          } else {
-            const message = err instanceof Error ? err.message : 'Unknown error';
-            patchMessage(conv.id, placeholderId, {
-              text: `\u26a0\ufe0f Couldn\u2019t get a reply from ${agent.name}.\n\n\`${message}\`\n\n${
-                getSettings().provider === 'custom'
-                  ? 'Check the endpoint URL in this agent\u2019s settings.'
-                  : 'Check Workspace & API settings (provider, model, API key) and try again.'
-              }`,
-              status: 'error',
-              createdAt: Date.now(),
-            });
-          }
-          return null;
-        } finally {
-          aborters.current.delete(`${conv.id}:${agent.id}`);
-          setTyping((t) => ({
-            ...t,
-            [conv.id]: (t[conv.id] ?? []).filter((id) => id !== agent.id),
-          }));
-        }
-      };
-
-      // The mention flow drives the fan-out: the initial targets first, then
-      // any agent a reply @-mentions, bounded by the chain's safety caps.
-      await runMentionChain({
+  const resumeSession = useCallback(
+    async (id: string) => {
+      const plan = planResume(stateRef.current, id);
+      if (!plan) return;
+      setState(plan.nextState);
+      const byId = new Map(plan.nextState.agents.map((a) => [a.id, a]));
+      const members = plan.conversation.agentIds
+        .map((a) => byId.get(a))
+        .filter((a): a is Agent => Boolean(a));
+      const targets = plan.targetAgentIds
+        .map((a) => byId.get(a))
+        .filter((a): a is Agent => Boolean(a));
+      if (targets.length === 0) return;
+      await deliverTurn({
+        conv: plan.conversation,
         members,
-        initialTargets: targets,
-        initialDirected: directed,
-        send: sendOne,
+        byId,
+        history: [...plan.history],
+        targets,
+        directed: Boolean(plan.userMessage.directed),
       });
     },
-    [activeConversation, activeMessages, agentsById, appendMessage, patchMessage],
+    [deliverTurn],
   );
+
+  const newSession = useCallback((agentId: string, name?: string): string => {
+    const id = uid('sess');
+    setState((s) => {
+      const owner = s.agents.find((a) => a.id === agentId);
+      if (!owner) return s;
+      const conv = newChatSession(owner, id, Date.now(), name?.trim() || DEFAULT_SESSION_NAME);
+      return {
+        ...s,
+        conversations: [conv, ...s.conversations],
+        messages: { ...s.messages, [id]: [] },
+        activeConversationId: id,
+      };
+    });
+    return id;
+  }, []);
+
+  const openSession = useCallback((id: string) => {
+    setState((s) => (s.conversations.some((c) => c.id === id) ? { ...s, activeConversationId: id } : s));
+  }, []);
+
+  const renameSession = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setState((s) => patchSession(s, id, {}, trimmed));
+  }, []);
+
+  const setSessionRetention = useCallback((id: string, retention: RetentionPolicy) => {
+    setState((s) => applyRetention(patchSession(s, id, { retention }), Date.now()));
+  }, []);
+
+  const archiveSession = useCallback((id: string, archived: boolean) => {
+    setState((s) => patchSession(s, id, { status: archived ? 'archived' : 'active' }));
+  }, []);
+
+  const starSession = useCallback((id: string, starred: boolean) => {
+    setState((s) => patchSession(s, id, { starred }));
+  }, []);
 
   /** Insert an agent, plus its 1:1 thread, and optionally invite it into a room. */
   const insertAgent = useCallback(
@@ -652,7 +779,7 @@ export function useWorkspace(): UseWorkspace {
     setState((s) => {
       const conversations = s.conversations
         .map((c) =>
-          c.kind === 'direct' && c.agentIds[0] === id
+          (c.kind === 'direct' || c.kind === 'session') && c.agentIds[0] === id
             ? null
             : { ...c, agentIds: c.agentIds.filter((agentId) => agentId !== id) },
         )
@@ -750,7 +877,7 @@ export function useWorkspace(): UseWorkspace {
     aborters.current.forEach((c) => c.abort());
     aborters.current.clear();
     setTyping({});
-    setState(structuredClone(seedState));
+    setState(migrateToSessions(structuredClone(seedState), Date.now()));
   }, []);
 
   const activeFilter: MessageFilter =
@@ -779,6 +906,13 @@ export function useWorkspace(): UseWorkspace {
     renameConversation,
     deleteConversation,
     openDirectChat,
+    newSession,
+    openSession,
+    renameSession,
+    setSessionRetention,
+    archiveSession,
+    starSession,
+    resumeSession,
     resetWorkspace,
   };
 }

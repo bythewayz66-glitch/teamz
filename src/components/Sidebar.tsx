@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation } from '../types';
 import { AgentAvatar, AvatarStack, StatusDot } from './Avatar';
 import { ChatIcon, CloseIcon, HashIcon, PlusIcon, SearchIcon, SettingsIcon, SparkIcon } from './Icons';
+import { HomeIcon } from './HomeIcon';
 import { formatRelative } from '../lib/format';
 
 interface SidebarProps {
@@ -20,6 +21,9 @@ interface SidebarProps {
   onNewChannel: () => void;
   onOpenAgentSettings: (agentId: string) => void;
   onOpenAgentChat: (agentId: string) => void;
+  onOpenAgentHome: (agentId: string) => void;
+  onNewSession: (agentId: string) => void;
+  onOpenSession: (conversationId: string) => void;
   onOpenWorkspaceInfo: () => void;
 }
 
@@ -37,9 +41,36 @@ export function Sidebar({
   onNewChannel,
   onOpenAgentSettings,
   onOpenAgentChat,
+  onOpenAgentHome,
+  onNewSession,
+  onOpenSession,
   onOpenWorkspaceInfo,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  /** Each agent's own sessions, newest first, for the expandable list under its row. */
+  const sessionsByAgent = useMemo(() => {
+    const map = new Map<string, Conversation[]>();
+    for (const c of conversations) {
+      const owner = c.session?.agentId;
+      if (!owner || c.session?.status === 'archived') continue;
+      const list = map.get(owner) ?? [];
+      list.push(c);
+      map.set(owner, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => (lastMessageAt[b.id] ?? b.createdAt) - (lastMessageAt[a.id] ?? a.createdAt));
+    }
+    return map;
+  }, [conversations, lastMessageAt]);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   // When the drawer opens on a small screen, put focus inside it so keyboard
@@ -159,6 +190,22 @@ export function Sidebar({
                     </button>
                     <button
                       className="agent-row-action"
+                      onClick={() => onOpenAgentHome(agent.id)}
+                      title={`${agent.name} home`}
+                      aria-label={`${agent.name} home`}
+                    >
+                      <HomeIcon size={14} />
+                    </button>
+                    <button
+                      className="agent-row-action"
+                      onClick={() => onNewSession(agent.id)}
+                      title={`New session with ${agent.name}`}
+                      aria-label={`New session with ${agent.name}`}
+                    >
+                      <PlusIcon size={14} />
+                    </button>
+                    <button
+                      className="agent-row-action"
                       onClick={() => onOpenAgentChat(agent.id)}
                       title={`Message ${agent.name}`}
                       aria-label={`Message ${agent.name}`}
@@ -174,6 +221,44 @@ export function Sidebar({
                       <SettingsIcon size={14} />
                     </button>
                   </div>
+                  {(sessionsByAgent.get(agent.id)?.length ?? 0) > 0 && (
+                    <>
+                      <button
+                        className="agent-sessions-toggle"
+                        onClick={() => toggleExpanded(agent.id)}
+                        aria-expanded={expanded.has(agent.id)}
+                      >
+                        {expanded.has(agent.id) ? '▾' : '▸'} {sessionsByAgent.get(agent.id)!.length} session
+                        {sessionsByAgent.get(agent.id)!.length === 1 ? '' : 's'}
+                      </button>
+                      {expanded.has(agent.id) && (
+                        <ul className="agent-sessions">
+                          {sessionsByAgent
+                            .get(agent.id)!
+                            .slice(0, 6)
+                            .map((c) => (
+                              <li key={c.id}>
+                                <button
+                                  className={`agent-session${c.id === activeConversationId ? ' is-active' : ''}`}
+                                  onClick={() => onOpenSession(c.id)}
+                                  title={c.name}
+                                >
+                                  <span>{c.session?.starred ? '★ ' : ''}{c.name}</span>
+                                  <small>{formatRelative(lastMessageAt[c.id] ?? c.createdAt)}</small>
+                                </button>
+                              </li>
+                            ))}
+                          {sessionsByAgent.get(agent.id)!.length > 6 && (
+                            <li>
+                              <button className="agent-session more" onClick={() => onOpenAgentHome(agent.id)}>
+                                All {sessionsByAgent.get(agent.id)!.length} on {agent.name}’s home
+                              </button>
+                            </li>
+                          )}
+                        </ul>
+                      )}
+                    </>
+                  )}
                 </li>
               );
             })}

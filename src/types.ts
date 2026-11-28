@@ -88,10 +88,47 @@ export interface Agent {
   lastPingAt?: number;
   lastPingOk?: boolean;
   lastPingMessage?: string;
+  /** Default retention for this agent's new sessions (Gamut's per-agent "Session Auto-Delete"). */
+  sessionRetention?: RetentionPolicy;
   createdAt: number;
 }
 
-export type ConversationKind = 'direct' | 'channel';
+/**
+ * `session` is a named, per-agent conversation beyond the agent's one
+ * pinned DM: extra chats and the runner-work sessions. The sidebar only lists
+ * `direct` and `channel`, so sessions never crowd the rail; they are reached
+ * from an agent's home or from search.
+ */
+export type ConversationKind = 'direct' | 'channel' | 'session';
+
+/** chat = a conversation with one agent; work = what an agent did in the room
+ * (runner jobs, assignments); room = the shared channel Jesse watches. */
+export type SessionKind = 'chat' | 'work' | 'room';
+
+/** interrupted = a reply was in flight when the tab/runner stopped; resumable. */
+export type SessionStatus = 'active' | 'interrupted' | 'archived';
+
+/** How long a session's messages are kept. Always explicit, never implied. */
+export type RetentionPolicy =
+  | { mode: 'forever' }
+  | { mode: 'days'; days: number }
+  | { mode: 'messages'; max: number };
+
+/** Durable-work metadata a conversation carries when it is a session. */
+export interface SessionMeta {
+  kind: SessionKind;
+  /** Owning agent. Absent only for the shared room. */
+  agentId?: string;
+  status: SessionStatus;
+  retention: RetentionPolicy;
+  /** Starred sessions are never pruned by retention. */
+  starred?: boolean;
+  updatedAt: number;
+  /** Set when a reply was cut off; cleared on resume. */
+  interruptedAt?: number;
+  /** For `work` sessions: the week they cover, e.g. `2026-W48`. */
+  weekKey?: string;
+}
 
 /**
  * A conversation is either a 1:1 chat with a single agent (`direct`)
@@ -105,6 +142,8 @@ export interface Conversation {
   agentIds: string[];
   topic?: string;
   createdAt: number;
+  /** Present when this conversation is a session (see SessionMeta). */
+  session?: SessionMeta;
 }
 
 export type MessageStatus = 'sent' | 'pending' | 'error';
@@ -141,6 +180,8 @@ export interface Message {
   mentions?: string[];
   /** True when a user message in a channel is a DM-style aside to one agent. */
   directed?: boolean;
+  /** A reply cut off mid-flight (tab closed, network lost); resumable. */
+  interrupted?: boolean;
 }
 
 export interface WorkspaceState {
