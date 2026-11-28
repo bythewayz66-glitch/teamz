@@ -6,12 +6,12 @@ import {
   emptyRunnerState,
   loadRunnerState,
   processDue,
-  reapOrphansOnDisk,
   resetDispatchThrottle,
   saveRunnerState,
   type RunnerAgent,
   type RunnerState,
 } from '../../scripts/runner-lib';
+import { processDueWithRhythm, reapOrphansOnDisk } from '../../scripts/runner-tick';
 import {
   APPROVAL_TTL_MS,
   ORPHAN_RUN_MAX_AGE_MS,
@@ -20,6 +20,7 @@ import {
   expireStaleApprovals,
   expireStaleBackoff,
   isCreditRefusalReply,
+  markOutOfCredits,
   pickJobsToStart,
   reapOrphanedRuns,
   reportStaleParkedJobs,
@@ -113,7 +114,7 @@ describe('restart mid-tick — checkpoint plus orphan reaping', () => {
     const onDisk = await killedMidStage();
     expect(onDisk.cronJobs[0].lastRunAt).not.toBeNull();
     const fired: string[] = [];
-    await processDue(onDisk, new Date(T0 + 5_000), {
+    await processDueWithRhythm(onDisk, new Date(T0 + 5_000), {
       dispatchPrompt: async (_a, p) => {
         fired.push(p);
         return 'ok';
@@ -141,11 +142,11 @@ describe('restart mid-tick — checkpoint plus orphan reaping', () => {
     let state = await killedMidStage();
     const early: string[] = [];
     for (let i = 1; i <= 11; i++) {
-      state = (await processDue(state, new Date(T0 + i * 10 * MIN), deps(early))).state;
+      state = (await processDueWithRhythm(state, new Date(T0 + i * 10 * MIN), deps(early))).state;
     }
     expect(early.filter((p) => /Design|Build/.test(p))).toHaveLength(0);
     const late: string[] = [];
-    state = (await processDue(state, new Date(T0 + ORPHAN_RUN_MAX_AGE_MS + 10 * MIN), deps(late))).state;
+    state = (await processDueWithRhythm(state, new Date(T0 + ORPHAN_RUN_MAX_AGE_MS + 10 * MIN), deps(late))).state;
     expect(late.some((p) => /Design|Build/.test(p))).toBe(true);
   });
 
@@ -168,7 +169,7 @@ describe('restart mid-tick — checkpoint plus orphan reaping', () => {
       expect(reloaded.jobs[0].currentStageIndex).toBe(stageBefore);
 
       const prompts: string[] = [];
-      const out = await processDue(reloaded, new Date(T0 + 10 * MIN + 61_000), {
+      const out = await processDueWithRhythm(reloaded, new Date(T0 + 10 * MIN + 61_000), {
         dispatchPrompt: async (_a, p) => {
           prompts.push(p);
           return 'recovered';
@@ -264,7 +265,7 @@ describe('stale approvals expire and the stage is re-reviewed', () => {
     const req = ask(job, 'release', T0);
     const parked: ProductJob = { ...job, status: 'awaiting_approval', updatedAt: T0 };
     const reviewerCalls: string[] = [];
-    const out = await processDue(stateWith([parked], { approvals: [req] }), new Date(T0 + APPROVAL_TTL_MS + HOUR), {
+    const out = await processDueWithRhythm(stateWith([parked], { approvals: [req] }), new Date(T0 + APPROVAL_TTL_MS + HOUR), {
       dispatchPrompt: async (a, p) => {
         if (a.id === 'agent-reviewer') {
           reviewerCalls.push(p);
@@ -278,6 +279,24 @@ describe('stale approvals expire and the stage is re-reviewed', () => {
       log: () => {},
     });
     expect(out.fired.some((l) => /expired/.test(l))).toBe(true);
+    expect(reviewerCalls.length).toBeGreaterThan(0);
+  });
+
+  it('a job parked by a later transient failure is not held by an old expired request', async () => {
+    const job = gatedJob();
+    const old = { ...ask(job, 'release', T0), expiredAt: T0 + APPROVAL_TTL_MS };
+    const parked: ProductJob = { ...job, status: 'awaiting_approval', updatedAt: T0 + APPROVAL_TTL_MS };
+    const reviewerCalls: string[] = [];
+    await processDueWithRhythm(stateWith([parked], { approvals: [old] }), new Date(T0 + APPROVAL_TTL_MS + 5 * HOUR), {
+      dispatchPrompt: async (a, p) => {
+        if (a.id === 'agent-reviewer') reviewerCalls.push(p);
+        return 'APPROVE: ok.';
+      },
+      executeCommand: async () => {
+        throw new Error('no commands');
+      },
+      log: () => {},
+    });
     expect(reviewerCalls.length).toBeGreaterThan(0);
   });
 
@@ -298,7 +317,7 @@ describe('provider resilience', () => {
   it('REFUSAL-AS-SUCCESS: a provider out-of-credits text returned as the reply is a failed run, not work', async () => {
     const refusal =
       "The account behind this API key doesn't have enough credits. Please [top up](https://enter.pollinations.ai/top-up?ref=x) or [complete a quest](https://enter.pollinations.ai/quests).";
-    const out = await processDue(stateWith([oneStageJob('a')]), new Date(T0), {
+    const out = await processDueWithRhythm(stateWith([oneStageJob('a')]), new Date(T0), {
       dispatchPrompt: async () => refusal,
       executeCommand: async () => {
         throw new Error('no commands');
@@ -345,7 +364,7 @@ describe('provider resilience', () => {
       { id: 'agent-provider-researcher', name: 'Provider Researcher', endpointUrl: atlas.endpointUrl, model: 't', systemPrompt: '', provider: 'ovh' },
     ];
     const prompts: string[] = [];
-    await processDue(state, new Date(T0), {
+    await processDueWithRhythm(state, new Date(T0), {
       dispatchPrompt: async (a, p) => {
         if (a.id === 'agent-provider-researcher') prompts.push(p);
         return 'noted';
@@ -364,6 +383,17 @@ describe('provider resilience', () => {
     expect(healthy).not.toContain('pollinations');
   });
 
+  it('markOutOfCredits moves a provider from healthy to limited and names it, and still warns on an unexpected shape', () => {
+    const prompt =
+      'RATE-LIMIT RESCUE — wake up. Already-programmed providers: pollinations, ovh. Healthy right now (not rate-limited): pollinations, ovh. Rate-limited right now: none. FIRST: check.';
+    const out = markOutOfCredits(prompt, new Set(['pollinations']));
+    expect(out).toContain('Healthy right now (not rate-limited): ovh. Rate-limited right now: pollinations. FIRST: check.');
+    expect(out).toMatch(/OUT OF CREDITS[^.]*pollinations\.$/);
+    expect(markOutOfCredits(prompt, new Set())).toBe(prompt);
+    const odd = markOutOfCredits('something else entirely', new Set(['x']));
+    expect(odd).toMatch(/OUT OF CREDITS[^.]*x\.$/);
+  });
+
   it('stale backoff is dropped after a quiet window and kept inside it', () => {
     const backoff = {
       fresh: { consecutiveFailures: 3, lastFailedTs: T0, nextAllowedTs: T0 + HOUR },
@@ -377,7 +407,7 @@ describe('provider resilience', () => {
   it('processDue clears stale backoff entries from state', async () => {
     const s = stateWith([]);
     s.rateLimitBackoff = { stale: { consecutiveFailures: 8, lastFailedTs: T0 - 30 * HOUR, nextAllowedTs: T0 - 26 * HOUR } };
-    const out = await processDue(s, new Date(T0), {
+    const out = await processDueWithRhythm(s, new Date(T0), {
       dispatchPrompt: async () => 'ok',
       executeCommand: async () => {
         throw new Error('no commands');
@@ -442,7 +472,7 @@ describe('starvation — 163 recurring jobs, 4 dispatches an hour', () => {
     let state = stateWith(fleet());
     const ranJobs = new Set<string>();
     for (let t = 0; t < NEVER_RUN; t++) {
-      const out = await processDue(state, new Date(T0 + t * TICK_MS), {
+      const out = await processDueWithRhythm(state, new Date(T0 + t * TICK_MS), {
         dispatchPrompt: async (_a, p) => {
           ranJobs.add(/Do (job-\d+)/.exec(p)![1]);
           return 'done';
@@ -482,7 +512,7 @@ describe('starvation — 163 recurring jobs, 4 dispatches an hour', () => {
 
   it('reports the backlog and its drain time through onRhythmEvent', async () => {
     const events: Array<{ type: string; fields: Record<string, unknown> }> = [];
-    await processDue(stateWith(fleet()), new Date(T0), {
+    await processDueWithRhythm(stateWith(fleet()), new Date(T0), {
       dispatchPrompt: async () => 'done',
       executeCommand: async () => {
         throw new Error('no commands');
