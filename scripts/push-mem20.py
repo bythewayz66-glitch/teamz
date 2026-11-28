@@ -5,8 +5,14 @@ Runs as root via sudo (teamz may run ONLY this file, NOPASSWD — see
 deploy/teamz-push-mem20.sudoers). It commits and pushes ONE staged patch
 to the mem20 repo on GitHub, and only when every check below passes:
 
-  1. Exactly one patch is pending under /var/lib/teamz-runner/patches/
-     (zero -> NOTHING-TO-PUSH, exit 0; more than one -> refuse).
+  1. A pending patch is selected from /var/lib/teamz-runner/patches/:
+     zero -> NOTHING-TO-PUSH, exit 0; several may queue at once, and the
+     script pushes the first (filename order) whose job has a live
+     Reviewer approval for the upgrade stage. A patch with no approval
+     is not an error — it stays queued and the run reports
+     NOTHING-TO-PUSH. (Before Nov 27, 2026 the rule was "more than one
+     patch -> refuse", which blocked every push — including report jobs
+     with nothing to push — the moment a second patch was staged.)
   2. The patch itself is valid: a well-formed job id, a repo-relative
      path that stays inside /opt/mem20, and a one-line message.
      Blocked, always: .github/ and .git/ paths, requirements.txt (the
@@ -127,21 +133,20 @@ def validate_rel_path(rel):
     return target
 
 
-def load_pending_patch():
-    """Exactly one pending patch, or (None, reason) when there is none."""
+def load_pending_patches():
+    """All pending patches, sorted by filename. Each entry is
+    (path, patch dict). An unreadable patch file is a hard error —
+    a corrupt patch must be loud, never silently skipped."""
     if not PATCH_DIR.is_dir():
-        return None, "no patches directory"
+        return []
     pending = sorted(p for p in PATCH_DIR.glob("job-*.json") if p.is_file())
-    if not pending:
-        return None, "no staged patch"
-    if len(pending) > 1:
-        names = ", ".join(p.name for p in pending)
-        raise RuntimeError(f"ambiguous: {len(pending)} patches pending ({names}) — refusing")
-    try:
-        patch = json.loads(pending[0].read_text(encoding="utf-8"))
-    except (OSError, ValueError) as err:
-        raise RuntimeError(f"cannot read pending patch {pending[0].name}: {err}")
-    return (pending[0], patch), None
+    out_patches = []
+    for p in pending:
+        try:
+            out_patches.append((p, json.loads(p.read_text(encoding="utf-8"))))
+        except (OSError, ValueError) as err:
+            raise RuntimeError(f"cannot read pending patch {p.name}: {err}")
+    return out_patches
 
 
 def validate_patch(patch):
@@ -169,21 +174,26 @@ def validate_patch(patch):
     return job_id, rel, target, old_text, new_text, message.strip()
 
 
-def check_approval(job_id):
-    """Live Reviewer approval for (job_id, 'upgrade') on disk, plus the
-    job sitting on its push stage. Returns the approval id."""
+def find_live_approval(job_id):
+    """Live unconsumed Reviewer approval for (job_id, 'upgrade'), or None
+    when the job is unknown, is not on its push stage, or has no such
+    approval. Raises only when the runner state itself cannot be read —
+    every other case is a patch that is not ready to push, not an error.
+    The job sitting on its push stage AND the approval are both required:
+    the runner's governance gate is the primary enforcement; this is the
+    on-disk re-check."""
     try:
         state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError) as err:
         raise RuntimeError(f"cannot read runner state: {err}")
     job = next((j for j in state.get("jobs", []) if j.get("id") == job_id), None)
     if job is None:
-        raise RuntimeError(f"unknown job {job_id} in runner state")
+        return None
     stages = job.get("stages", [])
     idx = job.get("currentStageIndex")
     current = stages[idx].get("stage") if isinstance(idx, int) and 0 <= idx < len(stages) else None
     if current != PUSH_STAGE:
-        raise RuntimeError(f"job {job_id} is not on its push stage (current: {current})")
+        return None
     for approval in state.get("approvals", []):
         if (
             approval.get("jobId") == job_id
@@ -193,9 +203,7 @@ def check_approval(job_id):
             and approval.get("consumedAt") is None
         ):
             return approval.get("id")
-    raise RuntimeError(
-        f"no live Reviewer approval for job {job_id} stage '{PUSH_STAGE}' — refusing"
-    )
+    return None
 
 
 def archive_patch(patch_path, job_id):
@@ -208,16 +216,46 @@ def archive_patch(patch_path, job_id):
 
 def main():
     try:
-        found, no_patch = load_pending_patch()
+        pending = load_pending_patches()
     except RuntimeError as err:
         return refuse(str(err))
-    if found is None:
-        out(f"NOTHING-TO-PUSH: {no_patch}")
+    if not pending:
+        out("NOTHING-TO-PUSH: no staged patch")
         return 0
-    patch_path, patch = found
+    # Select the first pending patch whose job has a live Reviewer
+    # approval for the upgrade stage. A patch with no approval is not
+    # an error — it just is not ready to push, so the run reports
+    # NOTHING-TO-PUSH and the patch stays queued. This is what lets
+    # several patches queue at once (Nov 27, 2026 unstick job): the old
+    # "more than one patch -> refuse" rule blocked every push — including
+    # report jobs with nothing to push — the moment a second patch was
+    # staged. One patch is pushed per invocation, in filename order;
+    # every safety check below still applies to the selected patch.
+    # An invalid patch is skipped here but recorded: if nothing is
+    # selectable and a patch failed validation, refuse loudly instead
+    # of reporting NOTHING-TO-PUSH for a job that did stage a patch.
+    selected = None
+    approval_id = None
+    first_error = None
+    for patch_path, patch in pending:
+        try:
+            vals = validate_patch(patch)
+        except RuntimeError as err:
+            if first_error is None:
+                first_error = str(err)
+            continue
+        job_id = vals[0]
+        approval_id = find_live_approval(job_id)
+        if approval_id is not None:
+            selected = (patch_path, vals)
+            break
+    if selected is None:
+        if first_error is not None:
+            return refuse(first_error)
+        out("NOTHING-TO-PUSH: no staged patch has a live Reviewer approval")
+        return 0
+    patch_path, (job_id, rel, target, old_text, new_text, message) = selected
     try:
-        job_id, rel, target, old_text, new_text, message = validate_patch(patch)
-        approval_id = check_approval(job_id)
 
         # Repo preconditions: main, clean tree, HEAD == origin/main.
         branch = git_ok("rev-parse", "--abbrev-ref", "HEAD")
