@@ -2820,16 +2820,20 @@ const server = createServer(async (req, res) => {
       return result.text;
     };
 
-    const result = await runToolLoop(propose, { maxIterations: MAX_TOOL_ITERATIONS, deadline });
+    // Per-agent iteration budget (Jesse, Nov 28, 2026): the Orchestrator
+    // runs at 50 because the 25 default kept cutting its triage runs off
+    // mid-room-read. Every other agent keeps the 25 default.
+    const effectiveMaxIterations = agent?.maxIterations ?? MAX_TOOL_ITERATIONS;
+    const result = await runToolLoop(propose, { maxIterations: effectiveMaxIterations, deadline });
     if (result.hitIterationLimit) {
       // Kill-on-limit (Jesse, Nov 28, 2026): the loop burned the whole
-      // 25-iteration budget without finishing, so this is a failed
+      // iteration budget without finishing, so this is a failed
       // reply, not a partial success — the truncated tool observation
       // is never handed back as an answer, and the runner records the
       // run failed (the job retries on a later tick; the slot is freed
       // at once). No rate-limit event is recorded: this is not a
       // provider quota wall, so rescue must not move the agent.
-      const killMessage = `agent hit the ${MAX_TOOL_ITERATIONS}-iteration tool limit without finishing — run killed, no partial output kept`;
+      const killMessage = `agent hit the ${effectiveMaxIterations}-iteration tool limit without finishing — run killed, no partial output kept`;
       log(
         `reply KILLED agent=${agent?.name ?? '?'} iterations=${result.iterations} ms=${Date.now() - startedAt}: ${killMessage}`,
       );

@@ -85,6 +85,14 @@ export interface RunnerAgent {
    */
   provider?: string;
   systemPrompt?: string;
+  /**
+   * Per-agent tool-iteration budget for the agent endpoint (same knob as
+   * mem20crewz Agent `max_iter`). Absent means the workspace default
+   * (MAX_TOOL_ITERATIONS). Set only for agents Jesse explicitly raises —
+   * the Orchestrator got 50 on Nov 28, 2026 because the 25 default kept
+   * cutting its triage runs off mid-room-read.
+   */
+  maxIterations?: number;
 }
 
 /**
@@ -339,6 +347,7 @@ export function buildAgentRequest(agent: RunnerAgent, prompt: string, channelId:
       model: agent.model ?? '',
       provider: agent.provider ?? '',
       systemPrompt: agent.systemPrompt ?? '',
+      maxIterations: agent.maxIterations ?? null,
     },
     messages: [{ role: 'user', content: prompt }],
     channel: { id: channelId, name: channelId, members: [] },
