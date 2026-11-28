@@ -7,7 +7,11 @@
  *   node scripts/build-runner-state.mjs \
  *     --agents runner-agents.json \
  *     --in  /var/lib/teamz-runner/state.json \
- *     --out /tmp/state-new.json
+ *     --out /tmp/state-new.json \
+ *     [--extra-agents new-agents-1-website-currency.json]
+ *
+ * --extra-agents adds agents that carry a `firstJob` (type "job") and
+ * the recurring ProductJob built from it; without it the job never exists.
  *
  * What it does:
  *   - Agents: wholesale from runner-agents.json (the single source of
@@ -150,7 +154,57 @@ function buildCronJobs(agents) {
   return jobs;
 }
 
-export function buildRunnerState(roster, existing = {}) {
+const EXTRA_AGENT_ENDPOINT = 'http://127.0.0.1:8897/chat';
+
+/**
+ * Turn an agent's `firstJob` (type "job") into a ProductJob the runner can
+ * load: a single non-gated `design` stage, recurring hourly. The older
+ * batch builders emitted `title` / `stages[].name` / `currentStage`, which
+ * deserializeJob rejects ("unknown stage undefined"), so those jobs were
+ * dropped with a WARN on every tick and never ran.
+ */
+export function firstJobToProductJob(agent, nowMs = Date.now()) {
+  const fj = agent.firstJob;
+  if (!fj || fj.type !== 'job') throw new Error(`${agent.id} has no firstJob of type "job"`);
+  return {
+    id: `job-${agent.id.replace(/^agent-/, '')}`,
+    name: fj.title,
+    description: fj.title,
+    channelId: BUILD_ROOM,
+    managerAgentId: null,
+    stages: [
+      {
+        stage: 'design',
+        agentId: agent.id,
+        prompt: fj.prompt,
+        expectedOutput: 'A short report (under 600 characters), or NO-CHANGE when nothing is verifiably wrong.',
+        contextStages: [],
+      },
+    ],
+    currentStageIndex: 0,
+    status: 'active',
+    schedule: { kind: 'interval', everyMs: 3_600_000 },
+    enabled: true,
+    lastRunAt: null,
+    runs: [],
+    createdAt: nowMs,
+    updatedAt: nowMs,
+    cyclesCompleted: 0,
+    lastResetAt: null,
+  };
+}
+
+/**
+ * `extras` are agents with a `firstJob` that are not in the main roster
+ * (e.g. new-agents-1-website-currency.json). Each is added to the roster
+ * and its firstJob job is added unless a job with that id already exists.
+ */
+export function buildRunnerState(roster, existing = {}, extras = []) {
+  const rosterIds = new Set(roster.map((a) => a.id));
+  for (const x of extras) {
+    if (rosterIds.has(x.id)) throw new Error(`extra agent ${x.id} is already in the roster`);
+  }
+  roster = [...roster, ...extras.map((x) => ({ ...x, endpointUrl: x.endpointUrl ?? EXTRA_AGENT_ENDPOINT }))];
   // A runtime reassignment (Provider Researcher) sets an agent's
   // provider in state.json; the roster may not carry it yet. Preserve
   // an existing explicit provider when the roster record has none, so
@@ -170,10 +224,16 @@ export function buildRunnerState(roster, existing = {}) {
       : {}),
     systemPrompt: a.systemPrompt,
   }));
+  const jobs = Array.isArray(existing.jobs) ? [...existing.jobs] : [];
+  for (const x of extras) {
+    if (x.firstJob?.type !== 'job') continue;
+    const job = firstJobToProductJob(x);
+    if (!jobs.some((j) => j && j.id === job.id)) jobs.push(job);
+  }
   return {
     version: 1,
     agents,
-    jobs: Array.isArray(existing.jobs) ? existing.jobs : [],
+    jobs,
     triggers: Array.isArray(existing.triggers) ? existing.triggers : [],
     approvals: Array.isArray(existing.approvals) ? existing.approvals : [],
     cronJobs: buildCronJobs(agents),
@@ -193,7 +253,10 @@ function main() {
   if (!Array.isArray(roster) || roster.length === 0) throw new Error('roster is not a non-empty array');
   const inPath = get('--in');
   const existing = existsSync(inPath) ? JSON.parse(readFileSync(inPath, 'utf-8')) : {};
-  const state = buildRunnerState(roster, existing);
+  const extraIdx = args.indexOf('--extra-agents');
+  const extras = extraIdx === -1 ? [] : JSON.parse(readFileSync(args[extraIdx + 1], 'utf-8'));
+  if (!Array.isArray(extras)) throw new Error('--extra-agents file is not an array');
+  const state = buildRunnerState(roster, existing, extras);
   const outPath = get('--out');
   writeFileSync(outPath, JSON.stringify(state, null, 2) + '\n', 'utf-8');
   console.log(
