@@ -13,6 +13,7 @@ import {
   instantiateTemplate,
   type AgentTemplate,
 } from '../data/templates';
+import { agentInputFromTemplate, currentVersion, firstSessionFor, type LibraryTemplate } from '../lib/library';
 import { parseMentions } from '../lib/mentions';
 import { runMentionChain } from '../lib/mentionFlow';
 import { sendToAgent } from '../api/agents';
@@ -121,6 +122,11 @@ export interface UseWorkspace {
   /** Send to the room. `@mentions` narrow delivery to the named agents. */
   sendMessage: (text: string) => Promise<void>;
   createAgent: (input: Omit<Agent, 'id' | 'createdAt' | 'status'>) => Agent;
+  /** Makes an agent and its first session from a Team Library template; refuses anything the Reviewer has not cleared. */
+  createAgentFromLibrary: (
+    template: LibraryTemplate,
+    opts?: { name?: string },
+  ) => { ok: true; agent: Agent; sessionId: string } | { ok: false; reason: string };
   /** Instantiate a template agent and invite it straight into the room. */
   createAgentFromTemplate: (
     templateId: string,
@@ -723,6 +729,28 @@ export function useWorkspace(): UseWorkspace {
     [insertAgent, state.activeConversationId],
   );
 
+  const createAgentFromLibrary = useCallback(
+    (template: LibraryTemplate, opts: { name?: string } = {}) => {
+      let input: Omit<Agent, 'id' | 'createdAt' | 'status'>;
+      try {
+        input = agentInputFromTemplate(template, { name: opts.name });
+      } catch (e) {
+        return { ok: false as const, reason: e instanceof Error ? e.message : 'This template cannot be used.' };
+      }
+      const agent = insertAgent(input, { conversationId: null, openDirect: true });
+      const sessionId = uid('sess');
+      const session = firstSessionFor(template, currentVersion(template), agent.id, sessionId, Date.now());
+      setState((s) => ({
+        ...s,
+        conversations: [session, ...s.conversations],
+        messages: { ...s.messages, [sessionId]: [] },
+        activeConversationId: sessionId,
+      }));
+      return { ok: true as const, agent, sessionId };
+    },
+    [insertAgent],
+  );
+
   const inviteAgentToConversation = useCallback((conversationId: string, agentId: string) => {
     setState((s) => ({
       ...s,
@@ -889,6 +917,7 @@ export function useWorkspace(): UseWorkspace {
     sendMessage,
     createAgent,
     createAgentFromTemplate,
+    createAgentFromLibrary,
     inviteAgentToConversation,
     activeFilter,
     setConversationFilter,

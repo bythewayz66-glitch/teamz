@@ -38,6 +38,17 @@ export interface AgentSkill {
   level: number;
 }
 
+/** Outline of an agent's avatar, chosen in the creation wizard. */
+export type AvatarShape =
+  | 'circle'
+  | 'squircle'
+  | 'rounded'
+  | 'hexagon'
+  | 'diamond'
+  | 'octagon'
+  | 'shield'
+  | 'leaf';
+
 /** A single AI agent the user runs on their own infrastructure. */
 export interface Agent {
   id: string;
@@ -84,6 +95,8 @@ export interface Agent {
   maxIterations?: number;
   /** Hard deadline in seconds; absent (or 0) means unlimited. */
   maxExecutionTimeSeconds?: number;
+  /** Avatar outline; absent means the original circle. */
+  avatarShape?: AvatarShape;
   /** Last reachability check result (persisted). */
   lastPingAt?: number;
   lastPingOk?: boolean;
@@ -124,6 +137,21 @@ export interface SessionMeta {
   interruptedAt?: number;
   /** For `work` sessions: the week they cover, e.g. `2026-W48`. */
   weekKey?: string;
+  /**
+   * Set on the first session of an agent made from a Team Library template:
+   * the job the template was proven on. It is shown as a card the user can
+   * run; nothing is sent until they do.
+   */
+  intro?: SessionIntro;
+}
+
+export interface SessionIntro {
+  /** `id@version` of the library template. */
+  template: string;
+  /** Null when the template has no first job on record. */
+  job: { title: string; prompt: string; kind: 'one-off' | 'recurring'; schedule: string | null } | null;
+  /** Where the job came from, e.g. `future-work-104.json`. */
+  jobSource: string | null;
 }
 
 /**

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Agent, Conversation, Seniority } from '../types';
+import type { Agent, AvatarShape, Conversation, Seniority } from '../types';
 import { Modal, Field } from './Modal';
 import { AgentAvatar } from './Avatar';
 import { CheckIcon, ChevronIcon, PlusIcon, SparkIcon } from './Icons';
 import { TemplatePicker } from './TemplatePicker';
 import { SkillPicker } from './SkillPicker';
 import { ACCENT_PALETTE, EMOJI_PALETTE } from '../data/mock';
+import { AVATAR_SHAPES, WIDE_ACCENTS, WIDE_EMOJIS } from '../data/avatars';
 import {
   SENIORITY_BLURB,
   SENIORITY_LABELS,
@@ -41,7 +42,7 @@ interface NewAgentDialogProps {
   room: Conversation | null;
 }
 
-const STEPS = ['Role', 'Identity', 'Skills', 'Review'] as const;
+const STEPS = ['Role', 'Name & look', 'Skills', 'Review'] as const;
 
 type Step = 0 | 1 | 2 | 3;
 
@@ -78,6 +79,7 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
   const [valuesText, setValuesText] = useState('');
   const [emoji, setEmoji] = useState(EMOJI_PALETTE[4]);
   const [accent, setAccent] = useState(ACCENT_PALETTE[0]);
+  const [avatarShape, setAvatarShape] = useState<AvatarShape>('circle');
   const [model, setModel] = useState(DEFAULT_AGENT_MODEL);
 
   /* ---------------------------- step 3: skills ----------------------------- */
@@ -149,6 +151,7 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
     setValuesText('');
     setEmoji(EMOJI_PALETTE[Math.floor(Math.random() * EMOJI_PALETTE.length)]);
     setAccent(ACCENT_PALETTE[Math.floor(Math.random() * ACCENT_PALETTE.length)]);
+    setAvatarShape('circle');
     setModel(DEFAULT_AGENT_MODEL);
     setSkillKeys([]);
     setEndpointUrl(DEFAULT_ENDPOINT_URL);
@@ -206,6 +209,7 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
       name: name.trim() || 'New Agent',
       emoji,
       accent,
+      avatarShape,
       endpointUrl: endpointUrl.trim() || DEFAULT_ENDPOINT_URL,
       model: model.trim() || DEFAULT_AGENT_MODEL,
       systemPrompt: prompt,
@@ -363,7 +367,7 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
       {step === 1 && (
         <>
           <div className="settings-preview">
-            <AgentAvatar agent={{ name, emoji, accent }} size={52} />
+            <AgentAvatar agent={{ name, emoji, accent, avatarShape }} size={64} />
             <div>
               <strong>{name.trim() || 'New Agent'}</strong>
               <span>
@@ -372,24 +376,71 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
             </div>
           </div>
 
-          <div className="field-grid">
-            <Field label="Name">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Reviewer"
-                autoFocus
-              />
-            </Field>
-            <Field label="Role" hint="appears in the prompt as “You are {name}, a {role}”">
-              <input
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                placeholder="e.g. Code Reviewer"
-                spellCheck={false}
-              />
-            </Field>
-          </div>
+          <Field label="Name" hint="a name that sticks — this is a teammate, not a unit">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Reviewer"
+              autoFocus
+            />
+          </Field>
+
+          <Field label="Shape">
+            <div className="shape-picker" role="radiogroup" aria-label="Avatar shape">
+              {AVATAR_SHAPES.map((sh) => (
+                <button
+                  key={sh.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={avatarShape === sh.id}
+                  className={`shape-opt${avatarShape === sh.id ? ' is-on' : ''}`}
+                  onClick={() => setAvatarShape(sh.id)}
+                  title={sh.label}
+                  aria-label={sh.label}
+                >
+                  <AgentAvatar agent={{ name, emoji, accent, avatarShape: sh.id }} size={34} ring={false} />
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Colour">
+            <div className="accent-picker">
+              {WIDE_ACCENTS.map((c) => (
+                <button
+                  key={c}
+                  className={`accent-opt${accent === c ? ' is-on' : ''}`}
+                  style={{ background: c }}
+                  onClick={() => setAccent(c)}
+                  aria-label={`Colour ${c}`}
+                />
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Face">
+            <div className="emoji-picker">
+              {WIDE_EMOJIS.map((e) => (
+                <button
+                  key={e}
+                  className={`emoji-opt${emoji === e ? ' is-on' : ''}`}
+                  onClick={() => setEmoji(e)}
+                  aria-label={`Use ${e}`}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Role" hint="appears in the prompt as “You are {name}, a {role}”">
+            <input
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              placeholder="e.g. Code Reviewer"
+              spellCheck={false}
+            />
+          </Field>
 
           <Field label="Goal" hint="one sentence — what this agent is for">
             <textarea
@@ -428,35 +479,6 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
             </Field>
           </div>
 
-          <Field label="Avatar">
-            <div className="emoji-picker">
-              {EMOJI_PALETTE.slice(0, 12).map((e) => (
-                <button
-                  key={e}
-                  className={`emoji-opt${emoji === e ? ' is-on' : ''}`}
-                  onClick={() => setEmoji(e)}
-                  aria-label={`Use ${e}`}
-                >
-                  {e}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Accent colour">
-            <div className="accent-picker">
-              {ACCENT_PALETTE.map((c) => (
-                <button
-                  key={c}
-                  className={`accent-opt${accent === c ? ' is-on' : ''}`}
-                  style={{ background: c }}
-                  onClick={() => setAccent(c)}
-                  aria-label={`Accent ${c}`}
-                />
-              ))}
-            </div>
-          </Field>
-
           <Field
             label="Model"
             hint="used by own-endpoint mode · Pollinations uses the model in Workspace & API"
@@ -482,7 +504,7 @@ export function NewAgentDialog({ open, onClose, onCreate, room }: NewAgentDialog
       {step === 3 && (
         <>
           <div className="settings-preview">
-            <AgentAvatar agent={{ name, emoji, accent }} size={52} />
+            <AgentAvatar agent={{ name, emoji, accent, avatarShape }} size={52} />
             <div>
               <strong>{name.trim() || 'New Agent'}</strong>
               <span>

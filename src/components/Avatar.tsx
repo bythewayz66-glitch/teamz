@@ -1,4 +1,5 @@
 import type { Agent, AgentStatus } from '../types';
+import { shapeDef } from '../data/avatars';
 
 const STATUS_LABEL: Record<AgentStatus, string> = {
   online: 'Online',
@@ -24,7 +25,7 @@ export function StatusDot({ status, size = 9 }: { status: AgentStatus; size?: nu
 }
 
 interface AvatarProps {
-  agent: Pick<Agent, 'emoji' | 'name' | 'accent'>;
+  agent: Pick<Agent, 'emoji' | 'name' | 'accent' | 'avatarShape'>;
   size?: number;
   showStatus?: AgentStatus;
   ring?: boolean;
@@ -32,6 +33,27 @@ interface AvatarProps {
 }
 
 export function AgentAvatar({ agent, size = 38, showStatus, ring = true, title }: AvatarProps) {
+  const shape = shapeDef(agent.avatarShape);
+  const face = `radial-gradient(120% 120% at 30% 20%, ${agent.accent}33, #141922 70%)`;
+  if (shape.clip) {
+    return (
+      <span
+        className={`avatar${ring ? ' has-ring' : ''}`}
+        style={{ width: size, height: size, fontSize: Math.round(size * 0.48) }}
+        title={title ?? agent.name}
+        aria-hidden="true"
+      >
+        <span
+          className="avatar-face"
+          style={{ background: ring ? `linear-gradient(${agent.accent}80, ${agent.accent}80)` : face, clipPath: shape.clip }}
+        >
+          <span className="avatar-face-inner" style={{ background: face, clipPath: shape.clip }} />
+        </span>
+        <span className="avatar-emoji">{agent.emoji}</span>
+        {showStatus && <span className="avatar-status" style={{ background: STATUS_COLOR[showStatus] }} />}
+      </span>
+    );
+  }
   return (
     <span
       className={`avatar${ring ? ' has-ring' : ''}`}
@@ -39,7 +61,8 @@ export function AgentAvatar({ agent, size = 38, showStatus, ring = true, title }
         width: size,
         height: size,
         fontSize: Math.round(size * 0.48),
-        background: `radial-gradient(120% 120% at 30% 20%, ${agent.accent}33, #141922 70%)`,
+        borderRadius: shape.radius,
+        background: face,
         boxShadow: ring ? `inset 0 0 0 1px ${agent.accent}59` : undefined,
       }}
       title={title ?? agent.name}
@@ -59,7 +82,7 @@ export function AvatarStack({
   max = 3,
   size = 22,
 }: {
-  agents: Pick<Agent, 'emoji' | 'name' | 'accent'>[];
+  agents: Pick<Agent, 'emoji' | 'name' | 'accent' | 'avatarShape'>[];
   max?: number;
   size?: number;
 }) {
