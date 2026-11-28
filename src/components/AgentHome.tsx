@@ -2,6 +2,7 @@ import type { AgentHomeModel, HomeSession } from '../lib/agentHome';
 import { timeAgo, timeUntil } from '../lib/agentHome';
 import { AgentAvatar } from './Avatar';
 import { PlusIcon, SettingsIcon } from './Icons';
+import { DreamCard } from './DreamCard';
 
 interface Props {
   home: AgentHomeModel;
@@ -14,6 +15,10 @@ interface Props {
   onResume: (id: string) => void;
   onOpenSettings: () => void;
   onOpenCostRate: () => void;
+  dreamRunning: boolean;
+  onDreamEnable: () => void;
+  onDreamDisable: () => void;
+  onDreamCadence: (cron: string) => void;
 }
 
 const KIND_LABEL: Record<HomeSession['kind'], string> = { chat: 'Chat', work: 'Work', room: 'Room' };
@@ -29,6 +34,10 @@ export function AgentHome({
   onResume,
   onOpenSettings,
   onOpenCostRate,
+  dreamRunning,
+  onDreamEnable,
+  onDreamDisable,
+  onDreamCadence,
 }: Props) {
   const { agent } = home;
   const interrupted = home.sessions.find((s) => s.status === 'interrupted');
@@ -75,6 +84,8 @@ export function AgentHome({
         </section>
 
         <div className="home-grid">
+          <DreamCard dream={home.dream} now={now} running={dreamRunning} onEnable={onDreamEnable} onDisable={onDreamDisable} onCadence={onDreamCadence} />
+
           <section className="home-card home-sessions" aria-labelledby="h-sessions">
             <h2 id="h-sessions">Sessions <span className="count">{home.sessions.length}</span></h2>
             {home.sessions.length === 0 && <p className="home-empty">No sessions yet. Start one and it will be kept here.</p>}
@@ -127,7 +138,7 @@ export function AgentHome({
             ) : (
               <ul className="chip-list">
                 {home.skills.map((s) => (
-                  <li key={s.label} className="chip" title={s.source === 'instructions' ? 'Taken from the agent’s own instructions' : undefined}>
+                  <li key={s.label} className="chip" title={s.source === 'instructions' ? 'Taken from the agent’s own instructions' : s.source === 'dream' ? 'Switched on in the Dream card' : undefined}>
                     {s.label}
                     {s.level ? <em>{s.level}/5</em> : null}
                   </li>
