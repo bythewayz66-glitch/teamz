@@ -37,6 +37,14 @@ export const DEFAULT_RETENTION: Record<SessionKind, RetentionPolicy> = {
   room: { mode: 'forever' },
 };
 
+/** An agent's own default retention for new sessions, else the built-in default for the kind. */
+export function retentionFor(
+  agent: Pick<Agent, 'sessionRetention'> | undefined,
+  kind: SessionKind,
+): RetentionPolicy {
+  return agent?.sessionRetention ?? DEFAULT_RETENTION[kind];
+}
+
 export const RETENTION_PRESETS: Array<{ label: string; policy: RetentionPolicy }> = [
   { label: 'Keep forever', policy: { mode: 'forever' } },
   { label: 'Keep 30 days', policy: { mode: 'days', days: 30 } },
@@ -112,7 +120,7 @@ export function deriveSessionName(text: string): string {
 export const DEFAULT_SESSION_NAME = 'New session';
 
 export function newChatSession(
-  agent: Pick<Agent, 'id'>,
+  agent: Pick<Agent, 'id' | 'sessionRetention'>,
   id: string,
   now: number,
   name: string = DEFAULT_SESSION_NAME,
@@ -127,7 +135,7 @@ export function newChatSession(
       kind: 'chat',
       agentId: agent.id,
       status: 'active',
-      retention: DEFAULT_RETENTION.chat,
+      retention: retentionFor(agent, 'chat'),
       updatedAt: now,
     },
   };
@@ -182,7 +190,7 @@ export function adoptSessions(state: WorkspaceState, now: number): WorkspaceStat
           kind: 'chat' as const,
           agentId: c.agentIds[0],
           status: 'active' as const,
-          retention: DEFAULT_RETENTION.chat,
+          retention: retentionFor(state.agents.find((a) => a.id === c.agentIds[0]), 'chat'),
           updatedAt: lastActivity(c, state.messages[c.id]) || now,
         },
       };
@@ -227,11 +235,12 @@ export function foldRoomIntoSessions(
   const roomMessages = state.messages[roomId] ?? [];
   if (roomMessages.length === 0) return state;
 
-  const known = new Set(state.agents.map((a) => a.id));
-  const cutoff = retentionCutoff(DEFAULT_RETENTION.work, now);
+  const agentsById = new Map(state.agents.map((a) => [a.id, a]));
+  const known = new Set(agentsById.keys());
 
   const incoming = new Map<string, { agentId: string; key: string; msgs: Message[] }>();
   const push = (agentId: string, m: Message) => {
+    const cutoff = retentionCutoff(retentionFor(agentsById.get(agentId), 'work'), now);
     if (cutoff !== null && m.createdAt < cutoff) return;
     const key = weekKey(m.createdAt);
     const id = workSessionId(agentId, key);
@@ -279,7 +288,7 @@ export function foldRoomIntoSessions(
           kind: 'work',
           agentId,
           status: 'active',
-          retention: DEFAULT_RETENTION.work,
+          retention: retentionFor(agentsById.get(agentId), 'work'),
           updatedAt: first,
           weekKey: key,
         },
@@ -368,13 +377,13 @@ export function planResume(state: WorkspaceState, convId: string): ResumePlan | 
   return { conversation, userMessage: lastUser, history, targetAgentIds, nextState };
 }
 
-/** Prune every session to its retention policy. Empty work sessions are dropped. */
+/** Prune every session to its retention policy. Starred sessions are kept; empty work sessions are dropped. */
 export function applyRetention(state: WorkspaceState, now: number): WorkspaceState {
   let changed = false;
   const messages = { ...state.messages };
   const drop = new Set<string>();
   for (const c of state.conversations) {
-    if (!c.session) continue;
+    if (!c.session || c.session.starred) continue;
     const list = messages[c.id] ?? [];
     const p = c.session.retention;
     let kept = list;
