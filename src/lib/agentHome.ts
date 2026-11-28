@@ -21,6 +21,20 @@ import {
   type UsageLedger,
 } from './usageLedger';
 import type { RunnerAgentSummary, RunnerChannelMessage, RunnerJobSummary } from '../api/runnerState';
+import {
+  DREAM_CADENCES,
+  RECORD_WINDOW_MS,
+  describeCadence,
+  isDreamEnrollable,
+  nextSlot,
+  runnerDreamJobId,
+  summarizeDream,
+  type DreamCounts,
+  type DreamNotice,
+  type DreamReport,
+  type DreamState,
+  type SlotEntry,
+} from './dream';
 
 /* ---------------------------------------------------------------- words */
 
@@ -125,7 +139,7 @@ export interface HomeTrigger {
   nextAt: number | null;
   lastAt: number | null;
   enabled: boolean;
-  source: 'cron' | 'interval' | 'job';
+  source: 'cron' | 'interval' | 'job' | 'dream';
   /** Set when it will not fire on its own, e.g. "waiting for approval". */
   note?: string;
 }
@@ -133,7 +147,7 @@ export interface HomeTrigger {
 export interface HomeSkill {
   label: string;
   level?: number;
-  source: 'declared' | 'instructions';
+  source: 'declared' | 'instructions' | 'dream';
 }
 
 export interface HomeRun {
@@ -159,6 +173,27 @@ export interface HomeCost {
   since: string | null;
 }
 
+/** Dream (scheduled self-review) as one home card. `enrollable` is false for agents it is not open to. */
+export interface HomeDream {
+  /** Only the starter agents can be enrolled; others show an explanation. */
+  enrollable: boolean;
+  enabled: boolean;
+  cron: string;
+  cadenceLabel: string;
+  cadences: Array<{ label: string; cron: string }>;
+  nextAt: number | null;
+  counts: DreamCounts;
+  windowDays: number;
+  /** Newest first. */
+  entries: SlotEntry[];
+  /** The pinned report: the newest one. */
+  pinned: DreamReport | null;
+  history: DreamReport[];
+  unread: DreamNotice[];
+  /** True when the runner has a Dream job for this agent. */
+  runnerJob: boolean;
+}
+
 export interface AgentHomeModel {
   agent: Agent;
   status: HomeStatus;
@@ -174,6 +209,7 @@ export interface AgentHomeModel {
   recentRuns: HomeRun[];
   cost: HomeCost;
   warmth: { last: string; next: string };
+  dream: HomeDream;
 }
 
 /**
@@ -433,8 +469,10 @@ export function buildAgentHome(input: {
   ledger: UsageLedger;
   rate: CostRate | null;
   now: number;
+  dream?: DreamState;
 }): AgentHomeModel {
   const { agent, state, runner, local, ledger, rate, now } = input;
+  const dreamModel = buildHomeDream(agent.id, input.dream, runner, now);
 
   const sessions: HomeSession[] = sessionsForAgent(state, agent.id, { includeArchived: false, nonEmptyOnly: false }).map((c) => {
     const msgs = state.messages[c.id] ?? [];
@@ -453,7 +491,11 @@ export function buildAgentHome(input: {
   const lastSession = sessions.find((s) => s.messageCount > 0) ?? null;
   const interrupted = sessions.some((s) => s.status === 'interrupted');
 
-  const triggers = agentTriggers(agent.id, runner, local, now);
+  const dreamCronId = `cron:${runnerDreamJobId(agent.id)}`;
+  const triggers = [
+    ...dreamTrigger(agent, dreamModel, input.dream),
+    ...agentTriggers(agent.id, runner, local, now).filter((t) => t.id !== dreamCronId),
+  ];
   const nextTrigger = triggers.find((t) => t.enabled && t.nextAt !== null) ?? triggers[0] ?? null;
 
   const runs = agentRuns(agent.id, runner, local);
@@ -503,11 +545,59 @@ export function buildAgentHome(input: {
     lastSession,
     triggers,
     nextTrigger,
-    skills: deriveSkills(agent),
+    skills: [...deriveSkills(agent), ...(dreamModel.enabled ? [{ label: 'Dream — scheduled self-review', source: 'dream' as const }] : [])],
     tools,
     connections,
     recentRuns,
     cost,
     warmth: buildWarmth(lastMsg, runs, nextTrigger, interrupted, now),
+    dream: dreamModel,
   };
+}
+
+function runnerDreamRuns(agentId: string, runner: RunnerSnapshot | null) {
+  const job = runner?.cronJobs.find((j) => j.id === runnerDreamJobId(agentId));
+  return { job, runs: job ? job.runs.map((r) => ({ ts: r.ts, ok: r.ok, detail: r.detail })) : [] };
+}
+
+function buildHomeDream(agentId: string, dream: DreamState | undefined, runner: RunnerSnapshot | null, now: number): HomeDream {
+  const state = dream ?? { version: 1 as const, config: {}, records: [], reports: [], notices: [] };
+  const cfg = state.config[agentId];
+  const { job, runs } = runnerDreamRuns(agentId, runner);
+  const cron = cfg?.cron ?? job?.schedule ?? DREAM_CADENCES[1].cron;
+  const summary = summarizeDream(state, agentId, now, runs);
+  const reports = state.reports.filter((r) => r.agentId === agentId).sort((a, b) => b.at - a.at);
+  const enabled = Boolean(cfg?.enabled) && isDreamEnrollable(agentId);
+  return {
+    enrollable: isDreamEnrollable(agentId),
+    enabled,
+    cron,
+    cadenceLabel: describeCadence(cron),
+    cadences: DREAM_CADENCES,
+    nextAt: enabled ? nextSlot(cron, now) : job?.enabled ? nextSlot(cron, now) : null,
+    counts: summary.counts,
+    windowDays: Math.round(RECORD_WINDOW_MS / 86_400_000),
+    entries: summary.entries.slice(0, 12),
+    pinned: reports[0] ?? null,
+    history: reports.slice(1, 11),
+    unread: state.notices.filter((n) => n.agentId === agentId && !n.read),
+    runnerJob: Boolean(job),
+  };
+}
+
+function dreamTrigger(agent: Agent, d: HomeDream, dream: DreamState | undefined): HomeTrigger[] {
+  if (!d.enabled && !d.runnerJob) return [];
+  const lastRan = (dream?.records ?? []).filter((r) => r.agentId === agent.id && r.outcome === 'ran').reduce((m, r) => Math.max(m, r.at), 0);
+  return [
+    {
+      id: `dream:${agent.id}`,
+      name: 'Dream',
+      when: `${d.cadenceLabel.toLowerCase()}${d.enabled && d.runnerJob ? ' (here and on the runner)' : d.runnerJob ? ' (on the runner)' : ' (while Teamz is open)'}`,
+      nextAt: d.nextAt,
+      lastAt: lastRan || null,
+      enabled: d.enabled || d.runnerJob,
+      source: 'dream',
+      note: d.nextAt === null ? 'switched off' : undefined,
+    },
+  ];
 }
